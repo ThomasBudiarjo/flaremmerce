@@ -1,0 +1,13 @@
+---
+import Layout from "../layouts/Layout.astro";
+import Checkout from "../components/Checkout";
+export const prerender = true;
+---
+
+<Layout title="Tas & checkout — Flaremmerce">
+  <section class="section">
+    <p class="eyebrow">Dari pilihan, jadi milikmu</p>
+    <h1>Tas belanja.</h1>
+    <Checkout client:load />
+  </section>
+</Layout>

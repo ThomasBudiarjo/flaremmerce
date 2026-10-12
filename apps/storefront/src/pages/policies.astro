@@ -1,0 +1,51 @@
+---
+import Layout from "../layouts/Layout.astro";
+export const prerender = true;
+---
+
+<Layout title="Informasi belanja — Flaremmerce">
+  <section class="section policy">
+    <p class="eyebrow">Sebelum kamu belanja</p>
+    <h1>Jelas dari awal.</h1>
+    <h2>Ready stock & pre-order</h2>
+    <p>
+      Ketersediaan dan harga browsing dapat berubah. Checkout memeriksa data
+      terbaru. Produk pre-order memiliki periode pemesanan dan rentang estimasi
+      kirim; estimasi bukan jaminan tanggal.
+    </p>
+    <h2>Satu tas, satu pengiriman</h2>
+    <p>
+      Jika tas berisi ready stock dan pre-order, seluruh pesanan dikirim bersama
+      mengikuti item paling lambat. Split shipment belum tersedia. Layanan dan
+      biaya pengiriman harus dipilih sebelum pembayaran.
+    </p>
+    <h2>Pembayaran & status</h2>
+    <p>
+      Order dibuat sebelum pembayaran. Redirect dari halaman pembayaran bukan
+      bukti pembayaran berhasil; status hanya mengikuti konfirmasi server.
+      Jangan melakukan pembayaran ganda ketika status belum diketahui.
+    </p>
+    <h2>Belanja sebagai tamu</h2>
+    <p>
+      Tidak perlu akun. Simpan referensi dan token akses pesanan secara privat.
+      Token tidak dikirim melalui email secara otomatis. Pemulihan token tamu
+      belum tersedia; jangan membagikannya kepada orang lain.
+    </p>
+    <h2>Privasi browser</h2>
+    <p>
+      Tas belanja disimpan di browser. Token login tidak disimpan di
+      localStorage. Kontak dan alamat digunakan untuk memproses pesanan. Simpan
+      token akses pesanan sendiri; akses di tab pembayaran memakai penyimpanan
+      sesi tab, bukan tautan publik.
+    </p>
+    <h2>Batas layanan</h2>
+    <p>
+      Modul refund, retur, voucher dan pelacakan otomatis belum tersedia pada
+      versi ini. Halaman ini tidak menjanjikan pemulihan pembayaran atau
+      pengiriman yang belum dikonfirmasi.
+    </p>
+    <a class="button" href="/catalog">
+      Kembali ke koleksi ↗
+    </a>
+  </section>
+</Layout>

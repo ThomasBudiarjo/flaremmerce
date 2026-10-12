@@ -1,0 +1,52 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import ProductPicker from "../../components/ProductPicker";
+import { catalog, type Product } from "../../lib/catalog";
+let product: Product | undefined;
+let failed = false;
+try {
+  product = (
+    await catalog(
+      Astro.locals,
+      "/api/catalog/" + encodeURIComponent(Astro.params.slug!),
+    )
+  ).product;
+} catch {
+  failed = true;
+}
+if (!product) Astro.response.status = failed ? 503 : 404;
+Astro.response.headers.set(
+  "Cache-Control",
+  product ? "public, max-age=0, s-maxage=60" : "no-store",
+);
+---
+
+<Layout title={(product?.name || "Produk tidak tersedia") + " — Flaremmerce"}>
+  <section class="section">
+    <p class="muted">
+      <a href="/catalog">Koleksi</a> / {product?.name || "Produk"}
+    </p>
+    {product ? (
+      <div class="detail">
+        <div class="art">
+          {product.imageUrl && (
+            <img src={product.imageUrl} alt={product.name} />
+          )}
+        </div>
+        <div>
+          <p class="eyebrow">Flaremmerce / Everyday essentials</p>
+          <h1>{product.name}</h1>
+          <p>{product.description}</p>
+          <ProductPicker product={product} client:load />
+        </div>
+      </div>
+    ) : (
+      <div class="notice" role="alert">
+        {failed
+          ? "Katalog sementara tidak tersedia."
+          : "Produk tidak ditemukan."}{" "}
+        <a href="/catalog">Kembali ke koleksi</a>
+      </div>
+    )}
+  </section>
+</Layout>

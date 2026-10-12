@@ -1,0 +1,48 @@
+---
+import "../styles/site.css";
+const {
+  title = "Flaremmerce — Benda baik, untuk setiap hari.",
+  description = "Koleksi pilihan Flaremmerce. Ready stock dan pre-order dengan estimasi pengiriman yang jelas.",
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={description} />
+    <meta name="referrer" content="no-referrer" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <a class="skip" href="#main">
+      Lewati ke konten
+    </a>
+    <div class="topline">Satu brand. Pilihan yang berarti.</div>
+    <header>
+      <a class="brand" href="/">
+        flare<span>mmerce</span>
+        <i>✳</i>
+      </a>
+      <nav aria-label="Navigasi utama">
+        <a href="/catalog">Koleksi</a>
+        <a href="/policies">Cara belanja</a>
+        <a class="cartlink" href="/cart">
+          Tas belanja ↗
+        </a>
+      </nav>
+    </header>
+    <main id="main">
+      <slot />
+    </main>
+    <footer>
+      <a class="brand" href="/">
+        flaremmerce ✳
+      </a>
+      <p>Dibuat untuk menemani keseharian.</p>
+      <a href="/policies">Pengiriman & informasi belanja</a>
+      <small>© {new Date().getFullYear()} Flaremmerce · Indonesia</small>
+    </footer>
+  </body>
+</html>
