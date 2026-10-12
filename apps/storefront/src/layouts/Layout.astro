@@ -1,7 +1,7 @@
 ---
 import "../styles/site.css";
 const {
-  title = "Flaremmerce — Benda baik, untuk setiap hari.",
+  title = "Flaremmerce — Katalog produk",
   description = "Koleksi pilihan Flaremmerce. Ready stock dan pre-order dengan estimasi pengiriman yang jelas.",
 } = Astro.props;
 ---
@@ -19,17 +19,19 @@ const {
     <a class="skip" href="#main">
       Lewati ke konten
     </a>
-    <div class="topline">Satu brand. Pilihan yang berarti.</div>
     <header>
       <a class="brand" href="/">
         flare<span>mmerce</span>
-        <i>✳</i>
       </a>
       <nav aria-label="Navigasi utama">
-        <a href="/catalog">Koleksi</a>
-        <a href="/policies">Cara belanja</a>
+        <a href="/" aria-current={Astro.url.pathname === '/' || Astro.url.pathname === '/catalog' ? 'page' : undefined}>Katalog</a>
+        <a href="/order">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4v10l-8 4-8-4V7l8-4Z M4 7l8 4 8-4 M12 11v10 M8 5l8 4" /></svg>
+          Pesanan
+        </a>
         <a class="cartlink" href="/cart">
-          Tas belanja ↗
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2l3 12h11l2-9H6 M9 20h.01 M18 20h.01" /></svg>
+          Keranjang
         </a>
       </nav>
     </header>
@@ -38,9 +40,9 @@ const {
     </main>
     <footer>
       <a class="brand" href="/">
-        flaremmerce ✳
+        flaremmerce
       </a>
-      <p>Dibuat untuk menemani keseharian.</p>
+      <p>Ready stock & pre-order · Pengiriman Indonesia</p>
       <a href="/policies">Pengiriman & informasi belanja</a>
       <small>© {new Date().getFullYear()} Flaremmerce · Indonesia</small>
     </footer>

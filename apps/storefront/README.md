@@ -2,8 +2,10 @@
 
 Astro 7 + Cloudflare adapter 14, React islands. Build from the repository root with `npm run check` and
 `npm run build`. The generated Worker is `dist/server/entry.mjs`; public
-assets and prerendered landing, policies, cart, and order shells are in `dist/client/`.
-Catalogue and product detail pages are server-rendered, never client-only.
+assets and prerendered policies, cart, and order shells are in `dist/client/`.
+Homepage `/` immediately shows the SSR catalogue; `/catalog` uses the same component.
+Both support `after`/`limit` pagination and 60-second public caching. Product detail pages
+are also server-rendered, never client-only. There is no separate editorial landing page.
 
 ## Parent Worker composition
 

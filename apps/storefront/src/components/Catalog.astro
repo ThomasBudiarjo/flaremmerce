@@ -1,0 +1,76 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { catalog, money, type Product } from "../lib/catalog";
+let products: Product[] = [];
+let error = "";
+let nextCursor: string | null = null;
+try {
+  const query = new URLSearchParams();
+  for (const name of ["after", "limit"]) {
+    const value = Astro.url.searchParams.get(name);
+    if (value !== null) query.set(name, value);
+  }
+  const page = await catalog(Astro.locals, `/api/catalog?${query}`);
+  products = page.products;
+  nextCursor = page.nextCursor;
+} catch {
+  error =
+    "Katalog sementara tidak tersedia. Silakan muat ulang beberapa saat lagi.";
+  Astro.response.status = 503;
+}
+Astro.response.headers.set(
+  "Cache-Control",
+  error ? "no-store" : "public, max-age=0, s-maxage=60",
+);
+const nextQuery = new URLSearchParams();
+if (nextCursor) nextQuery.set("after", nextCursor);
+const limit = Astro.url.searchParams.get("limit");
+if (limit !== null) nextQuery.set("limit", limit);
+---
+
+<Layout title="Katalog produk — Flaremmerce">
+  <section class="section catalog">
+    <div class="row">
+      <h1>Katalog produk</h1>
+      <span class="muted">{products.length} produk di halaman ini</span>
+    </div>
+    <p>Ready stock dan pre-order. Pilih produk untuk melihat varian dan estimasi kirim.</p>
+    {error ? (
+      <div class="notice error" role="alert">
+        {error} <a href={Astro.url.pathname + Astro.url.search}>Muat ulang</a>
+      </div>
+    ) : products.length === 0 ? (
+      <div class="notice">
+        Koleksi baru sedang disiapkan. Kembali lagi nanti.
+      </div>
+    ) : (
+      <div class="grid">
+        {products.map((p) => (
+          <a class="card" href={"/products/" + encodeURIComponent(p.slug)}>
+            <div class="art">
+              {p.imageUrl && (
+                <img src={p.imageUrl} alt={p.name} loading="lazy" />
+              )}
+            </div>
+            <div class="availability">
+              {p.variants.some((v) => v.mode === "stock" && (v.available === null || v.available > 0)) && <span class="badge stock">Ready stock</span>}
+              {p.variants.some((v) => v.mode === "preorder") && <span class="badge preorder">Pre-order</span>}
+              {!p.variants.some((v) => v.mode === "preorder" || v.available === null || v.available > 0) && <span class="badge">Stok habis</span>}
+            </div>
+            <h3>{p.name}</h3>
+            <div class="row">
+              <span>
+                {p.variants.length > 1 && "Mulai "}
+                {p.variants.length
+                  ? money(Math.min(...p.variants.map((v) => v.price)))
+                  : "Belum tersedia"}
+              </span>
+              <span class="card-action" aria-hidden="true">→</span>
+            </div>
+          </a>
+        ))}
+      </div>
+    )}
+    {nextCursor && <a class="button pagination" href={`${Astro.url.pathname}?${nextQuery}`}>Produk berikutnya →</a>}
+  </section>
+</Layout>

@@ -7,7 +7,7 @@
   "assets": {
     "directory": "apps/storefront/dist/client",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/admin", "/admin/*", "/catalog", "/products/*", "/cart", "/order"]
+    "run_worker_first": ["/", "/api/*", "/admin", "/admin/*", "/catalog", "/products/*", "/cart", "/order"]
   },
   "d1_databases": [{"binding":"DB", "database_name":"flaremmerce-local", "database_id":"00000000-0000-0000-0000-000000000001", "migrations_dir":"migrations"}],
   "r2_buckets": [{"binding":"MEDIA","bucket_name":"flaremmerce-local-media"},{"binding":"PRIVATE_FILES","bucket_name":"flaremmerce-local-private"}],

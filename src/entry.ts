@@ -11,9 +11,9 @@ export default {
       if (!url.pathname.includes('.') || url.pathname.endsWith('/')) asset.pathname = '/admin/';
       return env.ASSETS.fetch(new Request(asset, request));
     }
-    const publicPage = request.method === 'GET' && (url.pathname === '/catalog' || /^\/products\/[a-z0-9-]{1,100}$/.test(url.pathname));
+    const publicPage = request.method === 'GET' && (url.pathname === '/' || url.pathname === '/catalog' || /^\/products\/[a-z0-9-]{1,100}$/.test(url.pathname));
     const cacheUrl = new URL(`${url.origin}${url.pathname}`);
-    if (url.pathname === '/catalog') for (const name of ['after','limit']) {
+    if (url.pathname === '/' || url.pathname === '/catalog') for (const name of ['after','limit']) {
       const value = url.searchParams.get(name); if (value !== null) cacheUrl.searchParams.set(name,value);
     }
     const key = new Request(cacheUrl);

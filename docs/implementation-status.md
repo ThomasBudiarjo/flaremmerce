@@ -4,7 +4,7 @@ Implementasi lokal, bukan status deployment. Tiga worktree paralel terintegrasi 
 
 | Area | Yang tersedia | Batas verifikasi |
 |---|---|---|
-| Storefront/admin | Astro SSR katalog/produk, static landing/policies, React cart/guest checkout/order status; admin Google/bootstrap, catalogue/archive, SKU, inventory, PO, milestone/fulfillment dan review | Browser Chromium desktop/narrow; data katalog demo lokal. Google live belum diuji |
+| Storefront/admin | Homepage langsung katalog SSR (juga tersedia di /catalog), static policies, React cart/guest checkout/order status; admin dengan sidebar permanen berikon, URL navigation, drawer layar sempit dan animasi reduced-motion-aware; Google/bootstrap, catalogue/archive, SKU, inventory, PO, milestone/fulfillment dan review | Browser Chromium desktop/narrow; data katalog demo lokal dan fixture UI admin terkontrol. Google live belum diuji |
 | Commerce D1 | Reservasi multi-item atomik, stok/kuota finite/unlimited, snapshot immutable, scoped idempotency, payment attempt durable, paid/outbox atomik, ledger/audit | Tes race/rollback memakai workerd D1; concurrency produksi/CPU Free belum diukur |
 | Provider | Siteverify fail closed, DOKU create/signature/verified webhook/GET inquiry, Komerce quote dari berat server + fingerprint cart | HTTP provider terkontrol dalam tes, bukan credential/live provider |
 | Auth | Better Auth/Drizzle D1 Google-only, opaque cookie, fresh PII/admin checks, singleton wizard, authorized roles | Schema CLI official, session/revocation dan bootstrap race lokal; OAuth callback dan CPU cloud tetap gate |
