@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
 import { handleIntegrationRequest, requireAdmin, getCustomer, verifyTurnstile, verifyPaymentWebhook, createPayment, lookupPayment, type IntegrationEnv } from '../src/integrations';
@@ -18,7 +18,7 @@ async function identity(id: string, verified = true) {
   return `__Secure-better-auth.session_token=${encodeURIComponent(`${token}.${createHmac('sha256',secret).update(token).digest('base64')}`)}`;
 }
 beforeEach(async () => {
-  mf = new Miniflare({modules:true, script:'export default {fetch(){return new Response("ok")}}', compatibilityDate:'2026-08-06', d1Databases:{DB:'integrations'}});
+  mf = new Miniflare(convertV4MiniflareOptions({modules:true, script:'export default {fetch(){return new Response("ok")}}', compatibilityDate:'2026-08-06', d1Databases:{DB:'integrations'}}));
   const DB = await mf.getD1Database('DB');
   // D1 exec doesn't support embedded newlines in individual statements.
   await DB.exec(readFileSync(new URL('../migrations/0002_integrations.sql',import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
@@ -46,7 +46,7 @@ describe('public authentication and installation', () => {
     await env.DB.prepare('DELETE FROM admin_roles WHERE user_id=?').bind('cached').run();
     await expect(requireAdmin(request('/admin',undefined,cookies),env)).rejects.toMatchObject({status:403});
     await env.DB.prepare('DELETE FROM session WHERE user_id=?').bind('cached').run();
-    expect(await getCustomer(request('/customer',undefined,cookies),env)).toEqual({id:'cached'});
+    expect(await getCustomer(request('/customer',undefined,cookies),env)).toBeNull();
     await expect(requireAdmin(request('/admin',undefined,cookies),env)).rejects.toMatchObject({status:401});
   });
   it('only bootstraps one verified Google identity under concurrency and never reopens', async () => {
@@ -94,7 +94,8 @@ describe('provider boundaries', () => {
   });
   it('validates raw signatures, stable identity, and ignores Checkout FAILED/unknown statuses', async () => {
     expect(await verifyPaymentWebhook(await notification('SUCCESS'),env)).toEqual({eventKey:'doku:MCH-test:documented-notification-id',reference:'ref1',amount:10000,currency:'IDR',status:'succeeded'});
-    for (const status of ['FAILED','EXPIRED','AUTHORIZED','paid']) await expect(verifyPaymentWebhook(await notification(status),env)).rejects.toMatchObject({status:422});
+    expect((await verifyPaymentWebhook(await notification('FAILED'),env)).status).toBe('ignored');
+    for (const status of ['EXPIRED','AUTHORIZED','paid']) await expect(verifyPaymentWebhook(await notification(status),env)).rejects.toMatchObject({status:422});
     await expect(verifyPaymentWebhook(await notification('SUCCESS','different'),env)).rejects.toMatchObject({status:422});
     const valid = await notification('SUCCESS');
     const tampered = new Request(valid,{body:(await valid.text()).replace('10000','20000')});
@@ -102,6 +103,24 @@ describe('provider boundaries', () => {
     const bom = await notification('SUCCESS');
     const bomRaw = await bom.text();
     await expect(verifyPaymentWebhook(new Request(bom,{body:`\uFEFF${bomRaw}`}),env)).rejects.toMatchObject({status:401});
+    vi.stubGlobal('fetch',vi.fn(async()=>Response.json({order:{invoice_number:'ref1',amount:10000},transaction:{status:'EXPIRED'}})));
+    expect(await lookupPayment('ref1',env)).toEqual({status:'unknown'});
+  });
+  it('reconciles only authoritative matching sale and signs GET without Digest', async () => {
+    const {createHmac} = await import('node:crypto');
+    vi.stubGlobal('fetch',vi.fn(async (url:unknown, init:any) => {
+      expect(url).toBe('https://api-sandbox.doku.com/orders/v1/status/ref1');
+      const h = init.headers;
+      const text = `Client-Id:MCH-test\nRequest-Id:${h['Request-Id']}\nRequest-Timestamp:${h['Request-Timestamp']}\nRequest-Target:/orders/v1/status/ref1`;
+      expect(h.Signature).toBe(`HMACSHA256=${createHmac('sha256',secret).update(text).digest('base64')}`);
+      return Response.json({order:{invoice_number:'ref1',amount:'10000'},transaction:{status:'SUCCESS',type:'SALE'}});
+    }));
+    expect(await lookupPayment('ref1',env)).toEqual({status:'succeeded',amount:10000,currency:'IDR'});
+    for (const status of ['FAILED','PENDING']) {
+      vi.stubGlobal('fetch',vi.fn(async()=>Response.json({order:{invoice_number:'ref1',amount:10000},transaction:{status}})));
+      expect(await lookupPayment('ref1',env)).toEqual({status:'pending'});
+    }
+    vi.stubGlobal('fetch',vi.fn(async()=>Response.json({order:{invoice_number:'other',amount:10000},transaction:{status:'SUCCESS'}})));
     expect(await lookupPayment('ref1',env)).toEqual({status:'unknown'});
   });
   it('fails closed for invalid, wrong-host, wrong-action and network Turnstile results', async () => {

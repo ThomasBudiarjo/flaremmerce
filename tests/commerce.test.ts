@@ -1,12 +1,12 @@
-import { applyD1Migrations, env, fetchMock } from 'cloudflare:test';
+import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import migration from '../migrations/0001_commerce.sql?raw';
 import worker, { type Env } from '../src/worker';
 
-const provider = vi.hoisted(() => ({ failCreate: false, beforeResponse: null as null | ((input: { reference: string }) => Promise<void>) }));
+const provider = vi.hoisted(() => ({ failCreate: false, lookup: {status:'unknown'} as Record<string, unknown>, beforeResponse: null as null | ((input: { reference: string }) => Promise<void>) }));
 
 // Commerce contract fixture: replace only integration boundary, never D1 or commerce logic.
-// Provider calls traverse workerd fetch + fetchMock; integration verification has its own suite.
+// Provider calls traverse native fetch with Vitest's supported workerd outbound mock.
 vi.mock('../src/integrations/index', () => ({
   handleIntegrationRequest: async () => null,
   getCustomer: async (request: Request) => request.headers.get('X-Test-Customer') ? { id: request.headers.get('X-Test-Customer') } : null,
@@ -31,7 +31,7 @@ vi.mock('../src/integrations/index', () => ({
   lookupPayment: async (reference: string) => (await fetch(`https://boundary.test/lookup/${reference}`)).json(),
 }));
 
-const e = { ...env, PUBLIC_ORIGIN: 'https://shop.test', ASSETS: { fetch: async () => new Response('asset') } } as unknown as Env;
+const e = { ...env, PUBLIC_ORIGIN: 'https://shop.test', RAJAONGKIR_ORIGIN:'1', ASSETS: { fetch: async () => new Response('asset') } } as unknown as Env;
 const db = () => e.DB;
 const sql = (query: string, ...values: (string | number | null)[]) => db().prepare(query).bind(...values);
 const count = async (table: string) => (await sql(`SELECT count(*) AS n FROM ${table}`).first<{ n: number }>())!.n;
@@ -43,6 +43,13 @@ function payload(key = 'checkout-key', items = [{ variantId: 'a', quantity: 1 }]
   return { items, shippingQuoteId: items.length > 1 ? 'q2' : 'q1', expectedTotal: items.reduce((total, item) => total + item.quantity * 1000, 100), contact: { name: 'Customer', email: 'guest@example.com', phone: '0812345' }, address: { line: 'Street 1', city: 'Jakarta', postalCode: '12345', destination: '42' }, idempotencyKey: key, turnstileToken: 'fresh-token' };
 }
 async function place(key = 'checkout-key', scope = 1, items?: { variantId: string; quantity: number }[]) {
+  if (items) {
+    const quoteId = items.length > 1 ? 'q2' : 'q1';
+    const pairs = [...items].sort((a,b)=>a.variantId.localeCompare(b.variantId)).map(i=>[i.variantId,i.quantity]);
+    const weight = items.reduce((sum,i)=>sum+i.quantity*100,0);
+    const bytes = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify({origin:'1',destination:'42',weight,items:pairs})));
+    await sql('UPDATE shipping_quotes SET fingerprint=? WHERE id=?',btoa(String.fromCharCode(...new Uint8Array(bytes))),quoteId).run();
+  }
   return request('/api/checkout', payload(key, items), { Cookie: cookie(scope) });
 }
 async function notify(reference: string, status = 'succeeded', eventKey = 'event-1', amount = 1100, currency = 'IDR') {
@@ -67,18 +74,30 @@ beforeAll(async () => {
   await sql('CREATE TABLE IF NOT EXISTS shipping_quotes(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,destination TEXT NOT NULL,service TEXT NOT NULL,amount INTEGER NOT NULL,weight INTEGER NOT NULL,expires_at INTEGER NOT NULL,details_json TEXT NOT NULL)').run();
 });
 beforeEach(async () => {
-  provider.failCreate = false; provider.beforeResponse = null;
-  fetchMock.activate(); fetchMock.disableNetConnect();
-  fetchMock.get('https://boundary.test').intercept({ path: '/turnstile', method: 'POST' }).reply(({ body }) => ({ statusCode: body === 'invalid' ? 400 : 200, data: '{}' })).persist();
-  fetchMock.get('https://boundary.test').intercept({ path: '/create', method: 'POST' }).reply(({ body }) => ({ statusCode: provider.failCreate ? 504 : 200, data: JSON.stringify({ url: 'https://pay.test/checkout', providerId: JSON.parse(String(body)).reference }) })).persist();
+  provider.failCreate = false; provider.beforeResponse = null; provider.lookup = {status:'unknown'};
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const req = new Request(input, init), url = new URL(req.url);
+    if (url.origin !== 'https://boundary.test') throw new Error('Unexpected outbound request');
+    if (url.pathname === '/turnstile') return new Response('{}', {status:await req.text() === 'invalid' ? 400 : 200});
+    if (url.pathname === '/create') return Response.json({url:'https://pay.test/checkout',providerId:(await req.json() as any).reference}, {status:provider.failCreate ? 504 : 200});
+    if (url.pathname.startsWith('/lookup/')) return Response.json(provider.lookup);
+    throw new Error('Unexpected provider route');
+  });
+  // Vitest 4 no longer rolls storage back between tests. Reset only the test database.
+  for (const table of ['audit_logs','outbox_events','order_events','manual_review','payment_events','payment_attempts','inventory_movements','stock_reservations','order_items','checkout_requests','orders','preorder_campaigns','inventory','product_variants','products','shipping_quotes']) await sql(`DELETE FROM ${table}`).run();
+  for (const path of ['/api/catalog','/api/catalog/product','/api/catalog/new-product','/api/catalog/preorder','/api/catalog?limit=1','/api/catalog?after=product&limit=1','/api/catalog?limit=1&after=product']) await caches.default.delete(new Request(`https://shop.test${path}`));
   await db().batch([
     sql("INSERT INTO products(id,slug,name) VALUES('p','product','Product')"),
     sql("INSERT INTO product_variants(id,product_id,sku,name,price,weight) VALUES('a','p','SKU-A','A',1000,100),('b','p','SKU-B','B',1000,100)"),
     sql("INSERT INTO inventory(variant_id,on_hand) VALUES('a',1),('b',0)"),
     sql("INSERT INTO shipping_quotes VALUES('q1','fingerprint','42','REG',100,100,?,'{}'),('q2','fingerprint','42','REG',100,200,?,'{}')", Date.now() + 300000, Date.now() + 300000),
   ]);
+  for (const [id,weight,items] of [['q1',100,[['a',1]]],['q2',200,[['a',1],['b',1]]]] as const) {
+    const bytes = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify({origin:'1',destination:'42',weight,items})));
+    await sql('UPDATE shipping_quotes SET fingerprint=? WHERE id=?',btoa(String.fromCharCode(...new Uint8Array(bytes))),id).run();
+  }
 });
-afterEach(() => { fetchMock.deactivate(); });
+afterEach(() => { vi.restoreAllMocks(); });
 
 describe('commerce public API with real D1', () => {
   it('returns authoritative public catalog and keeps personal order data private', async () => {
@@ -144,6 +163,9 @@ describe('commerce public API with real D1', () => {
 
   it('duplicate success and older expiry consume inventory and create outbox exactly once', async () => {
     const { order } = await (await place()).json() as any;
+    await notify(order.reference, 'ignored', 'method-failed');
+    expect(await sql('SELECT status FROM orders WHERE id=?', order.id).first()).toEqual({status:'pending_payment'});
+    expect(await sql("SELECT reserved FROM inventory WHERE variant_id='a'").first()).toEqual({reserved:1});
     const replies = await Promise.all([notify(order.reference), notify(order.reference)]);
     expect(replies.every(r => r.status === 200)).toBe(true);
     await notify(order.reference, 'expired', 'older-expiry');
@@ -151,6 +173,9 @@ describe('commerce public API with real D1', () => {
     expect(await sql('SELECT status FROM payment_attempts WHERE order_id=?', order.id).first()).toEqual({ status: 'succeeded' });
     expect(await sql("SELECT on_hand,reserved FROM inventory WHERE variant_id='a'").first()).toEqual({ on_hand: 0, reserved: 0 });
     expect(await count('outbox_events')).toBe(1); expect(await count('inventory_movements')).toBe(1);
+    await notify(order.reference, 'succeeded', 'another-confirmation');
+    expect(await sql('SELECT reason FROM manual_review').first()).toEqual({reason:'additional_payment_confirmation'});
+    expect(await count('inventory_movements')).toBe(1);
     await worker.scheduled({} as ScheduledController, e);
     await worker.scheduled({} as ScheduledController, e);
     expect(await sql('SELECT status FROM outbox_events').first()).toEqual({ status: 'done' });
@@ -218,7 +243,7 @@ describe('commerce public API with real D1', () => {
   it('pending lookup does not release from clock; authoritative expiry can release and exhaustion is durable review', async () => {
     const { order } = await (await place()).json() as any;
     await sql('UPDATE payment_attempts SET next_check=0').run();
-    fetchMock.get('https://boundary.test').intercept({ path: `/lookup/${order.reference}` }).reply(200, { status: 'unknown' });
+    provider.lookup = {status:'unknown'};
     await worker.scheduled({} as ScheduledController, e);
     expect(await sql("SELECT reserved FROM inventory WHERE variant_id='a'").first()).toEqual({ reserved: 1 });
     await sql('UPDATE payment_attempts SET checks=8,next_check=0').run();
@@ -226,7 +251,7 @@ describe('commerce public API with real D1', () => {
     expect(await sql('SELECT reason FROM manual_review').first()).toEqual({ reason: 'reconciliation_exhausted' });
     // Operators may reconcile again only through an authoritative provider result, never a blind create.
     await sql('UPDATE payment_attempts SET checks=0,next_check=0').run();
-    fetchMock.get('https://boundary.test').intercept({ path: `/lookup/${order.reference}` }).reply(200, { status: 'expired', amount: 1100, currency: 'IDR' });
+    provider.lookup = {status:'expired',amount:1100,currency:'IDR'};
     await worker.scheduled({} as ScheduledController, e);
     expect(await sql('SELECT status FROM orders WHERE id=?', order.id).first()).toEqual({ status: 'cancelled' });
     expect(await sql("SELECT reserved FROM inventory WHERE variant_id='a'").first()).toEqual({ reserved: 0 });
@@ -314,10 +339,19 @@ describe('commerce public API with real D1', () => {
     const route = `/api/admin/orders/${order.id}/fulfillment`, headers = { 'X-Test-Admin': 'admin' };
     expect((await request(route, { status: 'processing' }, headers, 'PATCH')).status).toBe(409);
     await notify(order.reference);
+    expect((await request(`/api/admin/orders/${order.id}/timeline`,{kind:'production',note:'Production started',estimatedDate:'2026-11-06'},headers)).status).toBe(200);
     expect((await request(route, { status: 'shipped', tracking: 'TRACK' }, headers, 'PATCH')).status).toBe(409);
     for (const status of ['processing', 'shipped', 'delivered']) expect((await request(route, { status, tracking: 'TRACK' }, headers, 'PATCH')).status).toBe(200);
     expect(await sql('SELECT status,fulfillment FROM orders WHERE id=?', order.id).first()).toEqual({ status: 'completed', fulfillment: 'delivered' });
-    expect(await count('audit_logs')).toBe(3);
+    expect(await count('audit_logs')).toBe(4);
     expect((await request('/api/admin/orders', undefined, headers)).headers.get('cache-control')).toBe('private, no-store');
+    expect((await request('/api/admin/products/p',{active:false},headers,'PATCH')).status).toBe(200);
+    expect((await request('/api/admin/variants/a',{price:9000},headers,'PATCH')).status).toBe(200);
+    const fresh = await (await request('/api/admin/products',undefined,headers)).json() as any;
+    expect(fresh.products[0].active).toBe(false);
+    expect((await request('/api/catalog/product')).status).toBe(404);
+    const history = await (await request(`/api/orders/${order.reference}`,undefined,{'X-Order-Token':order.guestToken})).json() as any;
+    expect(history.order.items[0].price).toBe(1000);
+    expect(history.order.timeline.find((e:any)=>e.kind==='production').details).toEqual({note:'Production started',estimatedDate:'2026-11-06'});
   });
 });

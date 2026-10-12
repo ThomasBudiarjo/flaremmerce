@@ -12,6 +12,7 @@ export interface IntegrationEnv {
   GOOGLE_CLIENT_SECRET?: string;
   BETTER_AUTH_SECRET?: string;
   BOOTSTRAP_SECRET?: string;
+  TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
   TURNSTILE_ACTION?: string;
   DOKU_CLIENT_ID?: string;

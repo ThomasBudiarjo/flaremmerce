@@ -1,19 +1,24 @@
 import { lookupPayment, verifyPaymentWebhook } from '../integrations/index';
 import { type CommerceEnv, id, json, statement as s } from './types';
 
-type VerifiedEvent = { eventKey: string; reference: string; amount: number; currency: string; status: 'succeeded' | 'failed' | 'expired' };
+type VerifiedEvent = { eventKey: string; reference: string; amount: number; currency: string; status: 'succeeded' | 'failed' | 'expired' | 'ignored' };
 
 export async function applyPayment(env: CommerceEnv, event: VerifiedEvent) {
   const { eventKey: key, reference, amount, currency, status } = event;
   const now = Date.now();
+  if (status === 'ignored') {
+    // Authenticated Checkout FAILED is durable/acknowledged, never terminal failure.
+    await s(env, 'INSERT OR IGNORE INTO payment_events(event_key,reference,amount,currency,status,processed,created_at) VALUES(?,?,?,?,?,1,?)', key, reference, amount, currency, status, now).run();
+    return;
+  }
   // All decisions are inside the serialized D1 batch. Success racing with cancellation is either
   // consumed+paid, or late-payment review; it can never consume released reservations.
   await env.DB.batch([
     s(env, 'INSERT OR IGNORE INTO payment_events(event_key,reference,amount,currency,status,created_at) VALUES(?,?,?,?,?,?)', key, reference, amount, currency, status, now),
     s(env, `INSERT OR IGNORE INTO manual_review(id,event_key,order_id,reason,created_at)
-      SELECT ?,e.event_key,o.id,CASE WHEN o.id IS NULL THEN 'unknown_reference' WHEN o.total<>e.amount OR o.currency<>e.currency THEN 'payment_mismatch' ELSE 'late_payment' END,?
+      SELECT ?,e.event_key,o.id,CASE WHEN o.id IS NULL THEN 'unknown_reference' WHEN o.total<>e.amount OR o.currency<>e.currency THEN 'payment_mismatch' WHEN o.status IN ('paid','completed') THEN 'additional_payment_confirmation' ELSE 'late_payment' END,?
       FROM payment_events e LEFT JOIN payment_attempts a ON a.reference=e.reference LEFT JOIN orders o ON o.id=a.order_id
-      WHERE e.event_key=? AND e.processed=0 AND (o.id IS NULL OR o.total<>e.amount OR o.currency<>e.currency OR (e.status='succeeded' AND o.status='cancelled'))`, id(), now, key),
+      WHERE e.event_key=? AND e.processed=0 AND (o.id IS NULL OR o.total<>e.amount OR o.currency<>e.currency OR (e.status='succeeded' AND o.status IN ('cancelled','paid','completed')))`, id(), now, key),
     s(env, `UPDATE orders SET status=CASE WHEN ?='succeeded' THEN 'paid' ELSE 'cancelled' END
       WHERE status='pending_payment' AND id IN (SELECT a.order_id FROM payment_attempts a JOIN payment_events e ON e.reference=a.reference WHERE e.event_key=? AND e.processed=0 AND e.amount=orders.total AND e.currency=orders.currency AND NOT EXISTS(SELECT 1 FROM manual_review r WHERE r.event_key=e.event_key))`, status, key),
     s(env, `UPDATE payment_attempts SET status=? WHERE status<>'succeeded' AND reference IN (SELECT e.reference FROM payment_events e JOIN orders o ON o.reference=e.reference WHERE e.event_key=? AND e.processed=0 AND e.amount=o.total AND e.currency=o.currency AND NOT EXISTS(SELECT 1 FROM manual_review r WHERE r.event_key=e.event_key))`, status, key),

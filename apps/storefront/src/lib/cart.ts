@@ -32,6 +32,16 @@ export async function api(path: string, body?: unknown, headers?: HeadersInit) {
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
   const data = await response.json().catch(() => ({}));
+  // Scope is established before Siteverify is consumed; retry the exact key/body once.
+  if (path === "/api/checkout" && response.status === 428 && data.error === "checkout_scope_required") {
+    const retry = await fetch(path, {
+      method: "POST", credentials: "same-origin", cache: "no-store",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const result = await retry.json().catch(() => ({}));
+    if (!retry.ok) throw new Error(typeof result.error === "string" ? result.error : "Checkout gagal.");
+    return result;
+  }
   if (!response.ok)
     throw new Error(
       data.error?.message ||

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { createPayment, getCustomer, verifyTurnstile } from '../integrations/index';
+import { digest } from '../integrations/security';
 import { type CommerceEnv, hash, HttpError, id, json, statement as s } from './types';
 
 export const checkoutInput = z.object({
@@ -12,7 +13,7 @@ export const checkoutInput = z.object({
 type OrderRow = { id: string; reference: string; status: string; total: number; customer_id: string | null };
 type AttemptRow = { status: string; url: string | null };
 type VariantRow = { id: string; sku: string; name: string; product_name: string; price: number; weight: number; mode: string; campaign_id: string | null; ship_from: string | null; ship_to: string | null };
-type QuoteRow = { id: string; destination: string; weight: number; amount: number; service: string; expires_at: number; details_json: string };
+type QuoteRow = { id: string; fingerprint: string; destination: string; weight: number; amount: number; service: string; expires_at: number; details_json: string };
 
 async function retry(env: CommerceEnv, scope: string, key: string, fingerprint: string, guestSecret: string | null) {
   const record = await s(env, 'SELECT fingerprint, order_id FROM checkout_requests WHERE scope=? AND key=?', scope, key).first<{ fingerprint: string; order_id: string }>();
@@ -62,6 +63,8 @@ export async function checkout(request: Request, env: CommerceEnv, body: unknown
   }
   const quote = await s(env, 'SELECT * FROM shipping_quotes WHERE id=?', input.shippingQuoteId).first<QuoteRow>();
   if (!quote || quote.expires_at <= now || quote.destination !== input.address.destination || quote.weight !== weight || !Number.isSafeInteger(quote.amount) || quote.amount < 0) throw new HttpError(409, 'Shipping quote expired or does not match cart and destination');
+  const quoteFingerprint = await digest(JSON.stringify({origin:env.RAJAONGKIR_ORIGIN,destination:input.address.destination,weight,items:input.items.map(i => [i.variantId,i.quantity])}));
+  if (quote.fingerprint !== quoteFingerprint) throw new HttpError(409, 'Cart or shipping origin changed; request a fresh quote');
   const total = subtotal + quote.amount;
   if (!Number.isSafeInteger(total) || total > 1_000_000_000 || !Number.isSafeInteger(weight)) throw new HttpError(400, 'Cart exceeds limits');
   if (total !== input.expectedTotal) throw new HttpError(409, 'Total changed; confirm authoritative total', { total });
@@ -89,7 +92,7 @@ export async function checkout(request: Request, env: CommerceEnv, body: unknown
   }
   // Only the winning insert calls provider. Retries never issue another create after ambiguous timeout.
   try {
-    const payment = await createPayment({ reference, amount: total, returnUrl: `${env.PUBLIC_ORIGIN}/orders/${encodeURIComponent(reference)}` }, env);
+    const payment = await createPayment({ reference, amount: total, returnUrl: `${env.PUBLIC_ORIGIN}/order?reference=${encodeURIComponent(reference)}` }, env);
     await s(env, `UPDATE payment_attempts SET url=?,provider_id=?,status=CASE WHEN status IN ('created','unknown') THEN 'pending' ELSE status END WHERE id=?`, payment.url, payment.providerId ?? null, attemptId).run();
   } catch {
     await s(env, "UPDATE payment_attempts SET status='unknown' WHERE id=? AND status='created'", attemptId).run();

@@ -35,10 +35,21 @@ export default function Checkout() {
   const locked = useRef(false);
   const fingerprint = useRef("");
   useEffect(() => {
-    setItems(readCart());
-    Promise.all([api("/api/catalog"), api("/api/config")])
+    const cart = readCart();
+    setItems(cart);
+    const loadProducts = async () => {
+      const products: Product[] = [];
+      let cursor: string | null = null;
+      do {
+        const page = await api(`/api/catalog?limit=90${cursor ? `&after=${encodeURIComponent(cursor)}` : ''}`);
+        products.push(...page.products);
+        cursor = page.nextCursor;
+      } while (cursor && cart.some(item => !products.some(p => p.variants.some(v => v.id === item.variantId))));
+      return products;
+    };
+    Promise.all([loadProducts(), api("/api/config")])
       .then(([c, f]) => {
-        setProducts(c.products);
+        setProducts(c);
         setConfig(f);
       })
       .catch((e) => setError(e.message))

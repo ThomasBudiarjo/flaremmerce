@@ -1,8 +1,8 @@
 import type { IntegrationEnv } from './index';
 import { body, demand, digest, encode, base64, equal } from './security';
 
-async function signature(raw: string, client: string, id: string, timestamp: string, path: string, secret: string) {
-  const data = `Client-Id:${client}\nRequest-Id:${id}\nRequest-Timestamp:${timestamp}\nRequest-Target:${path}\nDigest:${await digest(raw)}`;
+async function signature(raw: string | null, client: string, id: string, timestamp: string, path: string, secret: string) {
+  const data = `Client-Id:${client}\nRequest-Id:${id}\nRequest-Timestamp:${timestamp}\nRequest-Target:${path}${raw === null ? '' : `\nDigest:${await digest(raw)}`}`;
   const key = await crypto.subtle.importKey('raw', encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
   return `HMACSHA256=${base64(await crypto.subtle.sign('HMAC', key, encode(data)))}`;
 }
@@ -28,7 +28,7 @@ export async function createPayment(input: {reference:string; amount:number; ret
   demand(url.protocol === 'https:', 502, 'Invalid payment URL');
   return {url:url.href, ...(typeof result.response.uuid === 'string' ? {providerId:result.response.uuid}: {})};
 }
-export async function verifyPaymentWebhook(request: Request, env: IntegrationEnv): Promise<{eventKey:string; reference:string; amount:number; currency:string; status:'succeeded'|'failed'|'expired'}> {
+export async function verifyPaymentWebhook(request: Request, env: IntegrationEnv): Promise<{eventKey:string; reference:string; amount:number; currency:string; status:'succeeded'|'ignored'}> {
   const {client,secret} = credentials(env);
   demand(request.method === 'POST', 405, 'Method not allowed');
   const id = request.headers.get('Request-Id'), timestamp = request.headers.get('Request-Timestamp'), supplied = request.headers.get('Signature');
@@ -46,11 +46,24 @@ export async function verifyPaymentWebhook(request: Request, env: IntegrationEnv
   demand(!event.transaction?.type || event.transaction.type === 'SALE', 422, 'Unsupported payment event');
   const status = event.transaction?.status;
   // DOKU explicitly says Checkout merchants must ignore FAILED: another method can succeed.
-  demand(status === 'SUCCESS', 422, 'Unsupported payment status');
+  demand(status === 'SUCCESS' || status === 'FAILED', 422, 'Unsupported payment status');
   if (event.transaction.original_request_id) demand(event.transaction.original_request_id === reference, 422, 'Payment identity mismatch');
-  return {eventKey:`doku:${client}:${id}`, reference, amount, currency:'IDR', status:'succeeded'};
+  return {eventKey:`doku:${client}:${id}`, reference, amount, currency:'IDR', status:status === 'SUCCESS' ? 'succeeded' : 'ignored'};
 }
-export async function lookupPayment(_reference: string, _env: IntegrationEnv): Promise<{status:'pending'|'succeeded'|'failed'|'expired'|'unknown'; amount?:number; currency?:string}> {
-  // No verified product-specific lookup contract: NEVER infer expiry from local time.
+export async function lookupPayment(reference: string, env: IntegrationEnv): Promise<{status:'pending'|'succeeded'|'failed'|'expired'|'unknown'; amount?:number; currency?:string}> {
+  const {client,secret} = credentials(env);
+  demand(/^[A-Za-z0-9-]{1,30}$/.test(reference));
+  const path = `/orders/v1/status/${reference}`, id = crypto.randomUUID(), timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const response = await fetch(`${env.DOKU_MODE === 'production' ? 'https://api.doku.com' : 'https://api-sandbox.doku.com'}${path}`, {
+    headers:{'Client-Id':client,'Request-Id':id,'Request-Timestamp':timestamp,Signature:await signature(null,client,id,timestamp,path,secret)}, signal:AbortSignal.timeout(10000),
+  });
+  if (!response.ok) return {status:'unknown'};
+  const result: any = await response.json();
+  const amount = Number(result.order?.amount);
+  if (result.order?.invoice_number !== reference || !Number.isSafeInteger(amount) || amount <= 0 || (result.order.currency && result.order.currency !== 'IDR') || (result.transaction?.type && result.transaction.type !== 'SALE')) return {status:'unknown'};
+  if (result.transaction?.status === 'SUCCESS') return {status:'succeeded',amount,currency:'IDR'};
+  if (['PENDING','FAILED','TIMEOUT','REDIRECT'].includes(result.transaction?.status)) return {status:'pending'};
+  // Channel EXPIRED does not establish the entire Checkout session is unpayable.
+  // Keep reservations until Checkout-wide expiry/grace is verified with this merchant.
   return {status:'unknown'};
 }

@@ -18,8 +18,9 @@ export function auth(env: IntegrationEnv) {
   });
 }
 export async function getCustomer(request: Request, env: IntegrationEnv): Promise<{id:string}|null> {
-  if (!request.headers.get('Cookie')) return null;
-  const session = await auth(env).api.getSession({headers:request.headers});
+  if (!/(?:^|;\s*)(?:__Secure-)?better-auth\.session_token=/.test(request.headers.get('Cookie') ?? '')) return null;
+  // Commerce uses this identity for checkout and private order/PII authorization.
+  const session = await auth(env).api.getSession({headers:request.headers, query:{disableCookieCache:true}});
   return session ? {id:session.user.id} : null;
 }
 async function fresh(request: Request, env: IntegrationEnv) {

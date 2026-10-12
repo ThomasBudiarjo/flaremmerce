@@ -1,39 +1,20 @@
 # Storefront integration
 
-Astro 5 + Cloudflare adapter 12, React islands. Build with `npm run check` and
-`npm run build`. The generated Worker is `dist/_worker.js/index.js`; public
-assets and prerendered landing, policies, cart, and order shells are in `dist/`.
+Astro 7 + Cloudflare adapter 14, React islands. Build from the repository root with `npm run check` and
+`npm run build`. The generated Worker is `dist/server/entry.mjs`; public
+assets and prerendered landing, policies, cart, and order shells are in `dist/client/`.
 Catalogue and product detail pages are server-rendered, never client-only.
 
 ## Parent Worker composition
 
-SSR needs the same catalogue API as browser requests without recursive HTTP
-requests to the storefront. Pass an in-process binding into Astro's environment:
-
-```ts
-return astroWorker.fetch(
-  request,
-  {
-    ...env,
-    CATALOG_API: {
-      fetch: (catalogRequest: Request) => businessApi(catalogRequest, env, ctx),
-    },
-  },
-  ctx,
-);
-```
-
-`businessApi` above means the parent's actual API handler (not a new service).
-The catalogue request is GET `https://catalog.internal/api/catalog` or
-`/api/catalog/:slug`, has no cookie/session, and expects the documented response.
-If the handler validates host, replace the internal hostname in `src/lib/catalog.ts`
-or rewrite the request in this binding. Alternatively inject `locals.catalog(path)`
-returning a Response, bind a distinct API service as `CATALOG_API`, or set
-`API_ORIGIN` to a distinct API origin. Do not set it to the SSR origin.
+`src/entry.ts` delegates SSR to `@astrojs/cloudflare/handler`. Storefront middleware imports
+`env` from `cloudflare:workers` and supplies `locals.catalog(path)` by directly calling the
+business Worker API. It forwards no user cookies to public catalogue reads. No CATALOG_API
+service binding, second deployment or recursive same-origin HTTP request is necessary.
 
 Public SSR responses declare a 60-second shared TTL. The parent owns explicit
 Workers Cache API lookup/storage; this header alone does not implement caching.
-No Astro session API is used; the unused memory driver prevents implicit KV
+No Astro session API is used; `session:false` prevents implicit KV
 requirements. Better Auth owns sessions through HttpOnly cookies and D1.
 
 Browser calls all APIs same-origin. `/api/config` must provide the public
@@ -51,5 +32,6 @@ outcome is ambiguous, the UI does not declare payment success or manufacture a
 provider payment URL. Cross-tab/reload checkout recovery is not promised.
 
 The admin sibling builds static assets under `/admin/`; parent routing must serve
-its `dist/index.html` at `/admin/` and its hashed assets at `/admin/assets/*`.
+its index asset at `/admin/` and its hashed assets at `/admin/assets/*` (not a generated
+request to `/admin/index.html`, which Cloudflare redirects back to `/admin/`).
 No auth secret is compiled into either bundle.

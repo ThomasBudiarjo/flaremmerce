@@ -35,22 +35,9 @@ export const date = (value: string | number) =>
     dateStyle: "medium",
     timeZone: "Asia/Jakarta",
   }).format(new Date(value));
-// Composition contract: parent Worker supplies locals.catalog(path), calling its API
-// handler directly. Alternatively bind CATALOG_API or set API_ORIGIN to a distinct API service.
-// Never fetch the current SSR origin recursively and never query guessed SQL columns.
+// Middleware supplies the in-process API; no recursive same-origin network requests.
 export async function catalog(locals: any, path = "/api/catalog") {
-  let response: Response;
-  if (locals.catalog) response = await locals.catalog(path);
-  else {
-    const env = locals.runtime?.env;
-    if (env?.CATALOG_API)
-      response = await env.CATALOG_API.fetch(
-        new Request("https://catalog.internal" + path),
-      );
-    else if (env?.API_ORIGIN)
-      response = await fetch(new URL(path, env.API_ORIGIN));
-    else throw new Error("Katalog belum terhubung.");
-  }
+  const response: Response = await locals.catalog(path);
   if (response.status === 404 && path !== "/api/catalog")
     return { product: undefined };
   if (!response.ok) throw new Error("Katalog sementara tidak tersedia.");

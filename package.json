@@ -1,0 +1,34 @@
+{
+  "name": "flaremmerce",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/storefront", "apps/admin"],
+  "scripts": {
+    "dev": "wrangler dev --config apps/storefront/dist/server/wrangler.json --persist-to .wrangler/state --ip 0.0.0.0 --port 8787",
+    "build": "npm run build -w @flaremmerce/storefront && npm run build -w @flaremmerce/admin && node scripts/assets.mjs",
+    "check": "tsc --noEmit && npm run check -w @flaremmerce/storefront && tsc --noEmit -p apps/admin/tsconfig.json",
+    "test": "vitest run --config vitest.config.ts && vitest run --config vitest.integrations.config.ts",
+    "db:migrate": "wrangler d1 migrations apply DB --local",
+    "db:seed": "wrangler d1 execute DB --local --file fixtures/catalog.sql",
+    "deploy:check": "wrangler deploy --config apps/storefront/dist/server/wrangler.json --dry-run"
+  },
+  "dependencies": {
+    "better-auth": "1.7.7",
+    "@better-auth/drizzle-adapter": "1.7.7",
+    "drizzle-orm": "0.45.4",
+    "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.23.0",
+    "@cloudflare/workers-types": "5.20261012.1",
+    "@types/node": "^24.0.0",
+    "miniflare": "5.20261006.1-alpha",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "wrangler": "4.149.0"
+  },
+  "overrides": {
+    "wrangler": "$wrangler",
+    "miniflare": "$miniflare"
+  }
+}

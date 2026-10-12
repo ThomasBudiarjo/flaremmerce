@@ -1,10 +1,11 @@
 import { handleIntegrationRequest } from './integrations/index';
-import type { IntegrationEnv } from './integrations/types';
+import type { IntegrationEnv } from './integrations/index';
 import { commerceRequest } from './commerce/index';
 import { consumeOutbox, reconcile, recoverOutbox } from './commerce/payments';
 import { HttpError, json } from './commerce/types';
+import { storageRequest, receiveEmail, type StorageEnv } from './storage';
 
-export interface Env extends IntegrationEnv {
+export interface Env extends IntegrationEnv, StorageEnv {
   DB: D1Database;
   ASSETS: Fetcher;
   JOBS?: Queue;
@@ -15,6 +16,10 @@ export default {
   async fetch(request: Request, env: Env, context?: ExecutionContext): Promise<Response> {
     try {
       const url = new URL(request.url);
+      if (request.method === 'GET' && url.pathname === '/api/config') return json({
+        turnstileSiteKey: env.TURNSTILE_SITE_KEY ?? null,
+        googleEnabled: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.BETTER_AUTH_SECRET),
+      });
       // Explicit public allowlist. No session, cookie, token or PII enters these cache values.
       // Preserve supported pagination; discard tracking/unsupported query parameters.
       if (request.method === 'GET' && (url.pathname === '/api/catalog' || /^\/api\/catalog\/[a-z0-9-]{1,100}$/.test(url.pathname))) {
@@ -37,6 +42,8 @@ export default {
       // Integrations dispatch only their routes; public catalog never performs an auth read.
       const integration = await handleIntegrationRequest(request, env);
       if (integration) return integration;
+      const storage = await storageRequest(request, env);
+      if (storage) return storage;
       const commerce = await commerceRequest(request, env);
       if (commerce) return commerce;
       return env.ASSETS.fetch(request);
@@ -52,6 +59,9 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     await reconcile(env);
     await recoverOutbox(env);
+  },
+  async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
+    await receiveEmail(message, env);
   },
   async queue(batch: MessageBatch<{ outboxId: string }>, env: Env): Promise<void> {
     // Even a misconfigured large queue batch must stay within the Free subrequest budget.

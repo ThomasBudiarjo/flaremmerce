@@ -1,4 +1,4 @@
-import type { IntegrationEnv } from '../integrations/types';
+import type { IntegrationEnv } from '../integrations/index';
 
 export interface CommerceEnv extends IntegrationEnv {
   DB: D1Database;

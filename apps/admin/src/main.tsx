@@ -51,13 +51,14 @@ function App() {
   const [initialized, setInitialized] = useState<boolean>();
   const [orders, setOrders] = useState<any[]>([]);
   const [review, setReview] = useState<any[]>([]);
+  const [catalogue, setCatalogue] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [googleEnabled, setGoogleEnabled] = useState(false);
   const [variants, setVariants] = useState([
-    { sku: "", name: "Default", price: "", weight: "", stock: "0" },
+    { sku: "", name: "Default", price: "", weight: "", stock: "0", mode: "stock" },
   ]);
   async function refresh() {
     setLoading(true);
@@ -67,9 +68,10 @@ function App() {
       setInitialized(setup.initialized);
       if (setup.initialized) {
         const data = await api(
-          tab === "review" ? "/api/admin/review" : "/api/admin/orders",
+          tab === "products" ? "/api/admin/products" : tab === "review" ? "/api/admin/review" : "/api/admin/orders",
         );
-        if (tab === "review") setReview(data.items);
+        if (tab === "products") setCatalogue(data.products);
+        else if (tab === "review") setReview(data.items);
         else setOrders(data.orders);
       }
     } catch (e) {
@@ -112,9 +114,9 @@ function App() {
     setMessage("");
     const form = e.currentTarget;
     try {
-      await api(path, build(new FormData(form)), method);
+      const result = await api(path, build(new FormData(form)), method);
       form.reset();
-      setMessage("Perubahan tersimpan di server.");
+      setMessage(result.product ? `Produk tersimpan. ID: ${result.product.id}. Varian: ${result.product.variants.map((v:any)=>`${v.sku}: ${v.id}`).join(', ')}` : "Perubahan tersimpan di server.");
       await refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -213,7 +215,7 @@ function App() {
             <form
               onSubmit={(e) =>
                 mutate(e, "/api/setup", (f) => ({
-                  bootstrapSecret: f.get("bootstrapSecret"),
+                  secret: f.get("bootstrapSecret"),
                 }))
               }
             >
@@ -280,7 +282,7 @@ function App() {
                           </div>
                           <p>
                             Fulfillment:{" "}
-                            {o.fulfillmentStatus ||
+                            {o.fulfillment || o.fulfillmentStatus ||
                               o.fulfillment?.status ||
                               "Belum diproses"}
                           </p>
@@ -339,6 +341,12 @@ function App() {
                               Simpan fulfillment
                             </button>
                           </form>
+                          <form onSubmit={e=>mutate(e,`/api/admin/orders/${o.id}/timeline`,f=>({...fields(f,['kind','note']),...(f.get('estimatedDate') ? {estimatedDate:f.get('estimatedDate')} : {})}))}>
+                            <label>Milestone persiapan<select name="kind"><option value="preparing">Persiapan</option><option value="production">Produksi</option><option value="ready_to_ship">Siap kirim</option></select></label>
+                            <Field name="note" label="Catatan milestone" />
+                            <Field name="estimatedDate" label="Estimasi tanggal (opsional, bukan jaminan)" type="date" required={false} />
+                            <button disabled={busy || o.status !== 'paid'}>Tambahkan timeline</button>
+                          </form>
                           <small>
                             Pembayaran pending tidak boleh memicu pengiriman.
                           </small>
@@ -351,6 +359,7 @@ function App() {
               {tab === "products" && (
                 <section className="panel">
                   <h2>Detail produk & SKU</h2>
+                  {catalogue.map(p=><article className="order" key={p.id}><strong>{p.name}</strong> · {p.active ? 'Aktif':'Arsip'}<p>ID produk: <code>{p.id}</code></p>{p.variants.map((v:any)=><p key={v.id}>{v.sku} · {money(v.price)} · {v.mode} · ID varian: <code>{v.id}</code></p>)}<form onSubmit={e=>mutate(e,`/api/admin/products/${p.id}`,()=>({active:!p.active}),'PATCH')}><button disabled={busy}>{p.active ? 'Arsipkan':'Aktifkan kembali'}</button></form></article>)}
                   <form
                     onSubmit={(e) =>
                       mutate(e, "/api/admin/products", (f) => ({
@@ -358,8 +367,8 @@ function App() {
                           "name",
                           "slug",
                           "description",
-                          "imageUrl",
                         ]),
+                        ...(f.get("imageUrl") ? { imageUrl: f.get("imageUrl") } : {}),
                         variants: variants.map((v) => ({
                           ...v,
                           price: Number(v.price),
@@ -427,6 +436,7 @@ function App() {
                             </label>
                           ))}
                         </div>
+                        <label>Mode penjualan<select value={v.mode} onChange={e=>setVariants(variants.map((variant,j)=>j===i ? {...variant,mode:e.target.value}:variant))}><option value="stock">Ready stock</option><option value="preorder">Pre-order (campaign wajib)</option></select></label>
                         {variants.length > 1 && (
                           <button
                             type="button"
@@ -451,6 +461,7 @@ function App() {
                               price: "",
                               weight: "",
                               stock: "0",
+                              mode: "stock",
                             },
                           ])
                         }

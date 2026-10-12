@@ -39,6 +39,7 @@ export default function ProductPicker({ product }: { product: Product }) {
                 Estimasi kirim {date(v.campaign.shipFrom)} –{" "}
                 {date(v.campaign.shipTo)}. Pemesanan sampai{" "}
                 {date(v.campaign.endsAt)}.
+                {v.available !== null && <> Kuota tersedia: {v.available}.</>}
               </>
             ) : (
               "Estimasi belum tersedia; checkout akan memvalidasi campaign."

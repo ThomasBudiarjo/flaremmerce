@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { type CommerceEnv, HttpError, id, json, statement as s } from './types';
+import { catalog } from './catalog';
 
 const variantInput = z.object({ sku: z.string().min(1).max(100), name: z.string().min(1).max(200), price: z.number().int().min(0).max(1_000_000_000), weight: z.number().int().min(1).max(1_000_000), mode: z.enum(['stock', 'preorder']).default('stock'), stock: z.number().int().min(0).max(1_000_000).default(0) }).strict();
 const productInput = z.object({ slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(100), name: z.string().min(1).max(200), description: z.string().max(10000).default(''), imageUrl: z.string().url().max(2000).optional(), variants: z.array(variantInput).min(1).max(30) }).strict();
@@ -7,6 +8,9 @@ const inventoryInput = z.object({ variantId: z.string().min(1).max(100), delta: 
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v => !Number.isNaN(Date.parse(v)) && new Date(v).toISOString().slice(0, 10) === v);
 const campaignInput = z.object({ variantId: z.string().min(1).max(100), startsAt: z.number().int().min(0), endsAt: z.number().int().min(0), shipFrom: date, shipTo: date, quota: z.number().int().min(0).max(1_000_000).nullable() }).strict().refine(v => v.endsAt > v.startsAt && v.shipTo >= v.shipFrom);
 const fulfillmentInput = z.object({ status: z.enum(['processing', 'shipped', 'delivered']), tracking: z.string().trim().min(1).max(200).optional(), note: z.string().max(2000).optional() }).strict();
+const productUpdate = productInput.omit({variants:true}).extend({active:z.boolean()}).partial().refine(v=>Object.keys(v).length>0);
+const variantUpdate = variantInput.omit({stock:true}).extend({active:z.boolean()}).partial().refine(v=>Object.keys(v).length>0);
+const timelineInput = z.object({kind:z.enum(['preparing','production','ready_to_ship']),note:z.string().min(1).max(2000),estimatedDate:date.optional()}).strict();
 function parse<T>(schema: z.ZodType<T>, body: unknown): T {
   const result = schema.safeParse(body);
   if (!result.success) throw new HttpError(400, 'Invalid input', result.error.flatten());
@@ -21,6 +25,33 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
   const beforeId = url.searchParams.get('beforeId') ?? '';
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 50)));
   if (!Number.isSafeInteger(before) || !Number.isSafeInteger(limit) || beforeId.length > 100) throw new HttpError(400, 'Invalid pagination');
+  if (path === '/api/admin/products' && request.method === 'GET') {
+    const response = await catalog(env,undefined,url.searchParams,true);
+    response.headers.set('Cache-Control','private, no-store');
+    return response;
+  }
+  const update = path.match(/^\/api\/admin\/(products|variants)\/([^/]+)$/);
+  if (update && request.method === 'PATCH') {
+    const input = update[1] === 'products' ? parse(productUpdate,body) : parse(variantUpdate,body);
+    const target = decodeURIComponent(update[2]), table = update[1] === 'products' ? 'products' : 'product_variants';
+    const fields = Object.entries(input);
+    const result = await env.DB.batch([
+      s(env,`UPDATE ${table} SET ${fields.map(([name])=>`${name==='imageUrl' ? 'image_url':name}=?`).join(',')} WHERE id=?`,...fields.map(([,value])=>typeof value==='boolean' ? Number(value) : value as string|number),target),
+      s(env,`INSERT INTO audit_logs(id,actor,action,target,details_json,created_at) SELECT ?,?,?,?,?,? WHERE changes()=1`,id(),actor,`${update[1]}.update`,target,JSON.stringify(input),Date.now()),
+    ]);
+    if (!result[0].meta.changes) throw new HttpError(404,'Catalog entry not found');
+    return json({updated:true});
+  }
+  const milestone = path.match(/^\/api\/admin\/orders\/([^/]+)\/timeline$/);
+  if (milestone && request.method === 'POST') {
+    const input = parse(timelineInput,body), target = decodeURIComponent(milestone[1]), eventId=id();
+    const result = await env.DB.batch([
+      s(env,`INSERT INTO order_events(id,order_id,kind,details_json,created_at) SELECT ?,id,?,?,? FROM orders WHERE id=? AND status='paid'`,eventId,input.kind,JSON.stringify({note:input.note,estimatedDate:input.estimatedDate}),Date.now(),target),
+      s(env,`INSERT INTO audit_logs(id,actor,action,target,details_json,created_at) SELECT ?,?,'timeline.append',?,?,? WHERE EXISTS(SELECT 1 FROM order_events WHERE id=?)`,id(),actor,target,JSON.stringify(input),Date.now(),eventId),
+    ]);
+    if (!result[0].meta.changes) throw new HttpError(409,'Only paid orders accept preparation milestones');
+    return json({recorded:true});
+  }
   if (path === '/api/admin/orders' && request.method === 'GET') {
     const orders = await s(env, 'SELECT id,reference,status,fulfillment,total,currency,created_at AS createdAt,contact_json,address_json,shipping_json FROM orders WHERE created_at<? OR (created_at=? AND id<?) ORDER BY created_at DESC,id DESC LIMIT ?', before, before, beforeId, limit).all();
     const last = orders.results.at(-1);

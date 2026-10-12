@@ -3,8 +3,16 @@ import Layout from "../layouts/Layout.astro";
 import { catalog, money, type Product } from "../lib/catalog";
 let products: Product[] = [];
 let error = "";
+let nextCursor: string | null = null;
 try {
-  products = (await catalog(Astro.locals)).products;
+  const query = new URLSearchParams();
+  for (const name of ['after','limit']) {
+    const value = Astro.url.searchParams.get(name);
+    if (value !== null) query.set(name,value);
+  }
+  const page = await catalog(Astro.locals, `/api/catalog?${query}`);
+  products = page.products;
+  nextCursor = page.nextCursor;
 } catch {
   error =
     "Katalog sementara tidak tersedia. Silakan muat ulang beberapa saat lagi.";
@@ -59,5 +67,6 @@ Astro.response.headers.set(
         ))}
       </div>
     )}
+    {nextCursor && <a class="button" href={`/catalog?after=${encodeURIComponent(nextCursor)}`}>Koleksi berikutnya →</a>}
   </section>
 </Layout>

@@ -10,6 +10,9 @@ const labels: Record<string, string> = {
   shipped: "Sudah dikirim",
   delivered: "Sudah diterima",
   unfulfilled: "Belum diproses",
+  preparing: "Persiapan",
+  production: "Produksi",
+  ready_to_ship: "Siap kirim",
 };
 export default function OrderStatus() {
   const [reference, setReference] = useState("");
@@ -18,6 +21,8 @@ export default function OrderStatus() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
+    const returnedReference = new URLSearchParams(location.search).get("reference");
+    if (returnedReference) setReference(returnedReference);
     try {
       const saved = JSON.parse(
         sessionStorage.getItem("flaremmerce-order-access") || "null",
@@ -68,13 +73,12 @@ export default function OrderStatus() {
         <input
           id="token"
           type="password"
-          required
           value={token}
           autoComplete="off"
           onChange={(e) => setToken(e.target.value)}
         />
         <p className="muted">
-          Token hanya dikirim melalui header privat. Jangan bagikan token atau
+          Untuk guest, masukkan token privat. Akun pemilik boleh membaca melalui session Google. Jangan bagikan token atau
           tangkapan layar yang memuat token.
         </p>
         <button disabled={busy}>
@@ -101,7 +105,7 @@ export default function OrderStatus() {
           </p>
           <p>
             Pengiriman:{" "}
-            {labels[order.fulfillmentStatus || data.fulfillment?.status] ||
+            {labels[order.fulfillment || order.fulfillmentStatus || data.fulfillment?.status] ||
               order.fulfillmentStatus ||
               data.fulfillment?.status ||
               "Belum ada pembaruan"}
@@ -112,13 +116,14 @@ export default function OrderStatus() {
           {(order.items || data.items)?.map((i: any, n: number) => (
             <div className="line" key={i.id || n}>
               {i.name || i.productName || i.variantName || i.sku} × {i.quantity}
-              {i.shipFrom && i.shipTo && (
+              {i.campaign?.shipFrom && i.campaign?.shipTo && (
                 <p>
-                  Estimasi kirim: {date(i.shipFrom)} – {date(i.shipTo)}
+                  Estimasi kirim: {date(i.campaign.shipFrom)} – {date(i.campaign.shipTo)}
                 </p>
               )}
             </div>
           ))}
+          {!!order.timeline?.length && <ol aria-label="Timeline pesanan">{order.timeline.map((event:any,n:number) => <li key={n}>{labels[event.kind] || event.kind} · {date(event.createdAt)}{event.details?.tracking && <p>Resi: {event.details.tracking}</p>}{event.details?.note && <p>{event.details.note}</p>}{event.details?.estimatedDate && <p>Estimasi: {date(event.details.estimatedDate)} (bukan jaminan tanggal)</p>}</li>)}</ol>}
           <div className="notice">
             Kembali dari penyedia pembayaran tidak berarti pembayaran berhasil.
             Status di atas berasal dari server. Jika hasil belum diketahui,
