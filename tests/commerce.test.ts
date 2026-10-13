@@ -244,7 +244,9 @@ describe('commerce public API with real D1', () => {
     expect((await request(`/api/orders/${order.reference}`, undefined, { 'X-Order-Token': 'wrong' })).status).toBe(404);
     const read = await request(`/api/orders/${order.reference}`, undefined, { 'X-Order-Token': order.guestToken });
     expect(read.status).toBe(200); expect(read.headers.get('cache-control')).toBe('private, no-store');
-    expect((await read.json() as any).order.items[0].sku).toBe('SKU-A');
+    const result = await read.json() as any;
+    expect(result.order.items[0].sku).toBe('SKU-A');
+    expect(result.access).toEqual({type:'guest'});
   });
 
   it('establishes random scope before checkout; concurrent no-cookie keys disclose no order', async () => {
@@ -418,7 +420,9 @@ describe('commerce public API with real D1', () => {
     expect(response.status).toBe(200);
     const { order } = await response.json() as any;
     expect(order.guestToken).toBeUndefined();
-    expect((await request(`/api/orders/${order.reference}`, undefined, { 'X-Test-Customer': 'owner' })).status).toBe(200);
+    const read = await request(`/api/orders/${order.reference}`, undefined, { 'X-Test-Customer': 'owner', 'X-Order-Token': 'wrong-token' });
+    expect(read.status).toBe(200);
+    expect((await read.json() as any).access).toEqual({type:'account',ownerId:'owner'});
     expect((await request(`/api/orders/${order.reference}`, undefined, { 'X-Test-Customer': 'other' })).status).toBe(404);
     expect((await request(`/api/orders/${order.reference}`)).status).toBe(404);
   });

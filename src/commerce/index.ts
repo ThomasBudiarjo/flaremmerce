@@ -61,6 +61,7 @@ async function order(request: Request, env: CommerceEnv, reference: string) {
     contact: JSON.parse(String(row.contact_json)), address: JSON.parse(String(row.address_json)), shipping: JSON.parse(String(row.shipping_json)),
     items: items.results.map(({ snapshot_json, ...item }) => ({ ...item, ...JSON.parse(String(snapshot_json)) })),
     timeline: events.results.map(({ details_json, ...event }) => ({ ...event, details: JSON.parse(String(details_json)) })) },
+    access: guestAuthorized ? { type: 'guest' } : { type: 'account', ownerId: row.customer_id },
     paymentState: payment?.status, ...(payment?.url && row.status === 'pending_payment' ? { paymentUrl: payment.url } : {}) });
 }
 

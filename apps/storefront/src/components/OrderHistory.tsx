@@ -3,13 +3,15 @@ import { google } from "../lib/cart";
 import { date, money } from "../lib/catalog";
 
 type Summary = { reference: string; status: string; fulfillment: string; total: number; currency: string; createdAt: number };
-export default function OrderHistory({ open, labels }: { open: (reference: string) => void; labels: Record<string, string> }) {
+export default function OrderHistory({ open, labels, onOwnerChange }: { open: (reference: string) => void; labels: Record<string, string>; onOwnerChange: (owner: string | null) => void }) {
   const [orders, setOrders] = useState<Summary[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
   const [anonymous, setAnonymous] = useState(false);
   const [error, setError] = useState("");
   const ownerId = useRef<string | null>(null);
+  const onOwnerChangeRef = useRef(onOwnerChange);
+  onOwnerChangeRef.current = onOwnerChange;
   const requestSequence = useRef(0);
   async function load(after?: string) {
     const sequence = ++requestSequence.current;
@@ -19,6 +21,7 @@ export default function OrderHistory({ open, labels }: { open: (reference: strin
       const response = await fetch("/api/orders" + (after ? "?cursor=" + encodeURIComponent(after) : ""), { credentials: "same-origin", cache: "no-store" });
       if (sequence !== requestSequence.current) return;
       if (response.status === 401) {
+        onOwnerChangeRef.current(null);
         ownerId.current = null;
         setAnonymous(true); setOrders([]); setCursor(null);
         return;
@@ -26,6 +29,7 @@ export default function OrderHistory({ open, labels }: { open: (reference: strin
       if (!response.ok) throw new Error("Riwayat pesanan tidak dapat dimuat. Silakan coba lagi.");
       const page = await response.json();
       if (sequence !== requestSequence.current) return;
+      onOwnerChangeRef.current(page.ownerId);
       if (after && page.ownerId !== ownerId.current) {
         ownerId.current = null;
         setOrders([]); setCursor(null);
@@ -65,7 +69,7 @@ export default function OrderHistory({ open, labels }: { open: (reference: strin
       <button disabled={busy} onClick={() => open(order.reference)}>{order.reference}</button>
       <p>{date(order.createdAt)} · {money(order.total)} · {labels[order.status] || order.status} · {labels[order.fulfillment] || order.fulfillment}</p>
     </div>)}
-    {!anonymous && error && <button disabled={busy} onClick={() => load(cursor || undefined)}>Coba lagi</button>}
+    {!anonymous && error && <button disabled={busy} onClick={() => load()}>Coba lagi</button>}
     {!anonymous && cursor && !error && <button disabled={busy} onClick={() => load(cursor)}>Muat lebih banyak</button>}
   </section>;
 }

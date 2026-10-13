@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -26,20 +26,35 @@ export function ReviewDetail({ id, api, refresh }: { id: string; api: (path: str
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const requestSequence = useRef(0);
+  useEffect(() => () => { ++requestSequence.current; }, []);
   const route = `/api/admin/review/${encodeURIComponent(id)}`;
   async function load() {
+    const sequence = ++requestSequence.current;
     setBusy(true); setError(""); setDetail(undefined);
-    try { const data = await api(route); setDetail(data); setNote(data.item.note); }
-    catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
+    try {
+      const data = await api(route);
+      if (sequence !== requestSequence.current) return;
+      setDetail(data); setNote(data.item.note);
+    }
+    catch (e) { if (sequence === requestSequence.current) setError((e as Error).message); }
+    finally { if (sequence === requestSequence.current) setBusy(false); }
   }
   async function save(status: "open" | "resolved") {
+    const sequence = ++requestSequence.current;
     setBusy(true); setError("");
-    try { await api(route, { version: detail.item.version, status, note }, "PATCH"); await load(); await refresh(); }
-    catch (e) { setError((e as Error).message + " Muat ulang bukti sebelum mencoba lagi."); }
-    finally { setBusy(false); }
+    try {
+      await api(route, { version: detail.item.version, status, note }, "PATCH");
+      if (sequence !== requestSequence.current) return;
+      const data = await api(route);
+      if (sequence !== requestSequence.current) return;
+      setDetail(data); setNote(data.item.note);
+      await refresh();
+    }
+    catch (e) { if (sequence === requestSequence.current) setError((e as Error).message + " Muat ulang bukti sebelum mencoba lagi."); }
+    finally { if (sequence === requestSequence.current) setBusy(false); }
   }
-  return <Dialog onOpenChange={(open) => { if (open) void load(); }}>
+  return <Dialog onOpenChange={(open) => { if (open) void load(); else ++requestSequence.current; }}>
     <DialogTrigger asChild><Button variant="outline" size="sm">Bukti & tindakan</Button></DialogTrigger>
     <DialogContent className="max-h-[85svh] overflow-y-auto sm:max-w-2xl">
       <DialogHeader><DialogTitle>Pemeriksaan pembayaran</DialogTitle><DialogDescription>Ditangani berarti sudah ditindaklanjuti secara eksternal. Tidak menandai terbayar, refund, melepas stok, atau mengubah pesanan.</DialogDescription></DialogHeader>
