@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/cart";
 import { money, date } from "../lib/catalog";
+import OrderHistory from "./OrderHistory";
 const labels: Record<string, string> = {
   pending_payment: "Menunggu pembayaran",
   paid: "Pembayaran terkonfirmasi",
@@ -20,41 +21,54 @@ export default function OrderStatus() {
   const [data, setData] = useState<any>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [opened, setOpened] = useState<{ reference: string; token: string }>();
+  const requestSequence = useRef(0);
   useEffect(() => {
     const returnedReference = new URLSearchParams(location.search).get("reference");
-    if (returnedReference) setReference(returnedReference);
+    let saved: { reference: string; token: string } | null = null;
     try {
-      const saved = JSON.parse(
+      saved = JSON.parse(
         sessionStorage.getItem("flaremmerce-order-access") || "null",
       );
-      if (saved) {
-        setReference(saved.reference);
-        setToken(saved.token);
-        load(saved.reference, saved.token);
-      }
     } catch {
       /* Manual private access remains available. */
     }
+    const ref = returnedReference || saved?.reference;
+    if (ref) {
+      const secret = saved?.reference === ref ? saved.token : "";
+      setReference(ref);
+      setToken(secret);
+      void load(ref, secret);
+    }
   }, []);
   async function load(ref = reference, secret = token) {
+    const sequence = ++requestSequence.current;
     setBusy(true);
     setError("");
     setData(undefined);
+    setOpened({ reference: ref, token: secret });
     try {
-      setData(
-        await api("/api/orders/" + encodeURIComponent(ref), undefined, {
-          "X-Order-Token": secret,
-        }),
-      );
+      const result = await api("/api/orders/" + encodeURIComponent(ref), undefined, {
+        "X-Order-Token": secret,
+      });
+      if (sequence === requestSequence.current) setData(result);
     } catch (e) {
-      setError((e as Error).message);
+      if (sequence === requestSequence.current) setError((e as Error).message);
     } finally {
-      setBusy(false);
+      if (sequence === requestSequence.current) setBusy(false);
     }
   }
   const order = data?.order;
   return (
     <>
+      <OrderHistory open={(ref) => {
+        setReference(ref);
+        setToken("");
+        const url = new URL(location.href);
+        url.searchParams.set("reference", ref);
+        history.replaceState(null, "", url);
+        void load(ref, "");
+      }} />
       <form
         className="panel"
         onSubmit={(e) => {
@@ -129,7 +143,7 @@ export default function OrderStatus() {
             Status di atas berasal dari server. Jika hasil belum diketahui,
             jangan membayar ulang secara terpisah.
           </div>
-          <button onClick={() => load()} disabled={busy}>
+          <button onClick={() => opened && load(opened.reference, opened.token)} disabled={busy}>
             Perbarui status
           </button>
         </section>

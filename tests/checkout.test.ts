@@ -4,6 +4,36 @@ import { readFileSync } from 'node:fs';
 import { createHmac, createHash } from 'node:crypto';
 import worker, { type Env } from '../src/worker';
 
+it('order history validates fresh real sessions and never claims same-email guest orders', async () => {
+  const mf = new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-08-06',d1Databases:['DB']}));
+  try {
+    const DB = await mf.getD1Database('DB');
+    for (const migration of ['0001_commerce','0002_integrations','0005_customer_orders']) await DB.exec(readFileSync(new URL(`../migrations/${migration}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+    const now = Date.now(), secret = 'history-test-auth-secret-at-least-32-characters';
+    const env = {DB,PUBLIC_ORIGIN:'https://shop.example',BETTER_AUTH_SECRET:secret,GOOGLE_CLIENT_ID:'test-google',GOOGLE_CLIENT_SECRET:'test-google-secret'} as unknown as Env;
+    await DB.batch([
+      DB.prepare('INSERT INTO user(id,name,email,email_verified,created_at,updated_at) VALUES(?,?,?,1,?,?)').bind('owner','Owner','same@example.com',now,now),
+      DB.prepare('INSERT INTO session(id,token,user_id,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?)').bind('session','history-token','owner',now+3600000,now,now),
+      DB.prepare("INSERT INTO orders(id,reference,customer_id,guest_token_hash,total,contact_json,address_json,shipping_json,created_at) VALUES('owned','owned','owner',NULL,1000,'{}','{}','{}',1),('guest','guest',NULL,'private',1000,'{\"email\":\"same@example.com\"}','{}','{}',2),('other','other','different',NULL,1000,'{}','{}','{}',3)"),
+    ]);
+    const cookie = `__Secure-better-auth.session_token=${encodeURIComponent(`history-token.${createHmac('sha256',secret).update('history-token').digest('base64')}`)}`;
+    const call = (cookieValue?: string) => worker.fetch(new Request('https://shop.example/api/orders',{headers:cookieValue ? {Cookie:cookieValue} : {}}),env);
+    expect((await call()).status).toBe(401);
+    const response = await call(cookie);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
+    expect((await response.json() as any).orders.map((order:any)=>order.reference)).toEqual(['owned']);
+    expect((await call(cookie+'tampered')).status).toBe(401);
+    await DB.prepare('UPDATE session SET expires_at=?').bind(now-1).run();
+    expect((await call(cookie)).status).toBe(401);
+    // Better Auth removes expired sessions; create a fresh fixture before revocation.
+    await DB.prepare('INSERT OR REPLACE INTO session(id,token,user_id,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?)').bind('session','history-token','owner',now+3600000,now,now).run();
+    expect((await call(cookie)).status).toBe(200);
+    await DB.exec('DELETE FROM session');
+    expect((await call(cookie)).status).toBe(401);
+  } finally { await mf.dispose(); }
+});
+
 it('guest checkout crosses real shipping, Turnstile, DOKU, D1 and private order boundaries', async () => {
   const mf = new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-08-06',d1Databases:['DB']}));
   try {

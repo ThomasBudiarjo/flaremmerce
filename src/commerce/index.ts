@@ -23,6 +23,28 @@ async function body(request: Request) {
   try { return JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new HttpError(400, 'Invalid JSON'); }
 }
 
+async function orders(request: Request, env: CommerceEnv, url: URL) {
+  const customer = await getCustomer(request, env);
+  if (!customer) throw new HttpError(401, 'Sign in required');
+  const rawLimit = url.searchParams.get('limit') ?? '20';
+  if (!/^[1-9]\d?$/.test(rawLimit) || Number(rawLimit) > 50) throw new HttpError(400, 'Invalid limit');
+  const limit = Number(rawLimit);
+  let cursor: [number, string] | undefined;
+  const rawCursor = url.searchParams.get('cursor');
+  if (rawCursor !== null) {
+    try {
+      if (rawCursor.length > 500) throw new Error();
+      const parsed = JSON.parse(atob(rawCursor));
+      if (!Array.isArray(parsed) || parsed.length !== 2 || !Number.isSafeInteger(parsed[0]) || parsed[0] < 0 || typeof parsed[1] !== 'string' || !parsed[1].length || parsed[1].length > 200) throw new Error();
+      cursor = parsed as [number, string];
+    } catch { throw new HttpError(400, 'Invalid cursor'); }
+  }
+  const rows = await s(env, `SELECT reference,status,fulfillment,total,currency,created_at AS createdAt,id FROM orders WHERE customer_id=?${cursor ? ' AND (created_at < ? OR (created_at = ? AND id < ?))' : ''} ORDER BY created_at DESC,id DESC LIMIT ?`,
+    customer.id, ...(cursor ? [cursor[0], cursor[0], cursor[1]] : []), limit + 1).all<{ reference: string; status: string; fulfillment: string; total: number; currency: string; createdAt: number; id: string }>();
+  const page = rows.results.slice(0, limit), last = page.at(-1);
+  return json({ orders: page.map(({ id, ...summary }) => summary), nextCursor: rows.results.length > limit && last ? btoa(JSON.stringify([last.createdAt, last.id])) : null });
+}
+
 async function order(request: Request, env: CommerceEnv, reference: string) {
   const row = await s(env, 'SELECT * FROM orders WHERE reference=?', reference).first<Record<string, unknown>>();
   if (!row) throw new HttpError(404, 'Order not found');
@@ -52,6 +74,7 @@ export async function commerceRequest(request: Request, env: CommerceEnv): Promi
   if (request.method === 'GET' && path === '/api/catalog') return catalog(env, undefined, url.searchParams);
   if (request.method === 'GET' && path.startsWith('/api/catalog/')) return catalog(env, decodeURIComponent(path.slice('/api/catalog/'.length)));
   if (path === '/api/checkout' && request.method === 'POST') return checkout(request, env, await body(request));
+  if (path === '/api/orders' && request.method === 'GET') return orders(request, env, url);
   if (path.startsWith('/api/orders/') && request.method === 'GET') return order(request, env, decodeURIComponent(path.slice('/api/orders/'.length)));
   if (path.startsWith('/api/admin/')) {
     const actor = await requireAdmin(request, env);

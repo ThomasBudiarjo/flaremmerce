@@ -2,6 +2,7 @@ import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import migration from '../migrations/0001_commerce.sql?raw';
 import reviewMigration from '../migrations/0004_manual_review.sql?raw';
+import historyMigration from '../migrations/0005_customer_orders.sql?raw';
 import worker, { type Env } from '../src/worker';
 
 const provider = vi.hoisted(() => ({ failCreate: false, lookup: {status:'unknown'} as Record<string, unknown>, beforeResponse: null as null | ((input: { reference: string }) => Promise<void>) }));
@@ -71,6 +72,7 @@ function statements(source: string) {
 
 beforeAll(async () => {
   await applyD1Migrations(db(), [{ name: '0001_commerce.sql', queries: statements(migration) }, { name: '0004_manual_review.sql', queries: statements(reviewMigration) }]);
+  await applyD1Migrations(db(), [{ name: '0005_customer_orders.sql', queries: statements(historyMigration) }]);
   // Shipping-owned quote contract. Real integration migration is applied by the integration suite.
   await sql('CREATE TABLE IF NOT EXISTS shipping_quotes(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,destination TEXT NOT NULL,service TEXT NOT NULL,amount INTEGER NOT NULL,weight INTEGER NOT NULL,expires_at INTEGER NOT NULL,details_json TEXT NOT NULL)').run();
 });
@@ -159,6 +161,30 @@ describe('commerce public API with real D1', () => {
     expect((await request(`/api/admin/review/${recovery.id}`,{version:0,status:'resolved',note:'Provider investigation handled externally'},headers,'PATCH')).status).toBe(200);
     expect(await sql('SELECT status FROM orders WHERE id=?',second.order.id).first('status')).toBe('pending_payment');
     expect(await sql("SELECT reserved FROM inventory WHERE variant_id='a'").first('reserved')).toBe(1);
+  });
+  it('lists only customer-owned summaries with deterministic private pagination', async () => {
+    for (const [id, customer, created] of [['a','owner',10],['b','owner',10],['c','owner',9],['d','other',11],['e',null,12]] as const) {
+      await sql("INSERT INTO orders(id,reference,customer_id,guest_token_hash,total,contact_json,address_json,shipping_json,created_at) VALUES(?,?,?,?,1000,?,?,?,?)", id, `ref-${id}`, customer, 'private-hash', '{"email":"same@example.com"}', '{"line":"private"}', '{}', created).run();
+    }
+    expect((await request('/api/orders')).status).toBe(401);
+    expect((await request('/api/orders', undefined, {'X-Order-Token':'private-hash'})).status).toBe(401);
+    const headers = {'X-Test-Customer':'owner'};
+    const first = await request('/api/orders?limit=1', undefined, headers);
+    expect(first.headers.get('Cache-Control')).toBe('private, no-store');
+    const page = await first.json() as any;
+    expect(page.orders).toEqual([{reference:'ref-b',status:'pending_payment',fulfillment:'unfulfilled',total:1000,currency:'IDR',createdAt:10}]);
+    const next = await (await request(`/api/orders?limit=1&cursor=${encodeURIComponent(page.nextCursor)}`, undefined, headers)).json() as any;
+    expect(next.orders[0].reference).toBe('ref-a');
+    // A new order ahead of the cursor must not duplicate or shift older pages.
+    await sql("INSERT INTO orders(id,reference,customer_id,total,contact_json,address_json,shipping_json,created_at) VALUES('new','ref-new','owner',1000,'{}','{}','{}',20)").run();
+    const last = await (await request(`/api/orders?limit=1&cursor=${encodeURIComponent(next.nextCursor)}`, undefined, headers)).json() as any;
+    expect(last.orders[0].reference).toBe('ref-c'); expect(last.nextCursor).toBeNull();
+    const other = await (await request(`/api/orders?cursor=${encodeURIComponent(page.nextCursor)}`, undefined, {'X-Test-Customer':'other'})).json() as any;
+    expect(other.orders).toEqual([]);
+    expect(await (await request('/api/orders', undefined, {'X-Test-Customer':'empty'})).json()).toEqual({orders:[],nextCursor:null});
+    for (const query of ['limit=0','limit=51','limit=1.5','cursor=bad','cursor='+encodeURIComponent(btoa('[10]')),'cursor='+encodeURIComponent(btoa('[10,{}]'))]) {
+      expect((await request('/api/orders?'+query, undefined, headers)).status).toBe(400);
+    }
   });
   it('accepts canonical dev portal mutations without relaxing production or admin checks', async () => {
     const payload = {slug:'dev-portal',name:'Dev portal',variants:[{sku:'PORTAL',name:'Default',price:157000,weight:275,stock:4}]};
