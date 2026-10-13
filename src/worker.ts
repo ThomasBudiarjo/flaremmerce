@@ -15,6 +15,10 @@ export interface Env extends IntegrationEnv, StorageEnv {
 
 export default {
   async fetch(request: Request, env: Env, context?: ExecutionContext): Promise<Response> {
+    const requestId = crypto.randomUUID();
+    const pathname = new URL(request.url).pathname;
+    const category = pathname.startsWith('/api/admin/') ? 'admin' : pathname.startsWith('/api/catalog') ? 'catalog' : pathname.startsWith('/api/auth/') ? 'auth' : 'api';
+    const execute = async (): Promise<Response> => {
     try {
       const url = new URL(request.url);
       if (request.method === 'GET' && url.pathname === '/api/config') return json({
@@ -54,13 +58,26 @@ export default {
       // Integration errors may carry HTTP status without sharing commerce's error class.
       if (error instanceof Error && 'status' in error && typeof error.status === 'number' && error.status >= 400 && error.status < 500) return json({ error: error.message }, error.status);
       if (/CHECK constraint failed|UNIQUE constraint failed|FOREIGN KEY constraint failed|campaign_overlap|catalog_changed|campaign_changed|checkout_changed|inventory_missing/.test(String(error))) return json({ error: 'Conflicting or invalid business operation' }, 409);
-      console.error('Commerce request failed', { kind: error instanceof Error ? error.name : 'UnknownError' });
       return json({ error: 'Service temporarily unavailable' }, 503);
     }
+    };
+    const response = await execute();
+    if (!pathname.startsWith('/api/')) return response;
+    const headers = new Headers(response.headers);
+    headers.set('X-Request-ID', requestId);
+    if (response.status >= 400) {
+      headers.set('Cache-Control', 'private, no-store');
+      console.error('api_error', { requestId, category, status: response.status, kind: response.status >= 500 ? 'service_error' : 'request_error' });
+    }
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    await reconcile(env);
-    await recoverOutbox(env);
+    const results = await Promise.allSettled([reconcile(env), recoverOutbox(env)]);
+    const failures = results.filter(result => result.status === 'rejected');
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') console.error('cron_error', { category: index === 0 ? 'payment_recovery' : 'outbox_recovery', kind: 'background_error' });
+    });
+    if (failures.length) throw new AggregateError(results.flatMap((result, index) => result.status === 'rejected' ? [new Error(index === 0 ? 'Payment recovery failed' : 'Outbox recovery failed')] : []), 'Background recovery failed');
   },
   async email(message: ForwardableEmailMessage, env: Env): Promise<void> {
     await receiveEmail(message, env);
@@ -71,7 +88,7 @@ export default {
     for (const message of batch.messages.slice(0, 20)) {
       if (!message.body || typeof message.body.outboxId !== 'string' || message.body.outboxId.length > 200) { message.ack(); continue; }
       try { await consumeOutbox(env, message.body.outboxId); message.ack(); }
-      catch { message.retry(); }
+      catch { console.warn('outbox_queue_retry', { kind: 'delivery_error' }); message.retry(); }
     }
   },
 } satisfies ExportedHandler<Env, { outboxId: string }>;

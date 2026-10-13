@@ -23,7 +23,7 @@ export async function catalog(env: CommerceEnv, slug?: string, query = new URLSe
       ...(includeInactive ? {active:!!p.active}:{}),
       variants: vv.filter(v => v.variant.productId === p.id).map(({ variant: v, inventory: stock, campaign: c }) => ({
         id: v.id, sku: v.sku, name: v.name, price: v.price, weight: v.weight, mode: v.mode,
-        ...(includeInactive ? {active:!!v.active}:{}),
+        ...(includeInactive ? {active:!!v.active,onHand:stock?.onHand ?? 0,reserved:stock?.reserved ?? 0}:{}),
         available: v.mode === 'stock' ? (stock ? stock.onHand - stock.reserved : 0) : (c ? (c.quota === null ? null : c.quota - c.reserved - c.sold) : 0),
         ...(v.mode === 'preorder' && c ? { campaign: { id: c.id, startsAt: c.startsAt, endsAt: c.endsAt, shipFrom: c.shipFrom, shipTo: c.shipTo, quota: c.quota, available: c.quota === null ? null : c.quota - c.reserved - c.sold } } : {}),
       })),

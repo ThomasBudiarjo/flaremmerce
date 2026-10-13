@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from 'vite
 import migration from '../migrations/0001_commerce.sql?raw';
 import reviewMigration from '../migrations/0004_manual_review.sql?raw';
 import historyMigration from '../migrations/0005_customer_orders.sql?raw';
+import pagesMigration from '../migrations/0006_admin_pages.sql?raw';
 import worker, { type Env } from '../src/worker';
 
 const provider = vi.hoisted(() => ({ failCreate: false, lookup: {status:'unknown'} as Record<string, unknown>, beforeResponse: null as null | ((input: { reference: string }) => Promise<void>) }));
@@ -73,6 +74,7 @@ function statements(source: string) {
 beforeAll(async () => {
   await applyD1Migrations(db(), [{ name: '0001_commerce.sql', queries: statements(migration) }, { name: '0004_manual_review.sql', queries: statements(reviewMigration) }]);
   await applyD1Migrations(db(), [{ name: '0005_customer_orders.sql', queries: statements(historyMigration) }]);
+  await applyD1Migrations(db(), [{ name: '0006_admin_pages.sql', queries: statements(pagesMigration) }]);
   // Shipping-owned quote contract. Real integration migration is applied by the integration suite.
   await sql('CREATE TABLE IF NOT EXISTS shipping_quotes(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,destination TEXT NOT NULL,service TEXT NOT NULL,amount INTEGER NOT NULL,weight INTEGER NOT NULL,expires_at INTEGER NOT NULL,details_json TEXT NOT NULL)').run();
 });
@@ -491,5 +493,107 @@ describe('commerce public API with real D1', () => {
     const history = await (await request(`/api/orders/${order.reference}`,undefined,{'X-Order-Token':order.guestToken})).json() as any;
     expect(history.order.items[0].price).toBe(1000);
     expect(history.order.timeline.find((e:any)=>e.kind==='production').details).toEqual({note:'Production started',estimatedDate:'2026-11-06'});
+  });
+});
+
+describe('local baseline admin contracts',()=>{
+  const headers={'X-Test-Admin':'admin'};
+  const variant={sku:'NEW',name:'New',price:2000,weight:100,stock:3};
+  it('creates variants atomically, rejects duplicate SKU and concurrent cap overflow',async()=>{
+    expect((await request('/api/admin/products/missing/variants',variant,headers)).status).toBe(404);
+    const created=await (await request('/api/admin/products/p/variants',variant,headers)).json() as any;
+    expect(created.variant).toMatchObject({...variant,mode:'stock',productId:'p'});
+    const ledger=await (await request(`/api/admin/inventory?variantId=${created.variant.id}`,undefined,headers)).json() as any;
+    expect(ledger.inventory).toEqual({variantId:created.variant.id,onHand:3,reserved:0,available:3});
+    expect(ledger.movements[0]).toMatchObject({delta:3,reason:'initial stock',actor:'admin',orderId:null});
+    expect(ledger.nextCursor).toBeNull();
+    const counts=await Promise.all(['product_variants','inventory','inventory_movements','audit_logs'].map(count));
+    expect((await request('/api/admin/products/p/variants',variant,headers)).status).toBe(409);
+    expect(await Promise.all(['product_variants','inventory','inventory_movements','audit_logs'].map(count))).toEqual(counts);
+    for(let i=0;i<26;i++) await sql('INSERT INTO product_variants(id,product_id,sku,name,price,weight) VALUES(?,?,?,?,?,?)',`v${i}`,'p',`S${i}`,'Extra',1,1).run();
+    const responses=await Promise.all(['one','two'].map(sku=>request('/api/admin/products/p/variants',{...variant,sku},headers)));
+    expect(responses.map(r=>r.status).sort()).toEqual([201,409]);
+    expect(await count('product_variants')).toBe(30);
+    expect(await count('audit_logs')).toBe(2);
+    const admin=await (await request('/api/admin/products',undefined,headers)).json() as any;
+    expect(admin.products[0].variants.find((v:any)=>v.id==='a')).toMatchObject({onHand:1,reserved:0});
+    const publicCatalog=await (await request('/api/catalog')).json() as any;
+    expect(publicCatalog.products[0].variants[0]).not.toHaveProperty('onHand');
+  });
+  it('paginates asymmetric timestamp ties without omissions or terminal cursors',async()=>{
+    for(const [id,time] of [['z',10],['b',10],['a',10],['y',9]] as const) await sql('INSERT INTO inventory_movements(id,variant_id,delta,reason,created_at) VALUES(?,?,?,?,?)',id,'a',1,'adjustment',time).run();
+    const first=await (await request('/api/admin/inventory?variantId=a&limit=2',undefined,headers)).json() as any;
+    expect(first.movements.map((m:any)=>m.id)).toEqual(['z','b']);
+    expect(first.nextCursor).toEqual({before:10,beforeId:'b'});
+    const last=await (await request('/api/admin/inventory?variantId=a&limit=2&before=10&beforeId=b',undefined,headers)).json() as any;
+    expect(last.movements.map((m:any)=>m.id)).toEqual(['a','y']);
+    expect(last.nextCursor).toBeNull();
+    expect((await request('/api/admin/inventory?variantId=missing',undefined,headers)).status).toBe(404);
+  });
+  it('uses immutable snapshots and projects payment metadata and sale ledger only',async()=>{
+    const placed=await (await place()).json() as any;
+    const order=placed.order;
+    await request('/api/admin/variants/a',{name:'Renamed',price:9999},headers,'PATCH');
+    await notify(order.reference);
+    const detail=await (await request(`/api/admin/orders/${order.id}`,undefined,headers)).json() as any;
+    expect(Object.keys(detail.order).sort()).toEqual(['id','reference','status','fulfillment','total','currency','createdAt','contact','address','shipping','items','timeline'].sort());
+    expect(detail.order.items[0]).toMatchObject({name:'A',price:1000,sku:'SKU-A'});
+    expect(Object.keys(detail.payment).sort()).toEqual(['status','checks','nextCheck','createdAt'].sort());
+    const ledger=await (await request('/api/admin/inventory?variantId=a',undefined,headers)).json() as any;
+    expect(ledger.movements[0]).toMatchObject({reason:'sale',delta:-1,orderId:order.id,actor:null});
+    expect((await request('/api/admin/orders/missing',undefined,headers)).status).toBe(404);
+    expect((await (await request('/api/admin/orders?limit=1',undefined,headers)).json() as any).nextCursor).toBeNull();
+  });
+  it('lists every campaign and preserves historical shipping promises on edits',async()=>{
+    await request('/api/admin/variants/a',{mode:'preorder'},headers,'PATCH');
+    const now=Date.now();
+    const input={variantId:'a',startsAt:now-10000,endsAt:now+100000,shipFrom:'2026-11-01',shipTo:'2026-11-10',quota:3};
+    const campaign=(await (await request('/api/admin/campaigns',input,headers)).json() as any).campaign;
+    const order=(await (await place()).json() as any).order;
+    const route=`/api/admin/campaigns/${campaign.id}`;
+    expect((await request(route,{reserved:0},headers,'PATCH')).status).toBe(400);
+    expect((await request(route,{sold:0},headers,'PATCH')).status).toBe(400);
+    expect((await request(route,{quota:0},headers,'PATCH')).status).toBe(409);
+    expect((await request(route,{endsAt:input.startsAt},headers,'PATCH')).status).toBe(409);
+    expect(await count('audit_logs')).toBe(2);
+    expect((await request(route,{shipFrom:'2026-12-01',shipTo:'2026-12-10',active:false},headers,'PATCH')).status).toBe(200);
+    const detail=await (await request(`/api/admin/orders/${order.id}`,undefined,headers)).json() as any;
+    expect(detail.order.items[0].campaign).toEqual({id:campaign.id,shipFrom:input.shipFrom,shipTo:input.shipTo});
+    for(const [id,start,active] of [['z',now+200000,0],['b',now+200000,0],['y',1,1]] as const) await sql('INSERT INTO preorder_campaigns(id,variant_id,starts_at,ends_at,ship_from,ship_to,quota,active) VALUES(?,?,?,?,?,?,?,?)',id,'a',start,start+100,'2026-11-01','2026-11-10',3,active).run();
+    const first=await (await request('/api/admin/campaigns?limit=2',undefined,headers)).json() as any;
+    expect(first.campaigns.map((c:any)=>c.id)).toEqual(['z','b']);
+    const last=await (await request(`/api/admin/campaigns?limit=2&before=${first.nextCursor.before}&beforeId=b`,undefined,headers)).json() as any;
+    expect(last.campaigns.map((c:any)=>c.id)).toEqual([campaign.id,'y']);
+    expect(last.nextCursor).toBeNull();
+    expect(last.campaigns[0]).toMatchObject({sku:'SKU-A',productName:'Product',reserved:1,sold:0,active:false});
+    expect((await request(route,{active:true,startsAt:1},headers,'PATCH')).status).toBe(409);
+  });
+  it('patches only supplied catalog fields, never creation defaults', async () => {
+    await sql("UPDATE products SET description='Deskripsi yang harus tetap' WHERE id='p'").run();
+    await sql("UPDATE product_variants SET mode='preorder' WHERE id='a'").run();
+    expect((await request('/api/admin/products/p', { name: 'Nama baru' }, headers, 'PATCH')).status).toBe(200);
+    expect((await request('/api/admin/variants/a', { price: 2700 }, headers, 'PATCH')).status).toBe(200);
+    const page = await (await request('/api/admin/products', undefined, headers)).json() as any;
+    expect(page.products[0]).toMatchObject({ name: 'Nama baru', description: 'Deskripsi yang harus tetap' });
+    expect(page.products[0].variants.find((v: any) => v.id === 'a')).toMatchObject({ price: 2700, mode: 'preorder' });
+    for (const path of ['/api/admin/products/p', '/api/admin/variants/a']) {
+      expect((await request(path, {}, headers, 'PATCH')).status).toBe(400);
+    }
+  });
+  it('paginates admin orders sharing timestamps without skipping the boundary', async () => {
+    for (const [orderId, created] of [['z', 10], ['b', 10], ['a', 10], ['y', 9]] as const) {
+      await sql("INSERT INTO orders(id,reference,guest_token_hash,total,contact_json,address_json,shipping_json,created_at) VALUES(?,?,'private',1000,'{}','{}','{}',?)", orderId, `order-${orderId}`, created).run();
+    }
+    const first = await (await request('/api/admin/orders?limit=2', undefined, headers)).json() as any;
+    expect(first.orders.map((o: any) => o.id)).toEqual(['z', 'b']);
+    const last = await (await request('/api/admin/orders?limit=2&before=10&beforeId=b', undefined, headers)).json() as any;
+    expect(last.orders.map((o: any) => o.id)).toEqual(['a', 'y']);
+    expect(last.nextCursor).toBeNull();
+  });
+  it('denies nonadmins and cross-origin admin writes',async()=>{
+    for(const path of ['/api/admin/orders/missing','/api/admin/inventory?variantId=a','/api/admin/campaigns']) expect((await request(path)).status).toBe(403);
+    expect((await request('/api/admin/products/p/variants',variant)).status).toBe(403);
+    expect((await request('/api/admin/products/p/variants',variant,{...headers,Origin:'https://evil.test'})).status).toBe(403);
+    expect((await request('/api/admin/campaigns/missing',{active:false},{...headers,Origin:'https://evil.test'},'PATCH')).status).toBe(403);
   });
 });

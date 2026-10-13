@@ -171,9 +171,17 @@ export default function OrderStatus() {
             Status di atas berasal dari server. Jika hasil belum diketahui,
             jangan membayar ulang secara terpisah.
           </div>
-          <button onClick={() => opened && load(opened.reference, opened.token)} disabled={busy}>
-            Perbarui status
-          </button>
+          <div className="row" style={{ flexWrap: "wrap", justifyContent: "flex-start", marginTop: 16 }}>
+            {order.status === "pending_payment" && data.paymentState === "pending" &&
+              typeof data.paymentUrl === "string" && /^https:\/\//.test(data.paymentUrl) && (
+              <a className="button" href={data.paymentUrl} rel="noreferrer">
+                Lanjutkan pembayaran yang sama
+              </a>
+            )}
+            <button onClick={() => opened && load(opened.reference, opened.token)} disabled={busy}>
+              Perbarui status
+            </button>
+          </div>
         </section>
       )}
     </>
