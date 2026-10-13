@@ -48,6 +48,7 @@ export const inventoryMovements = sqliteTable('inventory_movements', {
 });
 export const review = sqliteTable('manual_review', {
   id: text('id').primaryKey(), eventKey: text('event_key').unique(), orderId: text('order_id').references(() => orders.id), reason: text('reason').notNull(), createdAt: integer('created_at').notNull(),
+  status: text('status', { enum: ['open', 'resolved'] }).notNull().default('open'), note: text('note').notNull().default(''), version: integer('version').notNull().default(0), updatedAt: integer('updated_at'), updatedBy: text('updated_by'),
 });
 export const auditLogs = sqliteTable('audit_logs', {
   id: text('id').primaryKey(), actor: text('actor').notNull(), action: text('action').notNull(), target: text('target').notNull(), detailsJson: text('details_json').notNull(), createdAt: integer('created_at').notNull(),

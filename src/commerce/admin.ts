@@ -58,9 +58,33 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     return json({ orders: orders.results.map(({ contact_json, address_json, shipping_json, ...row }) => ({ ...row, contact: JSON.parse(String(contact_json)), address: JSON.parse(String(address_json)), shipping: JSON.parse(String(shipping_json)) })), nextCursor: last ? { before: last.createdAt, beforeId: last.id } : null });
   }
   if (path === '/api/admin/review' && request.method === 'GET') {
-    const rows = await s(env, 'SELECT r.id,r.order_id AS orderId,r.reason,r.event_key AS eventKey,r.created_at AS createdAt,o.reference FROM manual_review r LEFT JOIN orders o ON o.id=r.order_id WHERE r.created_at<? OR (r.created_at=? AND r.id<?) ORDER BY r.created_at DESC,r.id DESC LIMIT ?', before, before, beforeId, limit).all();
+    const rows = await s(env, 'SELECT r.id,r.order_id AS orderId,r.reason,r.event_key AS eventKey,r.created_at AS createdAt,r.status,r.note,r.version,r.updated_at AS updatedAt,r.updated_by AS updatedBy,o.reference FROM manual_review r LEFT JOIN orders o ON o.id=r.order_id WHERE r.created_at<? OR (r.created_at=? AND r.id<?) ORDER BY r.created_at DESC,r.id DESC LIMIT ?', before, before, beforeId, limit).all();
     const last = rows.results.at(-1);
     return json({ items: rows.results, nextCursor: last ? { before: last.createdAt, beforeId: last.id } : null });
+  }
+  const reviewMatch = path.match(/^\/api\/admin\/review\/([^/]+)$/);
+  if (reviewMatch && (request.method === 'GET' || request.method === 'PATCH')) {
+    const target = decodeURIComponent(reviewMatch[1]);
+    const item = await s(env, 'SELECT id,order_id AS orderId,event_key AS eventKey,reason,created_at AS createdAt,status,note,version,updated_at AS updatedAt,updated_by AS updatedBy FROM manual_review WHERE id=?', target).first();
+    if (!item) throw new HttpError(404, 'Review case not found');
+    if (request.method === 'PATCH') {
+      const input = parse(z.object({ version: z.number().int().min(0), status: z.enum(['open','resolved']), note: z.string().trim().min(1).max(2000) }).strict(), body);
+      if (item.version !== input.version) throw new HttpError(409, 'Review changed; reload evidence before retrying');
+      const now = Date.now();
+      // The compare-and-swap and its append-only audit are one atomic D1 batch.
+      // No payment/order/reservation/outbox tables are modified by operator review.
+      const result = await env.DB.batch([
+        s(env, 'UPDATE manual_review SET status=?,note=?,version=version+1,updated_at=?,updated_by=? WHERE id=? AND version=?', input.status,input.note,now,actor,target,input.version),
+        s(env, `INSERT INTO audit_logs(id,actor,action,target,details_json,created_at) SELECT ?,?,'review.update',?,?,? WHERE changes()=1`,id(),actor,target,JSON.stringify({fromStatus:item.status,fromVersion:input.version,...input}),now),
+      ]);
+      if (!result[0].meta.changes) throw new HttpError(409, 'Review changed; reload evidence before retrying');
+      return json({ updated: true, version: input.version + 1 });
+    }
+    const order = item.orderId ? await s(env, 'SELECT id,reference,status,fulfillment,total,currency,created_at AS createdAt FROM orders WHERE id=?', String(item.orderId)).first() : null;
+    const attempt = item.orderId ? await s(env, 'SELECT id,reference,status,checks,next_check AS nextCheck,created_at AS createdAt FROM payment_attempts WHERE order_id=?', String(item.orderId)).first() : null;
+    const events = await s(env, 'SELECT event_key AS eventKey,reference,amount,currency,status,processed,created_at AS createdAt FROM payment_events WHERE event_key=? OR reference=? ORDER BY created_at DESC,event_key DESC LIMIT 100', item.eventKey as string|null, attempt?.reference as string ?? '').all();
+    const history = await s(env, "SELECT actor,details_json,created_at AS createdAt FROM audit_logs WHERE target=? AND action='review.update' ORDER BY created_at,id",target).all();
+    return json({ item, order, attempt, events: events.results, history: history.results.map(({details_json,...row})=>({...row,details:JSON.parse(String(details_json))})) });
   }
   if (path === '/api/admin/products' && request.method === 'POST') {
     const p = parse(productInput, body), productId = id();

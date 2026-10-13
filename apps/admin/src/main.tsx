@@ -73,6 +73,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import "./style.css";
+import { ReviewDetail } from "./ReviewDetail";
 
 const navigation = [
   ["orders", "Pesanan", ClipboardList],
@@ -1377,6 +1378,7 @@ function App() {
                               <TableHead>Referensi</TableHead>
                               <TableHead>Alasan</TableHead>
                               <TableHead>Waktu (WIB)</TableHead>
+                              <TableHead>Status / tindakan</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -1401,6 +1403,10 @@ function App() {
                                         { timeZone: "Asia/Jakarta" },
                                       )
                                     : "—"}
+                                </TableCell>
+                                <TableCell>
+                                  <Badge variant="outline">{item.status}</Badge>
+                                  <ReviewDetail id={item.id} api={api} refresh={refresh} />
                                 </TableCell>
                               </TableRow>
                             ))}

@@ -1,6 +1,7 @@
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import migration from '../migrations/0001_commerce.sql?raw';
+import reviewMigration from '../migrations/0004_manual_review.sql?raw';
 import worker, { type Env } from '../src/worker';
 
 const provider = vi.hoisted(() => ({ failCreate: false, lookup: {status:'unknown'} as Record<string, unknown>, beforeResponse: null as null | ((input: { reference: string }) => Promise<void>) }));
@@ -69,7 +70,7 @@ function statements(source: string) {
 }
 
 beforeAll(async () => {
-  await applyD1Migrations(db(), [{ name: '0001_commerce.sql', queries: statements(migration) }]);
+  await applyD1Migrations(db(), [{ name: '0001_commerce.sql', queries: statements(migration) }, { name: '0004_manual_review.sql', queries: statements(reviewMigration) }]);
   // Shipping-owned quote contract. Real integration migration is applied by the integration suite.
   await sql('CREATE TABLE IF NOT EXISTS shipping_quotes(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,destination TEXT NOT NULL,service TEXT NOT NULL,amount INTEGER NOT NULL,weight INTEGER NOT NULL,expires_at INTEGER NOT NULL,details_json TEXT NOT NULL)').run();
 });
@@ -84,7 +85,9 @@ beforeEach(async () => {
     throw new Error('Unexpected provider route');
   });
   // Vitest 4 no longer rolls storage back between tests. Reset only the test database.
+  await sql('DROP TRIGGER review_audit_no_delete').run();
   for (const table of ['audit_logs','outbox_events','order_events','manual_review','payment_events','payment_attempts','inventory_movements','stock_reservations','order_items','checkout_requests','orders','preorder_campaigns','inventory','product_variants','products','shipping_quotes']) await sql(`DELETE FROM ${table}`).run();
+  await sql(statements(reviewMigration).find(q => q.startsWith('CREATE TRIGGER review_audit_no_delete'))!).run();
   for (const path of ['/api/catalog','/api/catalog/product','/api/catalog/new-product','/api/catalog/preorder','/api/catalog?limit=1','/api/catalog?after=product&limit=1','/api/catalog?limit=1&after=product']) await caches.default.delete(new Request(`https://shop.test${path}`));
   await db().batch([
     sql("INSERT INTO products(id,slug,name) VALUES('p','product','Product')"),
@@ -100,6 +103,63 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('commerce public API with real D1', () => {
+  it('reviews evidence with immutable audited CAS and no financial side effects', async () => {
+    const { order } = await (await place()).json() as any;
+    await notify(order.reference,'succeeded','mismatch',1,'USD');
+    const headers = { 'X-Test-Admin':'admin' };
+    const { items } = await (await request('/api/admin/review',undefined,headers)).json() as any;
+    expect(items[0]).toMatchObject({status:'open',version:0});
+    const route = `/api/admin/review/${items[0].id}`;
+    for (const path of ['/api/admin/review',route]) expect((await request(path)).status).toBe(403);
+    expect((await request(route,{version:0,status:'resolved',note:'External refund'}, {},'PATCH')).status).toBe(403);
+    expect((await request(route,{version:0,status:'resolved',note:'External refund'}, {...headers,Origin:'https://evil.test'},'PATCH')).status).toBe(403);
+    const evidence = await (await request(route,undefined,headers)).json() as any;
+    expect(evidence.order).toMatchObject({status:'pending_payment',total:1100});
+    expect(evidence.events[0]).toMatchObject({eventKey:'mismatch',amount:1,currency:'USD'});
+    expect(evidence.attempt.url).toBeUndefined();
+    expect(evidence.order.guestTokenHash).toBeUndefined();
+    const tables = ['orders','payment_attempts','payment_events','inventory','stock_reservations','preorder_campaigns','outbox_events','inventory_movements','order_events'];
+    const snapshot = () => Promise.all(tables.map(table => sql(`SELECT * FROM ${table} ORDER BY 1`).all()));
+    const before = await snapshot();
+    for (const note of ['', '   ']) expect((await request(route,{version:0,status:'resolved',note},headers,'PATCH')).status).toBe(400);
+    const replies = await Promise.all([request(route,{version:0,status:'resolved',note:'Refund handled externally'},headers,'PATCH'),request(route,{version:0,status:'resolved',note:'Other stale resolution'},headers,'PATCH')]);
+    expect(replies.map(r=>r.status).sort()).toEqual([200,409]);
+    expect(await count('audit_logs')).toBe(1);
+    expect((await request(route,{version:0,status:'resolved',note:'Retry'},headers,'PATCH')).status).toBe(409);
+    expect((await request(route,{version:1,status:'open',note:'Reopen for follow-up'},headers,'PATCH')).status).toBe(200);
+    expect((await request(route,{version:2,status:'open',note:'Contacted provider'},headers,'PATCH')).status).toBe(200);
+    const final = await (await request(route,undefined,headers)).json() as any;
+    expect(final.item).toMatchObject({status:'open',version:3,note:'Contacted provider',updatedBy:'admin'});
+    expect(final.history).toHaveLength(3);
+    await expect(sql("UPDATE audit_logs SET details_json='{}' WHERE action='review.update'").run()).rejects.toThrow('review_audit_immutable');
+    await expect(sql("DELETE FROM audit_logs WHERE action='review.update'").run()).rejects.toThrow('review_audit_immutable');
+    expect((await snapshot()).map(r=>r.results)).toEqual(before.map(r=>r.results));
+    expect((await request('/api/admin/review/missing',undefined,headers)).status).toBe(404);
+  });
+  it('supports late-payment and reconciliation cases without events or reviving cancelled orders', async () => {
+    const { order } = await (await place()).json() as any;
+    await notify(order.reference,'expired','expiry');
+    await notify(order.reference,'succeeded','late');
+    const headers = { 'X-Test-Admin':'admin' };
+    const { items } = await (await request('/api/admin/review',undefined,headers)).json() as any;
+    expect(items[0].reason).toBe('late_payment');
+    expect((await request(`/api/admin/review/${items[0].id}`,{version:0,status:'resolved',note:'Handled outside commerce'},headers,'PATCH')).status).toBe(200);
+    expect(await sql('SELECT status FROM orders WHERE id=?',order.id).first('status')).toBe('cancelled');
+    expect(await count('outbox_events')).toBe(0);
+    expect(await sql("SELECT on_hand,reserved FROM inventory WHERE variant_id='a'").first()).toEqual({on_hand:1,reserved:0});
+    const placed = await place('second-checkout',2);
+    expect(placed.status).toBe(200);
+    const second = await placed.json() as any;
+    await sql('UPDATE payment_attempts SET checks=8,next_check=0 WHERE order_id=?',second.order.id).run();
+    await worker.scheduled({} as ScheduledController,e);
+    const list = await (await request('/api/admin/review',undefined,headers)).json() as any;
+    const recovery = list.items.find((item:any)=>item.reason==='reconciliation_exhausted');
+    const evidence = await (await request(`/api/admin/review/${recovery.id}`,undefined,headers)).json() as any;
+    expect(evidence.events).toEqual([]);
+    expect((await request(`/api/admin/review/${recovery.id}`,{version:0,status:'resolved',note:'Provider investigation handled externally'},headers,'PATCH')).status).toBe(200);
+    expect(await sql('SELECT status FROM orders WHERE id=?',second.order.id).first('status')).toBe('pending_payment');
+    expect(await sql("SELECT reserved FROM inventory WHERE variant_id='a'").first('reserved')).toBe(1);
+  });
   it('accepts canonical dev portal mutations without relaxing production or admin checks', async () => {
     const payload = {slug:'dev-portal',name:'Dev portal',variants:[{sku:'PORTAL',name:'Default',price:157000,weight:275,stock:4}]};
     const proxied = (origin = 'http://shop.test', admin = 'admin') => new Request('http://shop.test/api/admin/products', {method:'POST',headers:{Origin:origin,'Content-Type':'application/json','X-Test-Admin':admin},body:JSON.stringify(payload)});
