@@ -26,6 +26,17 @@ Pemeriksaan gabungan: `npm run check`, `npm test` (25 commerce + 22 integration/
 
 Browser Chromium desktop/390px memeriksa session dev asli, foto di R2/D1 lokal beserta reload, review resolved/audit dengan order tetap pending dan stok reservasi tetap sama, serta pagination 20→22 order milik akun tanpa memasukkan guest ber-email sama. Detail order menerima focus dan tidak berubah ke input referensi lain ketika diperbarui. Ini pemeriksaan layout Chromium, bukan real-device/touch test. Video memakai data order sintetis; pencarian/quote happy path memakai respons UI terkontrol, sedangkan endpoint server memakai tes provider terkontrol. Gambar dilayani melalui bridge R2 lokal disposable, bukan custom domain cloud. Tidak ada transaksi DOKU, OAuth Google atau Komerce live yang diklaim.
 
+## Penuntasan workflow baseline — 13 Oktober 2026
+
+- Edit/activate/archive produk dan SKU, tambah SKU dengan limit 30 atomik, serta initial inventory/ledger/audit dalam satu D1 batch. PATCH tidak lagi mewarisi default create Zod 4 yang dapat menghapus description atau mengubah mode PO secara tidak sengaja.
+- Saldo dan ledger inventory, listing/edit/deactivate campaign future/past/inactive, serta pagination dengan cursor tie-safe dan terminal null. Counter campaign dan snapshot order tidak ditimpa oleh draft UI.
+- Detail item/contact/address/shipping/payment/timeline order dan fulfillment paid-only processing → shipped dengan resi → delivered/completed. Closing dialog, pergantian tab dan response terlambat tidak membatalkan rekonsiliasi write yang sudah diakui server atau menimpa draft baru.
+- Panel Operasional dengan sampel oldest-first terindeks dan bounded; request ID/error/retry logs tanpa raw payload/URL/credential; Cron mencoba kedua scanner meskipun salah satunya gagal. Ini bukan external alert service.
+- Customer dapat membuka kembali payment URL HTTPS attempt pending yang sama; tidak membuat attempt baru dan tidak menawarkan pembayaran ulang pada completed order.
+- Import backup menyiapkan seluruh definisi tabel sebelum row insert, memperbaiki export populated Better Auth yang mereferensikan tabel parent belum dibuat. SQL asli/checksum, quoted multiline text, indeks dan trigger dipertahankan; temporary SQL privat dibersihkan.
+
+Migration 0006/0007 hanya diterapkan lokal. Oracle telah mereview katalog, inventory/campaign, order, operations, payment resume dan recovery; finding dibetulkan dan review ulang masing-masing tidak menyisakan blocker. Pemeriksaan ulang 13 Oktober 20:16 UTC: **100 tes lulus** (34 commerce + 66 integration/storage/checkout/operations/UI/recovery), termasuk restore workerd nyata. Check/build/deploy dry-run lulus; production dependency audit tidak menemukan vulnerability. Bukti sebelum/sesudah, angka query dan batas klaim dicatat di [local-verification.md](local-verification.md). Durasi soak hanya boleh diklaim setelah prosesnya selesai dan timestamp diverifikasi.
+
 ## Gate yang tidak boleh disamarkan
 
 1. Resource, secret dan hostname staging/production nyata + otorisasi provision/deploy/migration. Root Wrangler masih lokal/ID dummy.

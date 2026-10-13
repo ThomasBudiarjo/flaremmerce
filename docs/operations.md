@@ -19,6 +19,8 @@ Backup **default LOCAL** (`d1 export DB --local --output PATH`, root `wrangler.j
 
 Restore memerlukan `--database` dan `--persist-to` baru; tidak ada flag remote, tidak menerima direktori existing atau direktori di bawah `.wrangler`. Database binding boleh sama tetapi storage terisolasi. Parent direktori harus sudah ada. Checksum/ukuran diverifikasi **sebelum** membuat target; setelah import, periksa seluruh table count, foreign key dan SQLite integrity. `PRAGMA integrity_check` via D1 SQL API pada versi ini ditolak `SQLITE_AUTH`; script menjalankannya melalui Python SQLite **read-only pada file disposable**, bukan live D1. Layout Miniflare lokal bisa berubah: script fail closed bila tidak menemukan tepat satu file database nonmetadata. Restore gagal dapat menyisakan target parsial; jangan gunakan target tersebut, investigasi lalu hapus hanya direktori disposable yang telah dipastikan. Tidak ada auto-switch binding atau production overwrite.
 
+Export Wrangler populated dapat memasukkan row session sebelum definisi tabel user. `defer_foreign_keys` tidak menyelesaikan referensi ke tabel yang belum ada. Importer menyiapkan salinan privat (directory 0700, SQL 0600), memindahkan seluruh ordinary CREATE TABLE sebelum data tanpa mengubah snapshot asli. Parser SQLite mempertahankan semicolon di quoted text dan trigger multistatement; incomplete/unsupported dump ditolak. Temporary copy dibersihkan dan SQL/error diagnostics yang mungkin memuat credential tidak dicetak. Ini penanganan format export Wrangler, bukan importer SQL arbitrer.
+
 ### Remote dan penyimpanan privat: hanya operator berotorisasi
 
 Perintah berikut **tidak dijalankan dalam implementasi ini**. Review config/resource/account, dampak export pada database aktif, maintenance window serta dokumentasi [D1 export/import](https://developers.cloudflare.com/d1/best-practices/import-export-data/) sebelum mengotorisasi remote export. Jangan menganggap export cloud tanpa blocking/biaya. Baseline script hanya membantu export serta restore lokal, bukan scheduler cloud atau DR penuh.
@@ -42,6 +44,8 @@ Tidak ada public domain/r2.dev pada bucket backup. Least privilege, MFA akun, au
 
 Kontrol negatif dijalankan: output backup existing ditolak; restore existing target, target `.wrangler` dan flag `--remote` ditolak; SQL dimodifikasi ditolak checksum sebelum target dibuat. `node --check` lulus untuk tiga script. Load-test menolak path checkout dan concurrency 51 sebelum network request. Preview tidak tersedia pada pemeriksaan ulang, sehingga tidak ada angka p50/p95 aplikasi yang diklaim.
 
+Rehearsal ulang 13 Oktober setelah tujuh migration dan transaksi/session lokal sintetis: snapshot **28.612 bytes**, **27 tabel**, **27 indeks**, **15 trigger**, seluruh count/integrity/FK sama. Backup termasuk import validation **32.337 ms**, restore **30.496 ms**. Percobaan pertama menemukan kegagalan missing parent table di atas; setelah perbaikan, snapshot populated yang sama dapat dipulihkan. Tes permanen juga memeriksa exact multiline token, efek dua INSERT trigger, penolakan target existing dan checksum salah sebelum target dibuat. Angka ini lokal, bukan SLA atau DR production.
+
 ## Isolasi staging/production dan secret
 
 - Root config lokal memakai ID dummy; **bukan** template siap deployment. Operator menyediakan config masing-masing env dengan D1 ID, R2 bucket privat/media, queue (bila aktif), hostname/origin dan Cron terpisah. Binding env tidak diasumsikan inherited. Review generated Worker config juga, bukan hanya file root.
@@ -62,6 +66,10 @@ Bootstrap initialized **tidak pernah dibuka kembali**. Jika semua admin kehilang
 ## Observability dan alert
 
 Workers Logs: correlation ID, reference nonsecret, transition dan attempt; redaksi cookie/token/PII/raw provider payload. Audit bisnis terpisah dari technical log. Operator menetapkan threshold, kanal alert, recipient dan jadwal review sesuai kemampuan Free; outbound alert otomatis tidak dianggap tersedia/gratis. Pantau errors/CPU exceeded, Workers requests, D1 rows read/written dan storage, queue operations/DLQ, R2 operations/storage, unknown payment, oldest unfinished outbox dan manual review. Gunakan dashboard/metrics cloud dan D1 query insights dengan otorisasi, bukan waktu wall HTTP sebagai CPU.
+
+Setelah migration 0007, panel **Operasional** memuat GET `/api/admin/operations` melalui fresh admin authorization dan private/no-store. Setiap kategori mengambil 21 row tertua dan menampilkan 20: `hasMore`/`atLeast` adalah sampel dan batas bawah, bukan total backlog. Payments mencakup retry exhausted; outbox mencakup pending/dead. Partial age indexes memastikan LIMIT tidak membutuhkan sort seluruh backlog; jangan drop/rename indexes tanpa mengubah query INDEXED BY. Fixture workerd 5.000 row membuktikan payment/outbox reads turun dari 10.003/10.002 menjadi 21 dengan hasil identik, bukan pengukuran biaya/CPU cloud.
+
+Respons API mendapat `X-Request-ID` baru di luar cache storage, termasuk cache hit. Log `api_error` mencatat category/status/requestId, bukan URL/query/body atau pesan exception. Cron menjalankan payment recovery dan outbox recovery secara independen lalu melaporkan failure tersanitasi; satu scanner gagal tidak mencegah scanner lain dicoba. Retry/unknown/dead logs tidak membuktikan alert terkirim: destination/threshold tetap gate operasional.
 
 Contoh query read-only untuk schema saat ini (timestamp epoch ms, `:now`/`:cutoff` disuplai operator; bounded list):
 

@@ -28,6 +28,10 @@ Admin memakai komponen resmi **shadcn/ui Radix Nova**, preset neutral, Tailwind 
 
 Daftar produk/pesanan memakai tabel dengan pencarian lokal atas data yang sudah dimuat (bukan pencarian seluruh database). Detail dan tambah produk memakai dialog Radix. Inventori/pre-order memilih SKU dari katalog server, tanpa mengetik ID manual. Login dev dan Google tetap menggunakan auth server; shell login tidak menampilkan data admin sebelum session tersedia.
 
+Produk existing dapat diedit/diarsipkan, ditambah SKU (maksimal 30), dan diaktifkan kembali. Inventori menampilkan saldo tersedia/reservasi serta ledger berpaginasi. Campaign PO termasuk yang future/inactive dapat diedit tanpa mengubah snapshot order atau menimpa counter sold/reserved. Detail pesanan menampilkan item yang benar-benar dibeli dan hanya menawarkan langkah fulfillment berikutnya untuk order paid. Produk/pesanan menyediakan load-more; pencarian tetap hanya atas data yang dimuat.
+
+Panel Operasional menampilkan sampel 20 unfinished tertua per kategori, termasuk payment exhausted dan outbox dead; indikator lebih dari 20 adalah batas bawah, bukan total seluruh database. Terapkan migration 0006/0007 sebelum memakai API/panel baru. Customer pending dapat melanjutkan URL HTTPS payment attempt yang sama ketika tersedia; tombol ini tidak membuat attempt baru dan tidak muncul untuk order selesai.
+
 Foto utama dapat diunggah dari dialog produk baru/existing (JPEG/PNG/WebP ≤5 MiB; memerlukan MEDIA dan MEDIA_ORIGIN). Manual review menyediakan bukti, catatan wajib, status ditangani/buka kembali dan audit; tindakan review tidak mengubah pembayaran, stok atau pesanan. Terapkan migration 0004/0005 sebelum memakai fitur ini dan riwayat customer.
 
 Checkout memilih wilayah melalui pencarian Komerce, bukan mengetik destination ID. Riwayat di `/order` hanya memuat pesanan yang dibuat dengan akun pemilik; guest tetap memakai token privat, bukan klaim berdasarkan email sama. Credential provider tetap wajib dan tidak ada fallback ongkir gratis.
@@ -62,5 +66,6 @@ Tes memakai D1/R2 workerd lokal, library auth asli, dan respons provider terkont
 - [Kontrak provider dan auth](docs/integrations.md)
 - [Storage/inbound email](docs/storage.md)
 - [Runbook, backup/restore dan load test](docs/operations.md)
+- [Bukti verifikasi lokal dan batas klaim](docs/local-verification.md)
 
 **Batas penting:** Checkout-wide expiry/grace DOKU belum terbukti untuk merchant nyata. Status EXPIRED tingkat channel tidak otomatis membatalkan order; reservasi ambigu ditahan dan masuk manual review. Recovery token guest lintas perangkat, retensi PII, SLA RPO/RTO, alert produksi dan CPU/load cloud membutuhkan keputusan/pengujian operasional sebelum production.
