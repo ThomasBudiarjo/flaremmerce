@@ -40,8 +40,20 @@ export function inspect(database, config, persist) {
 }
 
 export function importSql(database, config, persist, sql) {
-  return wrangler(['d1', 'execute', database, '--config', config, '--local',
-    '--persist-to', persist, '--file', sql, '--yes']);
+  const temporary = mkdtempSync(`${tmpdir()}/flaremmerce-import-`);
+  chmodSync(temporary, 0o700);
+  try {
+    const prepared = resolve(temporary, 'snapshot.sql');
+    const result = spawnSync('python3', [fileURLToPath(new URL('./prepare-d1-import.py', import.meta.url)), sql, prepared], { encoding: 'utf8' });
+    if (result.error || result.status !== 0) throw new Error('Could not prepare exported SQL (complete Wrangler dump and python3 required)');
+    try {
+      return wrangler(['d1', 'execute', database, '--config', config, '--local',
+        '--persist-to', persist, '--file', prepared, '--yes']);
+    } catch {
+      // Wrangler diagnostics may echo INSERT values, including auth secrets.
+      throw new Error('Local snapshot import failed; SQL diagnostics withheld to protect credentials');
+    }
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
 }
 
 async function main() {
