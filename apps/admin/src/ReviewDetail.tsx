@@ -54,11 +54,17 @@ export function ReviewDetail({ id, api, refresh }: { id: string; api: (path: str
           <div><dt className="text-muted-foreground">Percobaan pembayaran</dt><dd className="break-all">{detail.attempt ? `${detail.attempt.reference} · ${statuses[detail.attempt.status] || detail.attempt.status}` : "Tidak ditemukan"}</dd></div>
           <div><dt className="text-muted-foreground">Kasus dicatat (WIB)</dt><dd>{time(detail.item.createdAt)}</dd></div>
         </dl>
-        <h3 className="font-semibold">Event pembayaran terverifikasi (maks. 100 terbaru)</h3>
+        <h3 className="font-semibold">Event pemicu kasus</h3>
+        {detail.triggeringEvent ? <dl className="grid gap-2 rounded-md border p-3 text-sm">
+          <div><dt className="text-muted-foreground">Referensi pembayaran</dt><dd className="break-all font-medium">{detail.triggeringEvent.reference}</dd></div>
+          <div><dt className="text-muted-foreground">Event / waktu (WIB)</dt><dd className="break-all">{detail.triggeringEvent.eventKey} · {time(detail.triggeringEvent.createdAt)}</dd></div>
+          <div><dt className="text-muted-foreground">Nominal dan status</dt><dd>{amount(detail.triggeringEvent.amount, detail.triggeringEvent.currency)} · {statuses[detail.triggeringEvent.status] || detail.triggeringEvent.status}</dd></div>
+        </dl> : <p className="text-sm text-muted-foreground">Tidak ada event pemicu tersimpan untuk kasus ini.</p>}
+        <h3 className="font-semibold">Event pembayaran terkait (maks. 100 terbaru, selain pemicu)</h3>
         {detail.events.length ? <Table>
-          <TableHeader><TableRow><TableHead>Event / waktu (WIB)</TableHead><TableHead>Nominal</TableHead><TableHead>Status</TableHead></TableRow></TableHeader>
-          <TableBody>{detail.events.map((event: any) => <TableRow key={event.eventKey}><TableCell className="max-w-56 whitespace-normal break-all"><div>{event.eventKey}</div><div className="text-xs text-muted-foreground">{time(event.createdAt)}</div></TableCell><TableCell>{amount(event.amount, event.currency)}</TableCell><TableCell>{statuses[event.status] || event.status}</TableCell></TableRow>)}</TableBody>
-        </Table> : <p className="text-sm text-muted-foreground">Belum ada event pembayaran terverifikasi untuk kasus ini.</p>}
+          <TableHeader><TableRow><TableHead className="w-1/2 whitespace-normal">Referensi / event / waktu (WIB)</TableHead><TableHead>Nominal</TableHead><TableHead>Status</TableHead></TableRow></TableHeader>
+          <TableBody>{detail.events.map((event: any) => <TableRow key={event.eventKey}><TableCell className="max-w-56 whitespace-normal break-all"><div className="font-medium">{event.reference}</div><div>{event.eventKey}</div><div className="text-xs text-muted-foreground">{time(event.createdAt)}</div></TableCell><TableCell className="whitespace-normal">{amount(event.amount, event.currency)}</TableCell><TableCell className="whitespace-normal">{statuses[event.status] || event.status}</TableCell></TableRow>)}</TableBody>
+        </Table> : <p className="text-sm text-muted-foreground">Belum ada event pembayaran terkait lainnya.</p>}
         <Label htmlFor={`note-${id}`}>Catatan operator / penyelesaian (wajib)</Label>
         <Textarea id={`note-${id}`} value={note} maxLength={2000} onChange={(e) => setNote(e.target.value)} />
         <div className="flex flex-wrap gap-2">

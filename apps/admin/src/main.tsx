@@ -216,6 +216,9 @@ function App() {
   const [user, setUser] = useState<any>(null);
   const [orders, setOrders] = useState<any[]>([]);
   const [review, setReview] = useState<any[]>([]);
+  const [reviewCursor, setReviewCursor] = useState<{ before: number; beforeId: string } | null>(null);
+  const [reviewLoadingMore, setReviewLoadingMore] = useState(false);
+  const [reviewPageError, setReviewPageError] = useState("");
   const [catalogue, setCatalogue] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -270,6 +273,8 @@ function App() {
       } else if (tab === "review") {
         const data = await api("/api/admin/review");
         setReview(data.items);
+        setReviewCursor(data.nextCursor);
+        setReviewPageError("");
       } else {
         const data = await api("/api/admin/orders");
         setOrders(data.orders);
@@ -278,6 +283,21 @@ function App() {
       setError((e as Error).message);
     } finally {
       setLoading(false);
+    }
+  }
+  async function loadMoreReview() {
+    if (!reviewCursor || reviewLoadingMore) return;
+    setReviewLoadingMore(true);
+    setReviewPageError("");
+    try {
+      const query = new URLSearchParams({ before: String(reviewCursor.before), beforeId: reviewCursor.beforeId });
+      const data = await api(`/api/admin/review?${query}`);
+      setReview((rows) => [...rows, ...data.items.filter((item: any) => !rows.some((row) => row.id === item.id))]);
+      setReviewCursor(data.nextCursor);
+    } catch (e) {
+      setReviewPageError((e as Error).message);
+    } finally {
+      setReviewLoadingMore(false);
     }
   }
   useEffect(() => {
@@ -1347,7 +1367,7 @@ function App() {
                         <CardTitle>Pemeriksaan operator</CardTitle>
                         <Button
                           variant="outline"
-                          disabled={loading}
+                          disabled={loading || reviewLoadingMore}
                           onClick={refresh}
                         >
                           <RefreshCw />
@@ -1411,8 +1431,8 @@ function App() {
                                   <div className="flex flex-wrap items-center gap-2">
                                     <Badge variant={item.status === "open" ? "outline" : "secondary"}>{item.status === "open" ? "Perlu ditangani" : "Ditangani"}</Badge>
                                     <ReviewDetail id={item.id} api={api} refresh={async () => {
-                                      const data = await api("/api/admin/review");
-                                      setReview(data.items);
+                                      const data = await api(`/api/admin/review/${encodeURIComponent(item.id)}`);
+                                      setReview((rows) => rows.map((row) => row.id === item.id ? { ...row, ...data.item } : row));
                                     }} />
                                   </div>
                                 </TableCell>
@@ -1421,6 +1441,10 @@ function App() {
                           </TableBody>
                         </Table>
                       )}
+                      {reviewPageError && <p role="alert" className="mt-3 text-destructive">{reviewPageError}</p>}
+                      {reviewCursor && <Button className="mt-4" variant="outline" disabled={loading || reviewLoadingMore} onClick={loadMoreReview}>
+                        {reviewLoadingMore ? "Memuat…" : reviewPageError ? "Coba lagi" : "Muat lebih banyak"}
+                      </Button>}
                     </CardContent>
                   </Card>
                 )}

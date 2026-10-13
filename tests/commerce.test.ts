@@ -117,7 +117,7 @@ describe('commerce public API with real D1', () => {
     expect((await request(route,{version:0,status:'resolved',note:'External refund'}, {...headers,Origin:'https://evil.test'},'PATCH')).status).toBe(403);
     const evidence = await (await request(route,undefined,headers)).json() as any;
     expect(evidence.order).toMatchObject({status:'pending_payment',total:1100});
-    expect(evidence.events[0]).toMatchObject({eventKey:'mismatch',amount:1,currency:'USD'});
+    expect(evidence.triggeringEvent).toMatchObject({eventKey:'mismatch',amount:1,currency:'USD'});
     expect(evidence.attempt.url).toBeUndefined();
     expect(evidence.order.guestTokenHash).toBeUndefined();
     const tables = ['orders','payment_attempts','payment_events','inventory','stock_reservations','preorder_campaigns','outbox_events','inventory_movements','order_events'];
@@ -138,6 +138,38 @@ describe('commerce public API with real D1', () => {
     expect((await snapshot()).map(r=>r.results)).toEqual(before.map(r=>r.results));
     expect((await request('/api/admin/review/missing',undefined,headers)).status).toBe(404);
   });
+  it('keeps triggering evidence beyond 100 newer events and exposes unmatched payment references', async () => {
+    const { order } = await (await place()).json() as any;
+    await notify(order.reference,'succeeded','old-mismatch',1,'USD');
+    await notify('unmatched-invoice','succeeded','unknown-event',2300);
+    await sql("UPDATE payment_events SET created_at=1 WHERE event_key='old-mismatch'").run();
+    await db().batch(Array.from({length:101}, (_,i) => sql("INSERT INTO payment_events(event_key,reference,amount,currency,status,created_at) VALUES(?, ?,1100,'IDR','pending',?)", `new-${i}`,order.reference,i+2)));
+    const headers = {'X-Test-Admin':'admin'};
+    const { items } = await (await request('/api/admin/review',undefined,headers)).json() as any;
+    const mismatch = items.find((item:any) => item.reason === 'payment_mismatch');
+    const evidence = await (await request(`/api/admin/review/${mismatch.id}`,undefined,headers)).json() as any;
+    expect(evidence.triggeringEvent).toMatchObject({eventKey:'old-mismatch',reference:order.reference,amount:1,currency:'USD'});
+    expect(evidence.events).toHaveLength(100);
+    expect(evidence.events[0].eventKey).toBe('new-100');
+    expect(evidence.events.at(-1).eventKey).toBe('new-1');
+    const unknown = items.find((item:any) => item.reason === 'unknown_reference');
+    const unmatched = await (await request(`/api/admin/review/${unknown.id}`,undefined,headers)).json() as any;
+    expect(unmatched.order).toBeNull();
+    expect(unmatched.attempt).toBeNull();
+    expect(unmatched.triggeringEvent).toMatchObject({eventKey:'unknown-event',reference:'unmatched-invoice',amount:2300,currency:'IDR'});
+    expect(unmatched.events).toEqual([]);
+  });
+  it('paginates review cases past resolved cases without skipping equal timestamps', async () => {
+    await db().batch(Array.from({length:52}, (_,i) => sql("INSERT INTO manual_review(id,reason,created_at,status) VALUES(?,'reconciliation_exhausted',10,?)", `case-${String(i).padStart(2,'0')}`,i < 2 ? 'open' : 'resolved')));
+    const headers = {'X-Test-Admin':'admin'};
+    const first = await (await request('/api/admin/review',undefined,headers)).json() as any;
+    expect(first.items).toHaveLength(50);
+    expect(first.items.every((item:any) => item.status === 'resolved')).toBe(true);
+    const query = new URLSearchParams({before:String(first.nextCursor.before),beforeId:first.nextCursor.beforeId});
+    const second = await (await request(`/api/admin/review?${query}`,undefined,headers)).json() as any;
+    expect(second.items.map((item:any) => item.id)).toEqual(['case-01','case-00']);
+    expect(second.items.every((item:any) => item.status === 'open')).toBe(true);
+  });
   it('supports late-payment and reconciliation cases without events or reviving cancelled orders', async () => {
     const { order } = await (await place()).json() as any;
     await notify(order.reference,'expired','expiry');
@@ -157,6 +189,7 @@ describe('commerce public API with real D1', () => {
     const list = await (await request('/api/admin/review',undefined,headers)).json() as any;
     const recovery = list.items.find((item:any)=>item.reason==='reconciliation_exhausted');
     const evidence = await (await request(`/api/admin/review/${recovery.id}`,undefined,headers)).json() as any;
+    expect(evidence.triggeringEvent).toBeNull();
     expect(evidence.events).toEqual([]);
     expect((await request(`/api/admin/review/${recovery.id}`,{version:0,status:'resolved',note:'Provider investigation handled externally'},headers,'PATCH')).status).toBe(200);
     expect(await sql('SELECT status FROM orders WHERE id=?',second.order.id).first('status')).toBe('pending_payment');
