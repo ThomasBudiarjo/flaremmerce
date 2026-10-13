@@ -7,7 +7,14 @@ export function demand(ok: unknown, status = 400, message = 'Invalid request'): 
   if (!ok) throw new IntegrationError(status, message);
 }
 export function origin(request: Request, env: IntegrationEnv) {
-  demand(request.headers.get('Origin') === new URL(env.PUBLIC_ORIGIN).origin, 403, 'Origin rejected');
+  const expected = new URL(env.PUBLIC_ORIGIN);
+  const received = request.headers.get('Origin');
+  // Local portal/Wrangler terminates TLS and rewrites Origin to HTTP.
+  // Accept only the exact canonical host/port, only in explicit development.
+  const localPortal = env.APP_ENV === 'development' && env.DEV_LOGIN_ENABLED === 'true'
+    && expected.protocol === 'https:' && received === `http://${expected.host}`
+    && new URL(request.url).origin === received;
+  demand(received === expected.origin || localPortal, 403, 'Origin rejected');
 }
 export async function body(request: Request, limit = 16384): Promise<string> {
   demand(Number(request.headers.get('content-length') || 0) <= limit, 413, 'Body too large');

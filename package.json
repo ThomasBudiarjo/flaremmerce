@@ -4,7 +4,7 @@
   "type": "module",
   "workspaces": ["apps/storefront", "apps/admin"],
   "scripts": {
-    "dev": "wrangler dev --config apps/storefront/dist/server/wrangler.json --persist-to .wrangler/state --ip 0.0.0.0 --port 8787",
+    "dev": "node scripts/dev-setup.mjs && wrangler dev --config apps/storefront/dist/server/wrangler.json --env-file \"$(pwd)/.dev.vars\" --local --persist-to .wrangler/state --ip 0.0.0.0 --port 8787",
     "build": "npm run build -w @flaremmerce/storefront && npm run build -w @flaremmerce/admin && node scripts/assets.mjs",
     "check": "tsc --noEmit && npm run check -w @flaremmerce/storefront && tsc --noEmit -p apps/admin/tsconfig.json",
     "test": "vitest run --config vitest.config.ts && vitest run --config vitest.integrations.config.ts",

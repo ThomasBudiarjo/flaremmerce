@@ -1,32 +1,58 @@
 import { betterAuth } from 'better-auth';
+import { createAuthEndpoint } from 'better-auth/api';
+import { setSessionCookie } from 'better-auth/cookies';
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import { drizzle } from 'drizzle-orm/d1';
 import * as schema from './schema';
 import type { IntegrationEnv } from './index';
 import { demand, equal, json, origin } from './security';
 
+export function devLoginEnabled(env: IntegrationEnv) {
+  return env.APP_ENV === 'development' && env.DEV_LOGIN_ENABLED === 'true';
+}
 export function auth(env: IntegrationEnv) {
-  demand(env.BETTER_AUTH_SECRET && env.BETTER_AUTH_SECRET.length >= 32 && env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET, 503, 'Authentication unavailable');
+  const development = devLoginEnabled(env);
+  demand(env.BETTER_AUTH_SECRET && env.BETTER_AUTH_SECRET.length >= 32 && (development || (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET)), 503, 'Authentication unavailable');
   return betterAuth({
     secret:env.BETTER_AUTH_SECRET, baseURL:env.PUBLIC_ORIGIN, trustedOrigins:[env.PUBLIC_ORIGIN],
     database:drizzleAdapter(drizzle(env.DB, {schema}), {provider:'sqlite', schema, transaction:false}),
     emailAndPassword:{enabled:false},
-    socialProviders:{google:{clientId:env.GOOGLE_CLIENT_ID, clientSecret:env.GOOGLE_CLIENT_SECRET}},
+    socialProviders:env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET ? {google:{clientId:env.GOOGLE_CLIENT_ID, clientSecret:env.GOOGLE_CLIENT_SECRET}} : {},
+    plugins:development ? [{
+      id:'development-login',
+      endpoints:{developmentLogin:createAuthEndpoint('/development-login', {method:'POST'}, async ctx => {
+        // Fixed local identity: callers cannot choose an email or impersonate a user.
+        const adapter = ctx.context.internalAdapter;
+        const existing = await adapter.findUserByEmail('admin@flaremmerce.test');
+        const user = existing?.user ?? await adapter.createUser({id:'flaremmerce-dev-admin', email:'admin@flaremmerce.test', name:'Admin lokal', emailVerified:false}, {method:'development-login'});
+        demand(user.id === 'flaremmerce-dev-admin', 409, 'Development identity conflict');
+        // Never take over a previously initialized installation or restore a revoked role.
+        await env.DB.batch([
+          env.DB.prepare('INSERT INTO admin_roles (user_id, granted_by, created_at) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM installation)').bind(user.id, user.id, Date.now()),
+          env.DB.prepare('INSERT INTO installation (id, owner_id, initialized_at) VALUES (1, ?, ?) ON CONFLICT(id) DO NOTHING').bind(user.id, Date.now()),
+        ]);
+        demand(await env.DB.prepare('SELECT user_id FROM admin_roles WHERE user_id=?').bind(user.id).first(), 403, 'Development administrator unavailable');
+        const session = await adapter.createSession(user.id, false);
+        await setSessionCookie(ctx, {session, user}, false);
+        return ctx.json({ok:true});
+      })},
+    }] : [],
     account:{accountLinking:{enabled:false}},
     session:{cookieCache:{enabled:true, maxAge:60, strategy:'compact'}},
-    advanced:{useSecureCookies:true},
+    advanced:{useSecureCookies:!development || new URL(env.PUBLIC_ORIGIN).protocol === 'https:'},
   });
 }
 export async function getCustomer(request: Request, env: IntegrationEnv): Promise<{id:string}|null> {
   if (!/(?:^|;\s*)(?:__Secure-)?better-auth\.session_token=/.test(request.headers.get('Cookie') ?? '')) return null;
   // Commerce uses this identity for checkout and private order/PII authorization.
   const session = await auth(env).api.getSession({headers:request.headers, query:{disableCookieCache:true}});
+  if (session?.user.id === 'flaremmerce-dev-admin' && !devLoginEnabled(env)) return null;
   return session ? {id:session.user.id} : null;
 }
 async function fresh(request: Request, env: IntegrationEnv) {
   // The official option is disableCookieCache, not bypassCookieCache.
   const session = await auth(env).api.getSession({headers:request.headers, query:{disableCookieCache:true}});
-  demand(session, 401, 'Authentication required'); return session;
+  demand(session && (session.user.id !== 'flaremmerce-dev-admin' || devLoginEnabled(env)), 401, 'Authentication required'); return session;
 }
 export async function requireAdmin(request: Request, env: IntegrationEnv): Promise<{id:string}> {
   const session = await fresh(request, env);

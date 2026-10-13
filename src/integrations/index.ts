@@ -8,6 +8,8 @@ export { createPayment, verifyPaymentWebhook, lookupPayment } from './payment';
 export interface IntegrationEnv {
   DB: D1Database;
   PUBLIC_ORIGIN: string;
+  APP_ENV?: string;
+  DEV_LOGIN_ENABLED?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   BETTER_AUTH_SECRET?: string;
@@ -30,7 +32,11 @@ export async function handleIntegrationRequest(request: Request, env: Integratio
     if (path.startsWith('/api/auth/')) {
       if (!['GET','HEAD'].includes(request.method)) {
         origin(request,env);
-        const raw = await body(request); request = new Request(request, {body:raw});
+        const raw = await body(request);
+        const headers = new Headers(request.headers);
+        // After our exact-origin guard, restore the canonical origin for Better Auth.
+        headers.set('Origin', new URL(env.PUBLIC_ORIGIN).origin);
+        request = new Request(request, {body:raw, headers});
       }
       response = await auth(env).handler(request);
     } else {

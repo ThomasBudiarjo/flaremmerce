@@ -1,4 +1,5 @@
 import { handleIntegrationRequest } from './integrations/index';
+import { devLoginEnabled } from './integrations/auth';
 import type { IntegrationEnv } from './integrations/index';
 import { commerceRequest } from './commerce/index';
 import { consumeOutbox, reconcile, recoverOutbox } from './commerce/payments';
@@ -19,6 +20,7 @@ export default {
       if (request.method === 'GET' && url.pathname === '/api/config') return json({
         turnstileSiteKey: env.TURNSTILE_SITE_KEY ?? null,
         googleEnabled: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.BETTER_AUTH_SECRET),
+        devLoginEnabled: devLoginEnabled(env),
       });
       // Explicit public allowlist. No session, cookie, token or PII enters these cache values.
       // Preserve supported pagination; discard tracking/unsupported query parameters.

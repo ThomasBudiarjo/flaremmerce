@@ -27,6 +27,38 @@ beforeEach(async () => {
 afterEach(async () => { vi.unstubAllGlobals(); await mf.dispose(); });
 
 describe('public authentication and installation', () => {
+  it('logs in without providers only in explicit development and keeps sessions server-validated', async () => {
+    const dev = {...env, APP_ENV:'development', DEV_LOGIN_ENABLED:'true', GOOGLE_CLIENT_ID:undefined, GOOGLE_CLIENT_SECRET:undefined};
+    const path = '/api/auth/development-login';
+    for (const flags of [{}, {APP_ENV:'production', DEV_LOGIN_ENABLED:'true'}, {APP_ENV:'development'}]) {
+      expect((await handleIntegrationRequest(request(path,{}), {...env,...flags}))?.status).not.toBe(200);
+    }
+    expect((await handleIntegrationRequest(request(path),dev))?.status).not.toBe(200);
+    expect((await handleIntegrationRequest(new Request(`https://shop.example${path}`, {method:'POST',headers:{Origin:'https://evil.example'},body:'{}'}),dev))?.status).toBe(403);
+    const proxied = () => new Request(`http://shop.example${path}`, {method:'POST',headers:{Origin:'http://shop.example', 'Content-Type':'application/json'},body:'{}'});
+    expect((await handleIntegrationRequest(proxied(),env))?.status).toBe(403);
+    expect((await handleIntegrationRequest(proxied(),dev))?.status).toBe(200);
+    expect((await handleIntegrationRequest(new Request(`http://shop.example${path}`, {method:'POST',headers:{Origin:'http://evil.example'},body:'{}'}),dev))?.status).toBe(403);
+    const response = await handleIntegrationRequest(request(path,{}),dev);
+    expect(response?.status).toBe(200);
+    const cookie = response!.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
+    expect(await requireAdmin(request('/admin',undefined,cookie),dev)).toEqual({id:'flaremmerce-dev-admin'});
+    expect((await handleIntegrationRequest(request('/api/setup'),dev))?.status).toBe(200);
+    expect(await env.DB.prepare('SELECT owner_id FROM installation').first('owner_id')).toBe('flaremmerce-dev-admin');
+    await expect(requireAdmin(request('/admin',undefined,cookie),env)).rejects.toMatchObject({status:401});
+    expect(await getCustomer(request('/customer',undefined,cookie),env)).toBeNull();
+    expect((await handleIntegrationRequest(request(path,{}),dev))?.status).toBe(200);
+    await env.DB.prepare('DELETE FROM admin_roles').run();
+    expect((await handleIntegrationRequest(request(path,{}),dev))?.status).not.toBe(200);
+    await expect(requireAdmin(request('/admin',undefined,cookie),dev)).rejects.toMatchObject({status:403});
+  });
+  it('does not let dev login take over an existing Google installation', async () => {
+    const cookie = await identity('owner');
+    expect((await handleIntegrationRequest(request('/api/setup',{secret},cookie),env))?.status).toBe(200);
+    expect((await handleIntegrationRequest(request('/api/auth/development-login',{}),{...env,APP_ENV:'development',DEV_LOGIN_ENABLED:'true'}))?.status).not.toBe(200);
+    expect(await env.DB.prepare('SELECT owner_id FROM installation').first('owner_id')).toBe('owner');
+    expect(await env.DB.prepare('SELECT count(*) n FROM admin_roles').first('n')).toBe(1);
+  });
   it('rejects tampered sessions and observes immediate revocation on admin checks', async () => {
     const cookie = await identity('owner');
     expect(await getCustomer(request('/api/auth/get-session',undefined,cookie),env)).toEqual({id:'owner'});

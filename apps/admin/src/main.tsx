@@ -128,6 +128,7 @@ function App() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [devLoginEnabled, setDevLoginEnabled] = useState(false);
   const [variants, setVariants] = useState([
     {
       sku: "",
@@ -199,9 +200,23 @@ function App() {
   }, [tab]);
   useEffect(() => {
     api("/api/config")
-      .then((c) => setGoogleEnabled(c.googleEnabled))
+      .then((c) => { setGoogleEnabled(c.googleEnabled); setDevLoginEnabled(c.devLoginEnabled); })
       .catch(() => {});
   }, []);
+  async function devLogin() {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api("/api/auth/development-login", {});
+      setMessage("Masuk sebagai admin lokal. Mode development, bukan production.");
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function login() {
     setError("");
     try {
@@ -307,10 +322,10 @@ function App() {
           </div>
           <button
             className="login-button"
-            disabled={!googleEnabled}
-            onClick={login}
+            disabled={devLoginEnabled ? busy : !googleEnabled}
+            onClick={devLoginEnabled ? devLogin : login}
           >
-            Masuk dengan Google
+            {devLoginEnabled ? "Masuk admin dev" : "Masuk dengan Google"}
           </button>
         </div>
         <div className="page-content" key={tab}>
@@ -345,7 +360,10 @@ function App() {
               }[tab]
             }
           </p>
-          {!googleEnabled && (
+          {devLoginEnabled && (
+            <div className="notice">Mode development: masuk tanpa provider melalui tombol “Masuk admin dev”. Hanya untuk database lokal.</div>
+          )}
+          {!googleEnabled && !devLoginEnabled && (
             <div className="notice">
               Google sign-in belum dikonfigurasi. Tidak ada akun atau password
               admin default.
@@ -371,11 +389,11 @@ function App() {
               <span className="tag">FIRST RUN</span>
               <h2>Siapkan toko pertamamu.</h2>
               <p>
-                Masuk dengan identitas Google terverifikasi, lalu masukkan
-                bootstrap secret milik deployment. Akun Google biasa tidak
-                otomatis menjadi admin.
+                {devLoginEnabled
+                  ? "Klik “Masuk admin dev” di kanan atas. Admin lokal disiapkan otomatis tanpa password atau bootstrap secret."
+                  : "Masuk dengan identitas Google terverifikasi, lalu masukkan bootstrap secret milik deployment. Akun Google biasa tidak otomatis menjadi admin."}
               </p>
-              <form
+              {!devLoginEnabled && <form
                 onSubmit={(e) =>
                   mutate(e, "/api/setup", (f) => ({
                     secret: f.get("bootstrapSecret"),
@@ -389,7 +407,7 @@ function App() {
                   autoComplete="off"
                 />
                 <button disabled={busy}>Aktifkan admin pertama</button>
-              </form>
+              </form>}
               <p>
                 Setup ditutup oleh server setelah berhasil. Tidak ada pemulihan
                 publik yang dijanjikan.
