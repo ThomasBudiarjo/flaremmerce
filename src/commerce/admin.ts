@@ -83,7 +83,7 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     const order = item.orderId ? await s(env, 'SELECT id,reference,status,fulfillment,total,currency,created_at AS createdAt FROM orders WHERE id=?', String(item.orderId)).first() : null;
     const attempt = item.orderId ? await s(env, 'SELECT id,reference,status,checks,next_check AS nextCheck,created_at AS createdAt FROM payment_attempts WHERE order_id=?', String(item.orderId)).first() : null;
     const events = await s(env, 'SELECT event_key AS eventKey,reference,amount,currency,status,processed,created_at AS createdAt FROM payment_events WHERE event_key=? OR reference=? ORDER BY created_at DESC,event_key DESC LIMIT 100', item.eventKey as string|null, attempt?.reference as string ?? '').all();
-    const history = await s(env, "SELECT actor,details_json,created_at AS createdAt FROM audit_logs WHERE target=? AND action='review.update' ORDER BY created_at,id",target).all();
+    const history = await s(env, "SELECT actor,details_json,created_at AS createdAt FROM audit_logs WHERE target=? AND action='review.update' ORDER BY created_at DESC,id DESC LIMIT 100",target).all();
     return json({ item, order, attempt, events: events.results, history: history.results.map(({details_json,...row})=>({...row,details:JSON.parse(String(details_json))})) });
   }
   if (path === '/api/admin/products' && request.method === 'POST') {

@@ -53,6 +53,8 @@ Kontrol negatif dijalankan: output backup existing ditolak; restore existing tar
 
 Gate V1 tetap terbuka sampai produk DOKU dipilih dan kontrak signature, acknowledgment/retry, status lookup, expiry/grace serta unit IDR dikonfirmasi. Timeout create-payment = unknown; cari status authoritative dengan merchant reference yang telah dipersist, jangan blind recreate. Expiry hanya boleh melepas reservasi setelah status provider terverifikasi sesuai kontrak; provider ambigu/network down masuk bounded reconciliation/manual review, bukan clock-only release. Late success, mismatch nominal/currency, double payment dan cancelled order tidak otomatis fulfill/refund.
 
+Setelah migration 0004, admin membuka Manual review → Bukti & tindakan untuk melihat ringkasan order/attempt/event dan maksimal 100 audit terbaru. Catatan wajib disimpan bersama status open/resolved dan audit immutable dalam atomic batch. `PATCH /api/admin/review/:id` memerlukan `{version,status,note}`; HTTP 409 berarti operator lain sudah mengubah kasus, sehingga bukti harus dimuat ulang sebelum keputusan baru. Status resolved hanya berarti penanganan eksternal sudah dicatat: tidak mengonfirmasi pembayaran, membatalkan order, melepas stok atau melakukan refund. Tentukan prosedur/bukti finansial eksternal dan pemilik tindak lanjut sebelum production; jangan menandai resolved sekadar untuk menyembunyikan alert.
+
 Queues **opsional** pada baseline Free: durable outbox D1 tetap source of truth. Bila binding/queue tidak tersedia, Cron scanner bounded batch/backoff/attempt cap menjalankan handler idempotent dari outbox; tidak mengandalkan `waitUntil`. Jika queue dipakai, send/mark dapat duplicate; consumer dan Cron harus aman redelivery, retention expiry dan DLQ redrive. Status pending/dead/oldest unfinished dimonitor. Outbound disabled tidak retry terus atau mengirim histori saat diaktifkan nanti. Mematikan Cron ketika queue sehat menghilangkan recovery dan tidak diperbolehkan tanpa scanner pengganti.
 
 Bootstrap initialized **tidak pernah dibuka kembali**. Jika semua admin kehilangan akses: operator berotorisasi mengidentifikasi Google identity terverifikasi di tabel `user`, approval dua pihak bila policy menetapkan, backup dahulu, lalu perubahan role terbatas bersama audit dalam satu atomic unit melalui tooling operator yang direview. Catat actor operator, alasan, ticket, target, waktu dan perubahan; cabut session yang terdampak dan uji akses baru. Jangan delete/update `installation`, drop trigger atau publish bootstrap secret. Belum ada script otomatis recovery role; jangan membuat SQL ad hoc yang memalsukan Google verification/audit actor.
@@ -69,8 +71,8 @@ SELECT id,reference,status,next_check FROM payment_attempts
  ORDER BY next_check LIMIT 100;
 SELECT id,status,attempts,next_run,created_at FROM outbox_events
  WHERE status='pending' AND next_run <= :now ORDER BY next_run LIMIT 100;
-SELECT id,reason,created_at FROM manual_review
- WHERE created_at >= :cutoff ORDER BY created_at,id LIMIT 100;
+SELECT id,reason,status,version,created_at FROM manual_review
+ WHERE status='open' AND created_at >= :cutoff ORDER BY created_at,id LIMIT 100;
 SELECT id,reference,created_at FROM orders
  WHERE status='pending_payment' AND created_at < :cutoff ORDER BY created_at LIMIT 100;
 ```

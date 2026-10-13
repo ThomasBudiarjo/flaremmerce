@@ -23,6 +23,13 @@ export default function OrderStatus() {
   const [error, setError] = useState("");
   const [opened, setOpened] = useState<{ reference: string; token: string }>();
   const requestSequence = useRef(0);
+  const detailRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (data?.order) {
+      detailRef.current?.scrollIntoView({ block: "start" });
+      detailRef.current?.focus({ preventScroll: true });
+    }
+  }, [data]);
   useEffect(() => {
     const returnedReference = new URLSearchParams(location.search).get("reference");
     let saved: { reference: string; token: string } | null = null;
@@ -61,7 +68,7 @@ export default function OrderStatus() {
   const order = data?.order;
   return (
     <>
-      <OrderHistory open={(ref) => {
+      <OrderHistory labels={labels} open={(ref) => {
         setReference(ref);
         setToken("");
         const url = new URL(location.href);
@@ -105,7 +112,7 @@ export default function OrderStatus() {
         </div>
       )}
       {order && (
-        <section className="panel">
+        <section ref={detailRef} className="panel" aria-label="Detail pesanan" tabIndex={-1}>
           <span className="badge">{order.reference}</span>
           <h2 style={{ marginTop: 20 }}>
             {labels[order.status] || order.status}

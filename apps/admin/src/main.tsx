@@ -73,7 +73,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import "./style.css";
-import { ReviewDetail } from "./ReviewDetail";
+import { ReviewDetail, reviewReasons } from "./ReviewDetail";
 
 const navigation = [
   ["orders", "Pesanan", ClipboardList],
@@ -1110,7 +1110,10 @@ function App() {
                                       <p className="break-all text-xs text-muted-foreground">
                                         ID produk: {p.id}
                                       </p>
-                                      <PrimaryPhoto product={p} onSaved={refresh} />
+                                      <PrimaryPhoto product={p} onSaved={async () => {
+                                        const data = await api("/api/admin/products");
+                                        setCatalogue(data.products);
+                                      }} />
                                       <Table>
                                         <TableHeader>
                                           <TableRow>
@@ -1391,7 +1394,7 @@ function App() {
                                     "Item review"}
                                 </TableCell>
                                 <TableCell>
-                                  {item.reason ||
+                                  {reviewReasons[item.reason] || item.reason ||
                                     item.status ||
                                     item.type ||
                                     "Perlu pemeriksaan"}
@@ -1405,8 +1408,13 @@ function App() {
                                     : "—"}
                                 </TableCell>
                                 <TableCell>
-                                  <Badge variant="outline">{item.status}</Badge>
-                                  <ReviewDetail id={item.id} api={api} refresh={refresh} />
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Badge variant={item.status === "open" ? "outline" : "secondary"}>{item.status === "open" ? "Perlu ditangani" : "Ditangani"}</Badge>
+                                    <ReviewDetail id={item.id} api={api} refresh={async () => {
+                                      const data = await api("/api/admin/review");
+                                      setReview(data.items);
+                                    }} />
+                                  </div>
                                 </TableCell>
                               </TableRow>
                             ))}

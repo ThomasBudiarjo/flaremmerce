@@ -28,6 +28,10 @@ Admin memakai komponen resmi **shadcn/ui Radix Nova**, preset neutral, Tailwind 
 
 Daftar produk/pesanan memakai tabel dengan pencarian lokal atas data yang sudah dimuat (bukan pencarian seluruh database). Detail dan tambah produk memakai dialog Radix. Inventori/pre-order memilih SKU dari katalog server, tanpa mengetik ID manual. Login dev dan Google tetap menggunakan auth server; shell login tidak menampilkan data admin sebelum session tersedia.
 
+Foto utama dapat diunggah dari dialog produk baru/existing (JPEG/PNG/WebP ≤5 MiB; memerlukan MEDIA dan MEDIA_ORIGIN). Manual review menyediakan bukti, catatan wajib, status ditangani/buka kembali dan audit; tindakan review tidak mengubah pembayaran, stok atau pesanan. Terapkan migration 0004/0005 sebelum memakai fitur ini dan riwayat customer.
+
+Checkout memilih wilayah melalui pencarian Komerce, bukan mengetik destination ID. Riwayat di `/order` hanya memuat pesanan yang dibuat dengan akun pemilik; guest tetap memakai token privat, bukan klaim berdasarkan email sama. Credential provider tetap wajib dan tidak ada fallback ongkir gratis.
+
 ## Credential dan resource
 
 `npm run dev` otomatis membuat `BETTER_AUTH_SECRET` dan `BOOTSTRAP_SECRET` random sekali di `.dev.vars` privat (permission 0600); restart mempertahankan nilainya. Buka `/admin/` lalu klik **Masuk admin dev**: tanpa Google/password, session Better Auth asli dan admin pertama pada database lokal kosong disiapkan otomatis. Tidak mengambil alih instalasi yang sudah memiliki owner atau mengembalikan role yang dicabut. Login dev memerlukan kedua flag server `APP_ENV=development` dan `DEV_LOGIN_ENABLED=true`; jangan pasang keduanya pada deployment shared/production. Session identitas dev ditolak oleh akses admin/commerce saat mode dev dimatikan. Portal dev memberi akses admin kepada siapa pun yang bisa membuka portal; jangan gunakan data nyata. Untuk HTTPS portal, jalankan `node scripts/dev-setup.mjs --origin https://HOST` sebelum restart dev server agar Origin/cookie sesuai.

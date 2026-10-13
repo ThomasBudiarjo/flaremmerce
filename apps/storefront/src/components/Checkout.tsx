@@ -410,6 +410,7 @@ export default function Checkout() {
               <option value="">Pilih wilayah sesuai alamat</option>
               {destinations.map((d) => <option key={d.id} value={d.id}>{d.label} — {d.postalCode}</option>)}
             </select>
+            {address.destination && <p className="muted" aria-live="polite">Tujuan: {destinations.find((d) => d.id === address.destination)?.label} · {address.postalCode}</p>}
             <button
               type="button"
               disabled={busy || invalid || !address.destination}

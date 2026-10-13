@@ -3,7 +3,7 @@ import { google } from "../lib/cart";
 import { date, money } from "../lib/catalog";
 
 type Summary = { reference: string; status: string; fulfillment: string; total: number; currency: string; createdAt: number };
-export default function OrderHistory({ open }: { open: (reference: string) => void }) {
+export default function OrderHistory({ open, labels }: { open: (reference: string) => void; labels: Record<string, string> }) {
   const [orders, setOrders] = useState<Summary[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
@@ -40,7 +40,7 @@ export default function OrderHistory({ open }: { open: (reference: string) => vo
     {!anonymous && !busy && !error && orders.length === 0 && <p>Belum ada pesanan untuk akun ini.</p>}
     {orders.map((order) => <div className="line" key={order.reference}>
       <button disabled={busy} onClick={() => open(order.reference)}>{order.reference}</button>
-      <p>{date(order.createdAt)} · {money(order.total)} · {order.status} · {order.fulfillment}</p>
+      <p>{date(order.createdAt)} · {money(order.total)} · {labels[order.status] || order.status} · {labels[order.fulfillment] || order.fulfillment}</p>
     </div>)}
     {!anonymous && error && <button disabled={busy} onClick={() => load(cursor || undefined)}>Coba lagi</button>}
     {!anonymous && cursor && !error && <button disabled={busy} onClick={() => load(cursor)}>Muat lebih banyak</button>}
