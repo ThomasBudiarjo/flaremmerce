@@ -1,9 +1,10 @@
 ---
 import "../styles/site.css";
 const {
-  title = "Flaremmerce — Katalog produk",
-  description = "Koleksi pilihan Flaremmerce. Ready stock dan pre-order dengan estimasi pengiriman yang jelas.",
+  title = "Flaremmerce — Toko board game",
+  description = "Temukan board game untuk sesi main berikutnya di Flaremmerce. Ready stock dan pre-order dengan estimasi pengiriman yang jelas.",
 } = Astro.props;
+const pathname = Astro.url.pathname.replace(/\/$/, "") || "/";
 ---
 
 <!doctype html>
@@ -19,19 +20,19 @@ const {
     <a class="skip" href="#main">
       Lewati ke konten
     </a>
+    <div class="store-note">Ready stock & pre-order <span aria-hidden="true">·</span> Pengiriman Indonesia</div>
     <header>
-      <a class="brand" href="/">
-        flare<span>mmerce</span>
-      </a>
+      <a class="brand" href="/" aria-label="Flaremmerce — beranda">flaremmerce</a>
       <nav aria-label="Navigasi utama">
-        <a href="/" aria-current={Astro.url.pathname === '/' || Astro.url.pathname === '/catalog' ? 'page' : undefined}>Katalog</a>
-        <a href="/order">
+        <a href="/catalog" aria-current={pathname === '/' || pathname === '/catalog' ? 'page' : undefined}>Koleksi</a>
+        <a class="shopping-info" href="/policies" aria-current={pathname === '/policies' ? 'page' : undefined}>Informasi belanja</a>
+        <a href="/order" aria-current={pathname === '/order' ? 'page' : undefined}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4v10l-8 4-8-4V7l8-4Z M4 7l8 4 8-4 M12 11v10 M8 5l8 4" /></svg>
           Pesanan
         </a>
-        <a class="cartlink" href="/cart">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2l3 12h11l2-9H6 M9 20h.01 M18 20h.01" /></svg>
-          Keranjang
+        <a class="cartlink" href="/cart" aria-current={pathname === '/cart' ? 'page' : undefined}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14l1 14H4L5 7Z M9 8V6a3 3 0 0 1 6 0v2" /></svg>
+          Tas belanja
         </a>
       </nav>
     </header>
@@ -39,12 +40,26 @@ const {
       <slot />
     </main>
     <footer>
-      <a class="brand" href="/">
-        flaremmerce
-      </a>
-      <p>Ready stock & pre-order · Pengiriman Indonesia</p>
-      <a href="/policies">Pengiriman & informasi belanja</a>
-      <small>© {new Date().getFullYear()} Flaremmerce · Indonesia</small>
+      <div class="footer-main">
+        <div>
+          <a class="brand" href="/">flaremmerce</a>
+          <p>Board game. Teman main. Satu ronde lagi.</p>
+        </div>
+        <div class="footer-links">
+          <h2>Belanja</h2>
+          <a href="/catalog">Semua produk</a>
+          <a href="/cart">Tas belanja</a>
+        </div>
+        <div class="footer-links">
+          <h2>Informasi</h2>
+          <a href="/policies">Pengiriman & pembayaran</a>
+          <a href="/order">Status pesanan</a>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <small>© {new Date().getFullYear()} Flaremmerce</small>
+        <small>Indonesia · IDR</small>
+      </div>
     </footer>
   </body>
 </html>

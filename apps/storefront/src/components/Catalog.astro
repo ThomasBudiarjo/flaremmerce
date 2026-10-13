@@ -28,13 +28,31 @@ const limit = Astro.url.searchParams.get("limit");
 if (limit !== null) nextQuery.set("limit", limit);
 ---
 
-<Layout title="Katalog produk — Flaremmerce">
+<Layout title="Board game untuk main bareng — Flaremmerce">
   <section class="section catalog">
-    <div class="row">
-      <h1>Katalog produk</h1>
-      <span class="muted">{products.length} produk di halaman ini</span>
+    <div class="catalog-intro">
+      <div>
+        <p class="eyebrow">Board games · Waktunya kumpul</p>
+        <h1>Buka kotaknya.<br /><span>Mulai serunya.</span></h1>
+      </div>
+      <div class="catalog-invitation">
+        <svg class="dice" viewBox="0 0 120 80" aria-hidden="true" fill="none">
+          <g transform="rotate(-12 36 42)">
+            <rect x="10" y="16" width="52" height="52" rx="8" stroke="currentColor" stroke-width="3" />
+            <g fill="currentColor"><circle cx="24" cy="30" r="4" /><circle cx="48" cy="30" r="4" /><circle cx="36" cy="42" r="4" /><circle cx="24" cy="54" r="4" /><circle cx="48" cy="54" r="4" /></g>
+          </g>
+          <g transform="rotate(12 88 34)">
+            <rect x="66" y="12" width="44" height="44" rx="7" fill="currentColor" />
+            <g fill="var(--blue)"><circle cx="78" cy="24" r="3.5" /><circle cx="88" cy="34" r="3.5" /><circle cx="98" cy="44" r="3.5" /></g>
+          </g>
+        </svg>
+        <p>Kumpulkan teman. Siapkan meja.<br />Satu ronde lagi? Selalu.</p>
+      </div>
     </div>
-    <p>Ready stock dan pre-order. Pilih produk untuk melihat varian dan estimasi kirim.</p>
+    <div class="catalog-toolbar">
+      <h2>Semua produk</h2>
+      {!error && <span class="muted">{products.length} produk di halaman ini</span>}
+    </div>
     {error ? (
       <div class="notice error" role="alert">
         {error} <a href={Astro.url.pathname + Astro.url.search}>Muat ulang</a>
@@ -51,26 +69,32 @@ if (limit !== null) nextQuery.set("limit", limit);
               {p.imageUrl && (
                 <img src={p.imageUrl} alt={p.name} loading="lazy" />
               )}
+              <div class="availability">
+                {p.variants.some((v) => v.mode === "stock" && (v.available === null || v.available > 0)) && <span class="badge stock">Ready stock</span>}
+                {p.variants.some((v) => v.mode === "preorder") && <span class="badge preorder">Pre-order</span>}
+                {!p.variants.some((v) => v.mode === "preorder" || v.available === null || v.available > 0) && <span class="badge">Stok habis</span>}
+              </div>
             </div>
-            <div class="availability">
-              {p.variants.some((v) => v.mode === "stock" && (v.available === null || v.available > 0)) && <span class="badge stock">Ready stock</span>}
-              {p.variants.some((v) => v.mode === "preorder") && <span class="badge preorder">Pre-order</span>}
-              {!p.variants.some((v) => v.mode === "preorder" || v.available === null || v.available > 0) && <span class="badge">Stok habis</span>}
-            </div>
-            <h3>{p.name}</h3>
-            <div class="row">
+            <div class="product-heading">
+              <h3>{p.name}</h3>
               <span>
                 {p.variants.length > 1 && "Mulai "}
                 {p.variants.length
                   ? money(Math.min(...p.variants.map((v) => v.price)))
                   : "Belum tersedia"}
               </span>
-              <span class="card-action" aria-hidden="true">→</span>
             </div>
+            <p class="product-description">{p.description}</p>
+            <span class="variant-count">{p.variants.length} varian <span aria-hidden="true">↗</span></span>
           </a>
         ))}
       </div>
     )}
     {nextCursor && <a class="button pagination" href={`${Astro.url.pathname}?${nextQuery}`}>Produk berikutnya →</a>}
+    <div class="shopping-guide">
+      <div><h2>Ready stock</h2><p>Pilih varian dan lihat ketersediaannya di halaman produk.</p></div>
+      <div><h2>Pre-order</h2><p>Periode pemesanan dan estimasi kirim tertera pada produk.</p></div>
+      <a href="/policies">Panduan belanja <span aria-hidden="true">↗</span></a>
+    </div>
   </section>
 </Layout>
