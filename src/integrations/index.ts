@@ -1,5 +1,5 @@
 import { auth, setup, roles } from './auth';
-import { shipping } from './shipping';
+import { destinations, shipping } from './shipping';
 import { body, IntegrationError, origin } from './security';
 export { requireAdmin, getCustomer } from './auth';
 export { verifyTurnstile, IntegrationError } from './security';
@@ -26,7 +26,7 @@ export interface IntegrationEnv {
 }
 export async function handleIntegrationRequest(request: Request, env: IntegrationEnv): Promise<Response|null> {
   const path = new URL(request.url).pathname;
-  if (!(path.startsWith('/api/auth/') || path === '/api/setup' || path === '/api/shipping/quote' || path === '/api/admin/roles')) return null;
+  if (!(path.startsWith('/api/auth/') || path === '/api/setup' || path === '/api/shipping/quote' || path === '/api/shipping/destinations' || path === '/api/admin/roles')) return null;
   try {
     let response: Response;
     if (path.startsWith('/api/auth/')) {
@@ -40,7 +40,7 @@ export async function handleIntegrationRequest(request: Request, env: Integratio
       }
       response = await auth(env).handler(request);
     } else {
-      const result = path === '/api/setup' ? await setup(request,env) : path === '/api/admin/roles' ? await roles(request,env) : await shipping(request,env);
+      const result = path === '/api/setup' ? await setup(request,env) : path === '/api/admin/roles' ? await roles(request,env) : path === '/api/shipping/destinations' ? await destinations(request,env) : await shipping(request,env);
       response = Response.json(result);
     }
     const headers = new Headers(response.headers); headers.set('Cache-Control','private, no-store');

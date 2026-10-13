@@ -110,6 +110,54 @@ async function notification(status: string, original = 'ref1') {
   return new Request('https://shop.example/api/payment/webhook',{method:'POST',body:raw,headers:{'Client-Id':'MCH-test','Request-Id':id,'Request-Timestamp':time,Signature:`HMACSHA256=${digest('sha256',secret).update(components).digest('base64')}`}});
 }
 describe('provider boundaries', () => {
+  it('validates public destination searches before contacting the provider', async () => {
+    const path = '/api/shipping/destinations';
+    const fetcher = vi.fn(); vi.stubGlobal('fetch',fetcher);
+    const configured = {...env, RAJAONGKIR_API_KEY:'server-only-key'};
+    for (const input of [null, {}, {search:12}, {search:'ab'}, {search:' '.repeat(10)}, {search:'x'.repeat(101)}, {search:'***'}, {search:'jakarta&limit=999'}, {search:'jak\n\u0000arta'}]) {
+      expect((await handleIntegrationRequest(request(path,input),configured))?.status).toBe(400);
+    }
+    expect((await handleIntegrationRequest(request(path),configured))?.status).toBe(405);
+    expect((await handleIntegrationRequest(new Request(`https://shop.example${path}`,{method:'POST',headers:{Origin:'https://evil.example'},body:'{"search":"jakarta"}'}),configured))?.status).toBe(403);
+    expect((await handleIntegrationRequest(request(path,{search:'jakarta'}),env))?.status).toBe(503);
+    expect((await handleIntegrationRequest(request(path,{search:'x'.repeat(17000)}),configured))?.status).toBe(413);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it('returns normalized bounded destination results with a server-only key and no-store', async () => {
+    const entry = {id:68513,label:'BALERAKSA, KARANGMONCOL, PURBALINGGA, JAWA TENGAH, 53355',province_name:'JAWA TENGAH',city_name:'PURBALINGGA',district_name:'KARANGMONCOL',subdistrict_name:'BALERAKSA',zip_code:'53355',secret:'not returned'};
+    const configured = {...env,RAJAONGKIR_API_KEY:'server-only-key'};
+    vi.stubGlobal('fetch',vi.fn(async (url:unknown,init:any) => {
+      const target = new URL(String(url));
+      expect(target.origin + target.pathname).toBe('https://rajaongkir.komerce.id/api/v1/destination/domestic-destination');
+      expect(Object.fromEntries(target.searchParams)).toEqual({search:'53355',limit:'20',offset:'0'});
+      expect(init.headers.key).toBe('server-only-key'); expect(init.signal).toBeInstanceOf(AbortSignal);
+      return Response.json({meta:{code:200,status:'success'},data:[entry]});
+    }));
+    const response = await handleIntegrationRequest(request('/api/shipping/destinations',{search:' 53355 ',limit:999}),configured);
+    expect(response?.status).toBe(200); expect(response?.headers.get('Cache-Control')).toContain('no-store');
+    expect(await response!.json()).toEqual({destinations:[{id:'68513',label:entry.label,province:entry.province_name,city:entry.city_name,district:entry.district_name,subdistrict:entry.subdistrict_name,postalCode:'53355'}]});
+    for (const data of [[], null]) {
+      vi.stubGlobal('fetch',vi.fn(async()=>Response.json(data === null ? {meta:{code:404,status:'error'},data:null} : {meta:{code:200,status:'success'},data}, {status:data === null ? 404 : 200})));
+      expect(await (await handleIntegrationRequest(request('/api/shipping/destinations',{search:'53355'}),configured))!.json()).toEqual({destinations:[]});
+    }
+    for (const data of [null, [{}], [{...entry,id:0}], [{...entry,label:''}], [{...entry,zip_code:53355}], [entry,entry], Array(21).fill(entry)]) {
+      vi.stubGlobal('fetch',vi.fn(async()=>Response.json({meta:{code:200,status:'success'},data})));
+      expect((await handleIntegrationRequest(request('/api/shipping/destinations',{search:'53355'}),configured))?.status).toBe(502);
+    }
+  });
+  it('fails destination lookup closed on provider errors, malformed JSON and timeouts', async () => {
+    for (const fetcher of [
+      async()=>Response.json({meta:{code:401,status:'error'},data:null},{status:401}),
+      async()=>Response.json({meta:{code:500,status:'error'},data:null}),
+      async()=>new Response('invalid JSON'),
+      async()=>{throw new DOMException('timeout','TimeoutError');},
+    ]) {
+      vi.stubGlobal('fetch',vi.fn(fetcher));
+      const response = await handleIntegrationRequest(request('/api/shipping/destinations',{search:'jakarta'}),{...env,RAJAONGKIR_API_KEY:'server-only-key'});
+      expect(response?.status).toBe(502);
+      expect(await response!.text()).not.toContain('server-only-key');
+    }
+  });
   it('uses the precreated reference and refuses mismatched creation responses', async () => {
     const input = {reference:'stable-attempt1',amount:10000,returnUrl:'https://shop.example/payment/return'};
     const provider = vi.fn(async (url:unknown,init:any) => {

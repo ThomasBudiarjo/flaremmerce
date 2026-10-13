@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, google, readCart, writeCart, type CartItem } from "../lib/cart";
 import { type Product, money, date } from "../lib/catalog";
 import Turnstile from "./Turnstile";
+type Destination = { id: string; label: string; city: string; postalCode: string };
 type Quote = {
   id: string;
   service: string;
@@ -20,6 +21,12 @@ export default function Checkout() {
   const [busy, setBusy] = useState(false);
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [quoteId, setQuoteId] = useState("");
+  const [search, setSearch] = useState("");
+  const [destinations, setDestinations] = useState<Destination[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchMessage, setSearchMessage] = useState("");
+  const searchVersion = useRef(0);
+  const quoteVersion = useRef(0);
   const [token, setToken] = useState("");
   const [reset, setReset] = useState(0);
   const [accepted, setAccepted] = useState(false);
@@ -83,6 +90,7 @@ export default function Checkout() {
     try {
       writeCart(next);
       setItems(next);
+      quoteVersion.current++;
       setQuotes([]);
       setQuoteId("");
       setAccepted(false);
@@ -90,29 +98,57 @@ export default function Checkout() {
       setError("Tas tidak dapat disimpan di browser.");
     }
   }
+  function invalidateQuotes() {
+    quoteVersion.current++;
+    setQuotes([]);
+    setQuoteId("");
+    setAccepted(false);
+  }
+  async function searchDestinations() {
+    const version = ++searchVersion.current;
+    invalidateQuotes();
+    setAddress((a) => ({ ...a, destination: "" }));
+    setDestinations([]);
+    setSearching(true);
+    setSearchMessage("");
+    try {
+      const data = await api("/api/shipping/destinations", { search });
+      if (version !== searchVersion.current) return;
+      setDestinations(data.destinations);
+      setSearchMessage(data.destinations.length ? `${data.destinations.length} wilayah ditemukan. Pilih wilayah tujuan. Jika belum sesuai, gunakan kata pencarian lebih spesifik.` : "Wilayah tidak ditemukan. Coba nama kelurahan, kecamatan, atau kode pos lain.");
+    } catch {
+      if (version === searchVersion.current) setSearchMessage("Pencarian wilayah belum tersedia. Silakan coba lagi; ongkir tidak dapat dihitung tanpa tujuan.");
+    } finally {
+      if (version === searchVersion.current) setSearching(false);
+    }
+  }
   async function shipping() {
+    if (locked.current || !address.destination) return;
+    const version = ++quoteVersion.current;
     setBusy(true);
     setError("");
     setQuotes([]);
     setQuoteId("");
+    setAccepted(false);
     try {
       const data = await api("/api/shipping/quote", {
         destination: address.destination,
         items,
       });
+      if (version !== quoteVersion.current) return;
       setQuotes(data.quotes);
       if (!data.quotes.length)
         setError("Tidak ada layanan tersedia untuk tujuan ini.");
     } catch (e) {
-      setError((e as Error).message);
+      if (version === quoteVersion.current) setError((e as Error).message);
     } finally {
-      setBusy(false);
+      if (version === quoteVersion.current) setBusy(false);
     }
   }
   async function checkout(e: React.FormEvent) {
     e.preventDefault();
     if (locked.current) return;
-    if (!quote || new Date(quote.expiresAt).getTime() <= Date.now()) {
+    if (!address.destination || !quote || new Date(quote.expiresAt).getTime() <= Date.now()) {
       setError("Quote pengiriman kedaluwarsa. Periksa ongkir kembali.");
       setQuoteId("");
       return;
@@ -315,7 +351,7 @@ export default function Checkout() {
                 />
               </div>
             ))}
-            {(["line", "city", "postalCode", "destination"] as const).map(
+            {(["line", "city", "postalCode"] as const).map(
               (f, index) => (
                 <div key={f}>
                   <label htmlFor={f}>
@@ -324,7 +360,6 @@ export default function Checkout() {
                         "Alamat lengkap",
                         "Kota / kabupaten",
                         "Kode pos",
-                        "ID tujuan pengiriman (RajaOngkir)",
                       ][index]
                     }
                   </label>
@@ -335,18 +370,46 @@ export default function Checkout() {
                     value={address[f]}
                     onChange={(e) => {
                       setAddress({ ...address, [f]: e.target.value });
-                      setQuotes([]);
-                      setQuoteId("");
-                      setAccepted(false);
+                      invalidateQuotes();
                     }}
                   />
                 </div>
               ),
             )}
-            <p className="muted">
-              Gunakan ID wilayah sesuai layanan pengiriman yang dikonfigurasi
-              toko.
-            </p>
+            <label htmlFor="destination-search">Cari wilayah pengiriman</label>
+            <input
+              id="destination-search"
+              value={search}
+              disabled={busy}
+              maxLength={100}
+              aria-describedby="destination-help destination-status"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); if (search.trim().length >= 3) void searchDestinations(); }
+              }}
+              onChange={(e) => {
+                searchVersion.current++;
+                setSearch(e.target.value);
+                setSearching(false);
+                setSearchMessage("");
+                setDestinations([]);
+                setAddress({ ...address, destination: "" });
+                invalidateQuotes();
+              }}
+            />
+            <p id="destination-help" className="muted">Masukkan nama kota, kecamatan, kelurahan, atau kode pos (minimal 3 karakter), lalu cari dan pilih wilayah yang sesuai alamat.</p>
+            <button type="button" disabled={busy || searching || search.trim().length < 3} onClick={searchDestinations}>
+              {searching ? "Mencari wilayah…" : "Cari wilayah"}
+            </button>
+            <p id="destination-status" role="status" aria-live="polite">{searching ? "Mencari wilayah…" : searchMessage}</p>
+            <label htmlFor="destination">Wilayah tujuan pengiriman</label>
+            <select id="destination" required disabled={busy || searching || !destinations.length} value={address.destination} onChange={(e) => {
+              const selected = destinations.find((d) => d.id === e.target.value);
+              setAddress({ ...address, destination: selected?.id || "", ...(selected ? { city: selected.city, postalCode: selected.postalCode } : {}) });
+              invalidateQuotes();
+            }}>
+              <option value="">Pilih wilayah sesuai alamat</option>
+              {destinations.map((d) => <option key={d.id} value={d.id}>{d.label} — {d.postalCode}</option>)}
+            </select>
             <button
               type="button"
               disabled={busy || invalid || !address.destination}
