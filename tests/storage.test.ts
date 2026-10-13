@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
 import { storageRequest, receiveEmail, type StorageEnv } from '../src/storage';
 import type { IntegrationEnv } from '../src/integrations';
+import { admin } from '../src/commerce/admin';
 let mf: Miniflare, env: StorageEnv & IntegrationEnv, cookie: string;
 const secret = 'test-secret-at-least-thirty-two-characters';
 const png = new Uint8Array([137,80,78,71,13,10,26,10,0]);
@@ -36,6 +37,25 @@ it('stores immutable public media with metadata and optional product FK', async 
   expect(new Uint8Array(await object!.arrayBuffer())).toEqual(png);
   expect(object!.httpMetadata!.cacheControl).toContain('immutable');
   expect((await upload('/api/admin/media?productId=missing'))!.status).toBe(400);
+});
+it('atomically associates detached creation uploads and persists existing primary images without changing objects', async () => {
+  const media = await (await upload())!.json() as {id:string;url:string};
+  const input = {name:'New',slug:'new',imageUrl:media.url,variants:[{sku:'new',name:'Default',price:100,weight:10,stock:0}]};
+  const request = new Request('https://shop.example/api/admin/products',{method:'POST'});
+  // A failed variant insertion must roll back both product creation and association.
+  await env.DB.exec("CREATE TRIGGER variant_failure BEFORE INSERT ON product_variants BEGIN SELECT RAISE(ABORT,'failure'); END;");
+  await expect(admin(request,env,'owner',input)).rejects.toThrow();
+  expect(await env.DB.prepare('SELECT product_id FROM product_media WHERE id=?').bind(media.id).first('product_id')).toBeNull();
+  expect(await env.DB.prepare("SELECT id FROM products WHERE slug='new'").first()).toBeNull();
+  await env.DB.exec('DROP TRIGGER variant_failure');
+  const result = await (await admin(request,env,'owner',input)).json() as any;
+  expect(await env.DB.prepare('SELECT product_id FROM product_media WHERE id=?').bind(media.id).first('product_id')).toBe(result.product.id);
+  const next = await (await upload('/api/admin/media?productId=product'))!.json() as any;
+  await admin(new Request('https://shop.example/api/admin/products/product',{method:'PATCH'}),env,'owner',{imageUrl:next.url});
+  expect(await env.DB.prepare("SELECT image_url FROM products WHERE id='product'").first('image_url')).toBe(next.url);
+  expect((await env.MEDIA!.list()).objects).toHaveLength(2);
+  await admin(request,env,'owner',{...input,slug:'other',variants:[{...input.variants[0],sku:'other'}]});
+  expect(await env.DB.prepare('SELECT product_id FROM product_media WHERE id=?').bind(media.id).first('product_id')).toBe(result.product.id);
 });
 it('fails closed for origin, anonymous, revoked role/session, SVG, signature, size and missing HTTPS', async () => {
   expect((await upload(undefined,undefined,undefined,'',env.PUBLIC_ORIGIN))!.status).toBe(401);

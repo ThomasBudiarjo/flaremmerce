@@ -65,6 +65,8 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
   if (path === '/api/admin/products' && request.method === 'POST') {
     const p = parse(productInput, body), productId = id();
     const batch = [s(env, 'INSERT INTO products(id,slug,name,description,image_url) VALUES(?,?,?,?,?)', productId, p.slug, p.name, p.description, p.imageUrl ?? null)];
+    // Bind a detached upload in the same transaction as creation, never steal another product's media.
+    if (p.imageUrl) batch.push(s(env, 'UPDATE product_media SET product_id=? WHERE url=? AND product_id IS NULL', productId, p.imageUrl));
     const variants = p.variants.map(v => ({ ...v, id: id() }));
     for (const v of variants) {
       batch.push(s(env, 'INSERT INTO product_variants(id,product_id,sku,name,price,weight,mode) VALUES(?,?,?,?,?,?,?)', v.id, productId, v.sku, v.name, v.price, v.weight, v.mode),

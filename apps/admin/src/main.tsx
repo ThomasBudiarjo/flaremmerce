@@ -136,6 +136,78 @@ function Field({
   );
 }
 
+function PhotoUpload({ productId, onImage, onPending, disabled }: {
+  productId?: string; onImage: (url: string) => void;
+  onPending: (blocked: boolean) => void; disabled?: boolean;
+}) {
+  const generation = React.useRef(0);
+  const [preview, setPreview] = useState("");
+  const [error, setError] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const input = React.useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    onImage(""); onPending(false);
+    return () => { generation.current++; };
+  }, []);
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
+  async function select(file?: File) {
+    const version = ++generation.current;
+    onImage(""); setError(""); setPreview(""); setUploading(false);
+    onPending(!!file);
+    if (!file) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 5 * 1024 * 1024 || !file.size) {
+      setError("Pilih JPEG, PNG, atau WebP, maksimal 5 MiB."); return;
+    }
+    setPreview(URL.createObjectURL(file)); setUploading(true);
+    try {
+      const response = await fetch(`/api/admin/media${productId ? `?productId=${encodeURIComponent(productId)}` : ""}`, {
+        method: "POST", credentials: "same-origin", cache: "no-store",
+        headers: { "Content-Type": file.type }, body: file,
+      });
+      const data = await response.json();
+      if (!response.ok || typeof data.url !== "string") throw new Error(data.error || "Unggah foto gagal.");
+      if (version !== generation.current) return;
+      onImage(data.url); onPending(false);
+    } catch (e) {
+      if (version === generation.current) setError((e as Error).message);
+    } finally {
+      if (version === generation.current) setUploading(false);
+    }
+  }
+  return <div className="grid gap-3">
+    <Field ref={input} name="photo" label="Unggah foto utama (JPEG, PNG, WebP; maksimal 5 MiB)" type="file" accept="image/jpeg,image/png,image/webp" required={false} disabled={disabled} onChange={(e) => select(e.target.files?.[0])} />
+    {preview && <img src={preview} alt="Pratinjau foto pilihan" className="h-40 w-full rounded-md object-contain" />}
+    {uploading && <p role="status" className="text-sm">Mengunggah foto…</p>}
+    {error && <Alert variant="destructive" role="alert"><AlertDescription>{error}</AlertDescription></Alert>}
+    <p className="text-xs text-muted-foreground">Foto menjadi utama setelah perubahan disimpan.</p>
+    <Button type="button" variant="outline" disabled={disabled} onClick={() => { if (input.current) input.current.value = ""; select(); }}>Batalkan pilihan foto</Button>
+  </div>;
+}
+
+function PrimaryPhoto({ product, onSaved }: { product: any; onSaved: () => Promise<void> }) {
+  const [image, setImage] = useState("");
+  const [blocked, setBlocked] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  return <form className="grid gap-3" onSubmit={async (e) => {
+    e.preventDefault(); if (!image || blocked || saving) return;
+    setSaving(true); setError(""); setSaved(false);
+    try {
+      await api(`/api/admin/products/${encodeURIComponent(product.id)}`, { imageUrl: image }, "PATCH");
+      setSaved(true); setImage(""); await onSaved();
+    } catch (e) { setError((e as Error).message); }
+    finally { setSaving(false); }
+  }}>
+    <h2 className="font-medium">Foto utama</h2>
+    {product.imageUrl && <img src={product.imageUrl} alt={`Foto utama ${product.name}`} className="h-40 w-full rounded-md object-contain" />}
+    <PhotoUpload productId={product.id} onImage={(url) => { setImage(url); setSaved(false); }} onPending={setBlocked} disabled={saving} />
+    <Button disabled={!image || blocked || saving}>Simpan foto utama</Button>
+    {error && <Alert variant="destructive" role="alert"><AlertDescription>{error}</AlertDescription></Alert>}
+    {saved && <p role="status">Foto utama tersimpan.</p>}
+  </form>;
+}
+
 function App() {
   const { setOpenMobile } = useSidebar();
   const [tab, setTab] = useState(currentTab);
@@ -151,6 +223,8 @@ function App() {
   const [googleEnabled, setGoogleEnabled] = useState(false);
   const [devLoginEnabled, setDevLoginEnabled] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [createImage, setCreateImage] = useState("");
+  const [uploadPending, setUploadPending] = useState(false);
   const [search, setSearch] = useState("");
   const [variants, setVariants] = useState([
     {
@@ -751,7 +825,7 @@ function App() {
                             {catalogue.length}
                           </Badge>
                         </CardTitle>
-                        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+                        <Dialog open={createOpen} onOpenChange={(open) => { setCreateOpen(open); if (!open) { setCreateImage(""); setUploadPending(false); } }}>
                           <DialogTrigger asChild>
                             <Button>
                               <Plus />
@@ -769,6 +843,7 @@ function App() {
                             <form
                               className="grid gap-5"
                               onSubmit={async (e) => {
+                                if (uploadPending) { e.preventDefault(); return; }
                                 if (
                                   await mutate(
                                     e,
@@ -779,8 +854,8 @@ function App() {
                                         "slug",
                                         "description",
                                       ]),
-                                      ...(f.get("imageUrl")
-                                        ? { imageUrl: f.get("imageUrl") }
+                                      ...(createImage || f.get("imageUrl")
+                                        ? { imageUrl: createImage || f.get("imageUrl") }
                                         : {}),
                                       variants: variants.map((v) => ({
                                         ...v,
@@ -792,6 +867,7 @@ function App() {
                                   )
                                 ) {
                                   setCreateOpen(false);
+                                  setCreateImage("");
                                   setVariants([
                                     {
                                       sku: "",
@@ -826,7 +902,9 @@ function App() {
                                 label="URL media publik (opsional)"
                                 type="url"
                                 required={false}
+                                disabled={!!createImage || uploadPending}
                               />
+                              <PhotoUpload onImage={setCreateImage} onPending={setUploadPending} disabled={busy} />
                               {variants.map((v, i) => (
                                 <fieldset
                                   key={i}
@@ -945,7 +1023,7 @@ function App() {
                                   <Plus />
                                   Tambah varian
                                 </Button>
-                                <Button disabled={busy}>
+                                <Button disabled={busy || uploadPending}>
                                   {busy && (
                                     <LoaderCircle className="animate-spin motion-reduce:animate-none" />
                                   )}
@@ -1031,6 +1109,7 @@ function App() {
                                       <p className="break-all text-xs text-muted-foreground">
                                         ID produk: {p.id}
                                       </p>
+                                      <PrimaryPhoto product={p} onSaved={refresh} />
                                       <Table>
                                         <TableHeader>
                                           <TableRow>
