@@ -100,6 +100,19 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('commerce public API with real D1', () => {
+  it('accepts canonical dev portal mutations without relaxing production or admin checks', async () => {
+    const payload = {slug:'dev-portal',name:'Dev portal',variants:[{sku:'PORTAL',name:'Default',price:157000,weight:275,stock:4}]};
+    const proxied = (origin = 'http://shop.test', admin = 'admin') => new Request('http://shop.test/api/admin/products', {method:'POST',headers:{Origin:origin,'Content-Type':'application/json','X-Test-Admin':admin},body:JSON.stringify(payload)});
+    expect((await worker.fetch(proxied(),e)).status).toBe(403);
+    const dev = {...e,APP_ENV:'development',DEV_LOGIN_ENABLED:'true'};
+    expect((await worker.fetch(proxied('http://evil.test'),dev)).status).toBe(403);
+    expect((await worker.fetch(proxied('http://shop.test','unauthorized'),dev)).status).toBe(403);
+    const response = await worker.fetch(proxied(),dev);
+    expect(response.status).toBe(201);
+    const created = await response.json() as any;
+    expect(created.product.variants[0]).toMatchObject({sku:'PORTAL',price:157000,weight:275});
+    expect(await sql('SELECT on_hand FROM inventory WHERE variant_id=?',created.product.variants[0].id).first('on_hand')).toBe(4);
+  });
   it('returns authoritative public catalog and keeps personal order data private', async () => {
     const catalog = await request('/api/catalog');
     expect(catalog.headers.get('cache-control')).toContain('s-maxage=60');

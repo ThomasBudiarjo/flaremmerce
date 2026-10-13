@@ -22,6 +22,12 @@ amp orb service start flaremmerce --command 'npm run dev' --port 8787 --portal
 
 Build menghasilkan Worker `apps/storefront/dist/server/entry.mjs`, config Wrangler generated dan aset `dist/client` termasuk admin. `src/entry.ts` adalah source entrypoint; middleware SSR memanggil katalog dalam proses yang sama, tanpa self-fetch/API service kedua. Admin menggunakan `/admin/`; entrypoint menangani fallback SPA tanpa redirect loop. Public katalog/API menggunakan cache allowlist 60 detik; mutation, auth, order/PII dan admin API private/no-store. Gambar runtime passthrough dan Astro sessions disabled: tidak ada KV atau Cloudflare Images Paid dependency tersembunyi.
 
+## Admin UI
+
+Admin memakai komponen resmi **shadcn/ui Radix Nova**, preset neutral, Tailwind 4, ikon Lucide dan font Geist. Komponen registry disimpan di `apps/admin/src/components/ui`, konfigurasi di `apps/admin/components.json`, lisensi MIT di `apps/admin/LICENSE.shadcn`. Tidak ada tema CSS custom untuk tombol, sidebar, tabel atau form. CLI hanya dipakai untuk generation, bukan dependency aplikasi; varian CSS upstream yang digunakan disalin dari shadcn 4.21.4. Penyesuaian komponen sebatas bahasa Indonesia, `aria-expanded`, dan pengembalian focus drawer ke trigger.
+
+Daftar produk/pesanan memakai tabel dengan pencarian lokal atas data yang sudah dimuat (bukan pencarian seluruh database). Detail dan tambah produk memakai dialog Radix. Inventori/pre-order memilih SKU dari katalog server, tanpa mengetik ID manual. Login dev dan Google tetap menggunakan auth server; shell login tidak menampilkan data admin sebelum session tersedia.
+
 ## Credential dan resource
 
 `npm run dev` otomatis membuat `BETTER_AUTH_SECRET` dan `BOOTSTRAP_SECRET` random sekali di `.dev.vars` privat (permission 0600); restart mempertahankan nilainya. Buka `/admin/` lalu klik **Masuk admin dev**: tanpa Google/password, session Better Auth asli dan admin pertama pada database lokal kosong disiapkan otomatis. Tidak mengambil alih instalasi yang sudah memiliki owner atau mengembalikan role yang dicabut. Login dev memerlukan kedua flag server `APP_ENV=development` dan `DEV_LOGIN_ENABLED=true`; jangan pasang keduanya pada deployment shared/production. Session identitas dev ditolak oleh akses admin/commerce saat mode dev dimatikan. Portal dev memberi akses admin kepada siapa pun yang bisa membuka portal; jangan gunakan data nyata. Untuk HTTPS portal, jalankan `node scripts/dev-setup.mjs --origin https://HOST` sebelum restart dev server agar Origin/cookie sesuai.

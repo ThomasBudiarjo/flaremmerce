@@ -1,4 +1,5 @@
 import { getCustomer, requireAdmin } from '../integrations/index';
+import { origin } from '../integrations/security';
 import { admin } from './admin';
 import { catalog } from './catalog';
 import { checkout } from './checkout';
@@ -46,7 +47,7 @@ export async function commerceRequest(request: Request, env: CommerceEnv): Promi
   if (!path.startsWith('/api/')) return null;
   if (path === '/api/payments/webhook' && request.method === 'POST') return webhook(request, env);
   if (request.method !== 'GET' && request.method !== 'HEAD') {
-    if (request.headers.get('Origin') !== new URL(env.PUBLIC_ORIGIN).origin) throw new HttpError(403, 'Invalid origin');
+    origin(request, env);
   }
   if (request.method === 'GET' && path === '/api/catalog') return catalog(env, undefined, url.searchParams);
   if (request.method === 'GET' && path.startsWith('/api/catalog/')) return catalog(env, decodeURIComponent(path.slice('/api/catalog/'.length)));
