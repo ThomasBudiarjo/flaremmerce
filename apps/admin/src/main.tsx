@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   CalendarDays,
@@ -219,6 +219,7 @@ function App() {
   const [reviewCursor, setReviewCursor] = useState<{ before: number; beforeId: string } | null>(null);
   const [reviewLoadingMore, setReviewLoadingMore] = useState(false);
   const [reviewPageError, setReviewPageError] = useState("");
+  const requestSequence = useRef(0);
   const [catalogue, setCatalogue] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -243,7 +244,12 @@ function App() {
 
   useEffect(() => {
     const navigate = () => {
-      setTab(currentTab());
+      const nextTab = currentTab();
+      if (nextTab !== tab) {
+        ++requestSequence.current;
+        setReviewLoadingMore(false);
+        setTab(nextTab);
+      }
       setMessage("");
       setSearch("");
       setOpenMobile(false);
@@ -251,60 +257,77 @@ function App() {
     };
     window.addEventListener("hashchange", navigate);
     return () => window.removeEventListener("hashchange", navigate);
-  }, [setOpenMobile]);
+  }, [setOpenMobile, tab]);
   async function refresh() {
+    const sequence = ++requestSequence.current;
+    setReviewLoadingMore(false);
     setLoading(true);
     setError("");
     try {
       const config = await api("/api/config");
+      if (sequence !== requestSequence.current) return;
       setGoogleEnabled(config.googleEnabled);
       setDevLoginEnabled(config.devLoginEnabled);
       const setup = await api("/api/setup");
+      if (sequence !== requestSequence.current) return;
       setInitialized(setup.initialized);
       const session =
         config.googleEnabled || config.devLoginEnabled
           ? await api("/api/auth/get-session?disableCookieCache=true")
           : null;
+      if (sequence !== requestSequence.current) return;
       setUser(session?.user ?? null);
-      if (!setup.initialized || !session?.user) return;
+      if (!setup.initialized || !session?.user) {
+        setReview([]);
+        setReviewCursor(null);
+        return;
+      }
       if (["products", "inventory", "campaigns"].includes(tab)) {
         const data = await api("/api/admin/products");
+        if (sequence !== requestSequence.current) return;
         setCatalogue(data.products);
       } else if (tab === "review") {
         const data = await api("/api/admin/review");
+        if (sequence !== requestSequence.current) return;
         setReview(data.items);
         setReviewCursor(data.nextCursor);
         setReviewPageError("");
       } else {
         const data = await api("/api/admin/orders");
+        if (sequence !== requestSequence.current) return;
         setOrders(data.orders);
       }
     } catch (e) {
-      setError((e as Error).message);
+      if (sequence === requestSequence.current) setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (sequence === requestSequence.current) setLoading(false);
     }
   }
   async function loadMoreReview() {
     if (!reviewCursor || reviewLoadingMore) return;
+    const sequence = requestSequence.current;
     setReviewLoadingMore(true);
     setReviewPageError("");
     try {
       const query = new URLSearchParams({ before: String(reviewCursor.before), beforeId: reviewCursor.beforeId });
       const data = await api(`/api/admin/review?${query}`);
+      if (sequence !== requestSequence.current) return;
       setReview((rows) => [...rows, ...data.items.filter((item: any) => !rows.some((row) => row.id === item.id))]);
       setReviewCursor(data.nextCursor);
     } catch (e) {
-      setReviewPageError((e as Error).message);
+      if (sequence === requestSequence.current) setReviewPageError((e as Error).message);
     } finally {
-      setReviewLoadingMore(false);
+      if (sequence === requestSequence.current) setReviewLoadingMore(false);
     }
   }
   useEffect(() => {
     refresh();
+    return () => { ++requestSequence.current; };
   }, [tab]);
   async function login() {
     if (busy) return;
+    ++requestSequence.current;
+    setReviewLoadingMore(false);
     setBusy(true);
     setError("");
     setMessage("");
@@ -327,6 +350,10 @@ function App() {
     }
   }
   async function logout() {
+    ++requestSequence.current;
+    setReviewLoadingMore(false);
+    setReview([]);
+    setReviewCursor(null);
     setBusy(true);
     setError("");
     try {
@@ -1431,7 +1458,9 @@ function App() {
                                   <div className="flex flex-wrap items-center gap-2">
                                     <Badge variant={item.status === "open" ? "outline" : "secondary"}>{item.status === "open" ? "Perlu ditangani" : "Ditangani"}</Badge>
                                     <ReviewDetail id={item.id} api={api} refresh={async () => {
+                                      const sequence = requestSequence.current;
                                       const data = await api(`/api/admin/review/${encodeURIComponent(item.id)}`);
+                                      if (sequence !== requestSequence.current) return;
                                       setReview((rows) => rows.map((row) => row.id === item.id ? { ...row, ...data.item } : row));
                                     }} />
                                   </div>

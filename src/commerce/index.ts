@@ -42,7 +42,7 @@ async function orders(request: Request, env: CommerceEnv, url: URL) {
   const rows = await s(env, `SELECT reference,status,fulfillment,total,currency,created_at AS createdAt,id FROM orders WHERE customer_id=?${cursor ? ' AND (created_at < ? OR (created_at = ? AND id < ?))' : ''} ORDER BY created_at DESC,id DESC LIMIT ?`,
     customer.id, ...(cursor ? [cursor[0], cursor[0], cursor[1]] : []), limit + 1).all<{ reference: string; status: string; fulfillment: string; total: number; currency: string; createdAt: number; id: string }>();
   const page = rows.results.slice(0, limit), last = page.at(-1);
-  return json({ orders: page.map(({ id, ...summary }) => summary), nextCursor: rows.results.length > limit && last ? btoa(JSON.stringify([last.createdAt, last.id])) : null });
+  return json({ ownerId: customer.id, orders: page.map(({ id, ...summary }) => summary), nextCursor: rows.results.length > limit && last ? btoa(JSON.stringify([last.createdAt, last.id])) : null });
 }
 
 async function order(request: Request, env: CommerceEnv, reference: string) {

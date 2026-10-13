@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { google } from "../lib/cart";
 import { date, money } from "../lib/catalog";
 
@@ -9,24 +9,47 @@ export default function OrderHistory({ open, labels }: { open: (reference: strin
   const [busy, setBusy] = useState(true);
   const [anonymous, setAnonymous] = useState(false);
   const [error, setError] = useState("");
+  const ownerId = useRef<string | null>(null);
+  const requestSequence = useRef(0);
   async function load(after?: string) {
+    const sequence = ++requestSequence.current;
     setBusy(true);
     setError("");
     try {
       const response = await fetch("/api/orders" + (after ? "?cursor=" + encodeURIComponent(after) : ""), { credentials: "same-origin", cache: "no-store" });
+      if (sequence !== requestSequence.current) return;
       if (response.status === 401) {
+        ownerId.current = null;
         setAnonymous(true); setOrders([]); setCursor(null);
         return;
       }
       if (!response.ok) throw new Error("Riwayat pesanan tidak dapat dimuat. Silakan coba lagi.");
       const page = await response.json();
+      if (sequence !== requestSequence.current) return;
+      if (after && page.ownerId !== ownerId.current) {
+        ownerId.current = null;
+        setOrders([]); setCursor(null);
+        await load();
+        return;
+      }
+      ownerId.current = page.ownerId;
       setAnonymous(false);
       setOrders((previous) => after ? [...previous, ...page.orders] : page.orders);
       setCursor(page.nextCursor);
-    } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
+    } catch (e) { if (sequence === requestSequence.current) setError((e as Error).message); }
+    finally { if (sequence === requestSequence.current) setBusy(false); }
   }
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+    const refresh = () => { if (document.visibilityState === "visible") void load(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      ++requestSequence.current;
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, []);
   return <section className="panel" aria-label="Riwayat pesanan">
     <h2>Riwayat pesanan saya</h2>
     <p className="muted">Hanya pesanan yang dibuat dengan akun ini. Pesanan guest tetap memerlukan token privat, meskipun email sama.</p>

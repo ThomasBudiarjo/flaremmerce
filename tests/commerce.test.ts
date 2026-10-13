@@ -205,6 +205,7 @@ describe('commerce public API with real D1', () => {
     const first = await request('/api/orders?limit=1', undefined, headers);
     expect(first.headers.get('Cache-Control')).toBe('private, no-store');
     const page = await first.json() as any;
+    expect(page.ownerId).toBe('owner');
     expect(page.orders).toEqual([{reference:'ref-b',status:'pending_payment',fulfillment:'unfulfilled',total:1000,currency:'IDR',createdAt:10}]);
     const next = await (await request(`/api/orders?limit=1&cursor=${encodeURIComponent(page.nextCursor)}`, undefined, headers)).json() as any;
     expect(next.orders[0].reference).toBe('ref-a');
@@ -213,8 +214,9 @@ describe('commerce public API with real D1', () => {
     const last = await (await request(`/api/orders?limit=1&cursor=${encodeURIComponent(next.nextCursor)}`, undefined, headers)).json() as any;
     expect(last.orders[0].reference).toBe('ref-c'); expect(last.nextCursor).toBeNull();
     const other = await (await request(`/api/orders?cursor=${encodeURIComponent(page.nextCursor)}`, undefined, {'X-Test-Customer':'other'})).json() as any;
+    expect(other.ownerId).toBe('other');
     expect(other.orders).toEqual([]);
-    expect(await (await request('/api/orders', undefined, {'X-Test-Customer':'empty'})).json()).toEqual({orders:[],nextCursor:null});
+    expect(await (await request('/api/orders', undefined, {'X-Test-Customer':'empty'})).json()).toEqual({ownerId:'empty',orders:[],nextCursor:null});
     for (const query of ['limit=0','limit=51','limit=1.5','cursor=bad','cursor='+encodeURIComponent(btoa('[10]')),'cursor='+encodeURIComponent(btoa('[10,{}]'))]) {
       expect((await request('/api/orders?'+query, undefined, headers)).status).toBe(400);
     }

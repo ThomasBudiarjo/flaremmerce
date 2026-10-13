@@ -22,7 +22,9 @@ it('order history validates fresh real sessions and never claims same-email gues
     const response = await call(cookie);
     expect(response.status).toBe(200);
     expect(response.headers.get('Cache-Control')).toBe('private, no-store');
-    expect((await response.json() as any).orders.map((order:any)=>order.reference)).toEqual(['owned']);
+    const page = await response.json() as any;
+    expect(page.ownerId).toBe('owner');
+    expect(page.orders.map((order:any)=>order.reference)).toEqual(['owned']);
     expect((await call(cookie+'tampered')).status).toBe(401);
     await DB.prepare('UPDATE session SET expires_at=?').bind(now-1).run();
     expect((await call(cookie)).status).toBe(401);
