@@ -73,7 +73,7 @@ Perilaku `APP_ENV=staging` (production dan development tidak berubah):
 - **Fitur tanpa credential:** `GET /api/config` memuat `environment`, `payments`, `shipping`, `googleEnabled`, `turnstile`, `stagingLogin`. Checkout menolak lebih dulu dengan 503 `Pembayaran belum tersedia`/`Ongkir belum tersedia` sebelum reservasi atau order dibuat (juga di production). Keranjang menampilkan "Checkout belum tersedia di lingkungan ini" dan menonaktifkan pencarian wilayah, ongkir dan tombol pesan; halaman produk tidak terpengaruh. Dashboard admin menampilkan daftar integrasi nonaktif.
 - **Penanda dan SEO:** badge STAGING di header toko dan topbar admin, `X-Robots-Tag: noindex, nofollow` (Worker dan `_headers`), meta robots noindex, `robots.txt` `Disallow: /`.
 
-Media memakai URL `r2.dev` publik; ini **hanya untuk staging** (rate-limited, tanpa cache/WAF). Production memakai custom domain R2.
+Media staging disajikan Worker sendiri di `/media/*` (`MEDIA_ORIGIN` = `PUBLIC_ORIGIN`, Cache API + `immutable`), karena DNS ISP Indonesia memblokir `*.r2.dev`. Route ini hanya aktif bila kedua origin sama; production memakai custom domain R2. Upload ke origin `r2.dev` hanya diterima saat `APP_ENV=staging`.
 
 ## Pemeriksaan
 

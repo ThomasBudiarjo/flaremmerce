@@ -2,7 +2,7 @@ import { beforeEach, afterEach, expect, it } from 'vitest';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
-import { inboundRetention, storageRequest, receiveEmail, type StorageEnv } from '../src/storage';
+import { inboundRetention, serveMedia, storageRequest, receiveEmail, type StorageEnv } from '../src/storage';
 import type { IntegrationEnv } from '../src/integrations';
 import { admin } from '../src/commerce/admin';
 let mf: Miniflare, env: StorageEnv & IntegrationEnv, cookie: string;
@@ -64,6 +64,24 @@ it('accepts an r2.dev media origin only in staging', async () => {
     expect(response!.status).toBe(201);
     expect(((await response!.json()) as any).url).toMatch(/^https:\/\/pub-test\.r2\.dev\/media\//);
   } finally { delete env.APP_ENV; env.MEDIA_ORIGIN = 'https://media.example'; }
+});
+it('serves media from the Worker origin only when MEDIA_ORIGIN is the public origin', async () => {
+  env.MEDIA_ORIGIN = env.PUBLIC_ORIGIN;
+  try {
+    const { url } = await (await upload())!.json() as { url: string };
+    expect(url).toMatch(/^https:\/\/shop\.example\/media\/[0-9a-f-]{36}\.png$/);
+    const served = (await serveMedia(new Request(url), env))!;
+    expect(served.status).toBe(200);
+    expect(served.headers.get('Content-Type')).toBe('image/png');
+    expect(served.headers.get('Cache-Control')).toContain('immutable');
+    expect(new Uint8Array(await served.arrayBuffer())).toEqual(png);
+    expect((await serveMedia(new Request('https://shop.example/media/x.html'), env))!.status).toBe(404);
+    expect(await serveMedia(new Request('https://shop.example/media/../files/x.bin'), env)).toBeNull();
+    expect((await serveMedia(new Request(url, { method:'POST' }), env))!.status).toBe(404);
+    env.MEDIA_ORIGIN = 'https://media.example';
+    expect((await serveMedia(new Request(url), env))!.status).toBe(404);
+    expect(await serveMedia(new Request('https://shop.example/catalog'), env)).toBeNull();
+  } finally { env.MEDIA_ORIGIN = 'https://media.example'; }
 });
 it('fails closed for origin, anonymous, revoked role/session, SVG, signature, size and missing HTTPS', async () => {
   expect((await upload(undefined,undefined,undefined,'',env.PUBLIC_ORIGIN))!.status).toBe(401);

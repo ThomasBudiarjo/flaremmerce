@@ -2,10 +2,12 @@ import api, { type Env } from './worker';
 import { handle } from '@astrojs/cloudflare/handler';
 import { catalogParams, publicCacheKey } from './shared';
 import { withAdminHeaders, withEnvironmentHeaders, withStorefrontHeaders } from './headers';
+import { serveMedia } from './storage';
 
 async function route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname.startsWith('/api/') || url.pathname === '/sitemap.xml' || url.pathname === '/robots.txt') return api.fetch(request, env, ctx);
+  if (url.pathname.startsWith('/media/')) return (await serveMedia(request, env))!;
   if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
     const asset = new URL(request.url);
     if (!url.pathname.includes('.') || url.pathname.endsWith('/')) asset.pathname = '/admin/';

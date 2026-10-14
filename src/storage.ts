@@ -85,6 +85,23 @@ export async function storageRequest(request: Request, env: StorageEnv): Promise
   }
 }
 
+/** Serves public media from the Worker's own origin when MEDIA_ORIGIN points at it (staging: *.r2.dev is DNS-blocked by Indonesian ISPs). */
+export async function serveMedia(request: Request, env: StorageEnv): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (!url.pathname.startsWith('/media/')) return null;
+  let sameOrigin = false;
+  try { sameOrigin = new URL(env.MEDIA_ORIGIN ?? '').origin === new URL(env.PUBLIC_ORIGIN).origin; } catch {}
+  if (!sameOrigin || !env.MEDIA || (request.method !== 'GET' && request.method !== 'HEAD') || !/^\/media\/[0-9a-f-]{36}\.(png|jpg|webp)$/.test(url.pathname)) return new Response('Not found', { status: 404, headers });
+  const key = new Request(url.origin + url.pathname), cache = (globalThis as { caches?: { default: Cache } }).caches?.default;
+  const cached = await cache?.match(key);
+  if (cached) return cached;
+  const object = await env.MEDIA.get(url.pathname.slice(1));
+  if (!object) return new Response('Not found', { status: 404, headers });
+  const response = new Response(object.body, { headers: { 'Content-Type': object.httpMetadata?.contentType ?? 'application/octet-stream', 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox", ETag: object.httpEtag } });
+  await cache?.put(key, response.clone()).catch(() => {});
+  return response;
+}
+
 /** Inbound mail older than INBOUND_RETENTION_DAYS (default 180): objects first, then rows, 50 per run. */
 export async function inboundRetention(env: StorageEnv & { INBOUND_RETENTION_DAYS?: string }) {
   if (!env.PRIVATE_FILES) return 0;
