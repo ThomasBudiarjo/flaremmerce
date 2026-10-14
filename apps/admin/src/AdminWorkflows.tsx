@@ -189,6 +189,7 @@ function SaveForm({
   children,
   onSaved,
   editableDefaults,
+  serverSnapshot = editableDefaults,
 }: {
   api: API;
   path: string;
@@ -197,6 +198,7 @@ function SaveForm({
   children: React.ReactNode;
   onSaved: () => Promise<void>;
   editableDefaults?: Record<string, unknown>;
+  serverSnapshot?: object;
 }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -205,24 +207,33 @@ function SaveForm({
   const lock = useRef(false);
   const baseline = useRef<Record<string, FormDataEntryValue>>({});
   const defaults = useRef<Record<string, string>>({});
+  const snapshot = useRef(serverSnapshot);
+  const latestServer = useRef({ snapshot: serverSnapshot, defaults: editableDefaults });
+  latestServer.current = { snapshot: serverSnapshot, defaults: editableDefaults };
   const formRef = useRef<HTMLFormElement>(null);
+  function serverValue(field: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) {
+    const values = latestServer.current.defaults;
+    return values && field.name in values
+      ? String(values[field.name] ?? "")
+      : field instanceof HTMLSelectElement
+      ? Array.from(field.options).find((option) => option.defaultSelected)?.value ?? field.value
+      : field.defaultValue;
+  }
   useEffect(() => {
     if (!formRef.current || lock.current) return;
+    const refreshed = snapshot.current !== serverSnapshot;
     // Adopt refreshed defaults only for clean fields; other editors' drafts survive.
     formRef.current.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input[name], textarea[name], select[name]").forEach((field) => {
-      const next = editableDefaults && field.name in editableDefaults
-        ? String(editableDefaults[field.name] ?? "")
-        : field instanceof HTMLSelectElement
-        ? Array.from(field.options).find((option) => option.defaultSelected)?.value ?? field.value
-        : field.defaultValue;
+      const next = serverValue(field);
       if (!(field.name in baseline.current)) baseline.current[field.name] = field.value;
-      else if (defaults.current[field.name] !== next) {
+      else if (refreshed || defaults.current[field.name] !== next) {
         if (field.value === baseline.current[field.name] || field.value === next) field.value = next;
         // Dirty drafts survive, but comparison must use the latest server value.
         baseline.current[field.name] = next;
       }
       defaults.current[field.name] = next;
     });
+    snapshot.current = serverSnapshot;
   });
   return (
     <form
@@ -251,7 +262,19 @@ function SaveForm({
           }
           await api(path, changes, method);
           if (version === epoch.current) {
-            baseline.current = values;
+            const refreshed = snapshot.current !== latestServer.current.snapshot;
+            form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input[name], textarea[name], select[name]").forEach((field) => {
+              const next = serverValue(field);
+              if (method !== "PATCH" || field.name in changes) {
+                // Confirmation supersedes older reads only for fields this write changed.
+                baseline.current[field.name] = values[field.name];
+              } else if (refreshed || defaults.current[field.name] !== next) {
+                if (field.value === baseline.current[field.name] || field.value === next) field.value = next;
+                baseline.current[field.name] = next;
+              }
+              defaults.current[field.name] = next;
+            });
+            snapshot.current = latestServer.current.snapshot;
             setSaved(true);
             if (method === "POST") form.reset();
           }
@@ -652,6 +675,7 @@ export function CampaignList({
               key={c.id}
               api={api}
               editableDefaults={{ ...c, startsAt: localWib(c.startsAt), endsAt: localWib(c.endsAt) }}
+              serverSnapshot={c}
               path={`/api/admin/campaigns/${encodeURIComponent(c.id)}`}
               onSaved={onSaved ?? (() => load())}
               build={(f) => ({

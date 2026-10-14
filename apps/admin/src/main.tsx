@@ -549,13 +549,12 @@ function App() {
         setPageBusy(false);
     }
   }
-  async function refreshLoadedCatalogue(owner = renderedOwner) {
+  async function refreshLoadedCatalogue(owner = renderedOwner, selected = catalogueView.current.selected) {
     if (owner !== ownerSequence.current) return;
     const sequence = requestSequence.current;
     const catalogueVersion = ++catalogueSequence.current;
     setPageBusy(false);
     const targetCount = catalogueView.current.count;
-    const selected = catalogueView.current.selected;
     let rows: any[] = [],
       after: string | null = null;
     do {
@@ -578,10 +577,10 @@ function App() {
     setCatalogue(rows);
     setCatalogueCursor(after);
   }
-  async function retryLoadedCatalogue() {
+  async function retryLoadedCatalogue(selected = catalogueView.current.selected) {
     const owner = renderedOwner;
     setError("");
-    try { await refreshLoadedCatalogue(owner); }
+    try { await refreshLoadedCatalogue(owner, selected); }
     catch (e) {
       if (owner === ownerSequence.current) setError((e as Error).message);
     }
@@ -1631,7 +1630,7 @@ function App() {
                                       operation.current = null;
                                       setBusy(false);
                                       setDetailOpen(open ? p.id : null);
-                                      if (open) void retryLoadedCatalogue();
+                                      if (open) void retryLoadedCatalogue(p.id);
                                     }}
                                   >
                                     <DialogTrigger asChild>
@@ -1656,7 +1655,7 @@ function App() {
                                       </p>
                                       {detailOpen === p.id && (
                                         <>
-                                          <Button variant="outline" onClick={retryLoadedCatalogue}>
+                                          <Button variant="outline" onClick={() => retryLoadedCatalogue()}>
                                             Perbarui produk
                                           </Button>
                                           {error && <p role="alert">{error}</p>}

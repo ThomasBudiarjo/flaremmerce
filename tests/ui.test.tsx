@@ -338,6 +338,99 @@ it('reconciles a late price save into a reopened product without overwriting its
   expect(product.variants[0].weight).toBe(20);
 });
 
+it.each(['variant', 'campaign'])('adopts a successful %s reload that returns the original value after saving', async (kind) => {
+  let product = adminProduct(), server = campaign();
+  const field = kind === 'variant' ? 'price' : 'quota';
+  const original = kind === 'variant' ? 100 : 10;
+  const render = (revision: number) => kind === 'variant'
+    ? <CatalogEditor product={product} api={api} onSaved={async () => {
+      product = adminProduct(original);
+      root.render(render(1));
+    }} />
+    : <CampaignList api={api} revision={revision} />;
+  const api = async (_path: string, body?: any) => {
+    if (body) {
+      if (kind === 'variant') product = adminProduct(body.price);
+      else server = { ...server, ...body };
+      // Another administrator restores the original value before our reload.
+      if (kind === 'campaign') server = { ...server, quota: original };
+      return { updated: true };
+    }
+    return { campaigns: [{ ...server }], nextCursor: null };
+  };
+  await act(async () => root.render(render(0)));
+  await editField(field, '200');
+  await submit(document.querySelectorAll('form')[kind === 'variant' ? 1 : 0]);
+  expect(document.querySelector<HTMLInputElement>(`[name="${field}"]`)!.value).toBe(String(original));
+});
+
+it('keeps acknowledged values over a pre-confirmation snapshot when the post-save reload fails', async () => {
+  const write = deferred<any>();
+  let product = adminProduct();
+  const api = async (_path: string, body: any) => {
+    if (body.price === 200) await write.promise;
+    product = { ...product, variants: [{ ...product.variants[0], ...body }] };
+    return { updated: true };
+  };
+  const render = () => <CatalogEditor product={product} api={api} onSaved={async () => { throw new Error('Reload down'); }} />;
+  await act(async () => root.render(render()));
+  await editField('price', '200');
+  const form = document.querySelectorAll('form')[1];
+  await submit(form);
+  product = adminProduct();
+  await act(async () => root.render(render()));
+  await act(async () => write.resolve({ updated: true }));
+  expect(product.variants[0].price).toBe(200);
+  expect(document.querySelector<HTMLInputElement>('[name="price"]')!.value).toBe('200');
+  expect(form.textContent).toContain('Reload down');
+  await editField('price', '100');
+  await submit(form);
+  expect(product.variants[0].price).toBe(100);
+});
+
+it('reconciles a deferred deactivation without undoing the acknowledged price when reload fails', async () => {
+  const write = deferred<any>();
+  let product = adminProduct();
+  const api = async (_path: string, body: any) => {
+    if ('price' in body) await write.promise;
+    product = { ...product, variants: [{ ...product.variants[0], ...body }] };
+    return { updated: true };
+  };
+  const render = () => <CatalogEditor product={product} api={api} onSaved={async () => { throw new Error('Reload down'); }} />;
+  await act(async () => root.render(render()));
+  await editField('price', '200');
+  const form = document.querySelectorAll('form')[1];
+  await submit(form);
+  product = { ...adminProduct(), variants: [{ ...adminProduct().variants[0], active: false }] };
+  await act(async () => root.render(render()));
+  await act(async () => write.resolve({ updated: true }));
+  const active = form.querySelector<HTMLSelectElement>('[name="active"]')!;
+  expect(document.querySelector<HTMLInputElement>('[name="price"]')!.value).toBe('200');
+  expect(active.value).toBe('false');
+  await act(async () => { active.value = 'true'; active.dispatchEvent(new Event('change', { bubbles: true })); });
+  await submit(form);
+  expect(product.variants[0].active).toBe(true);
+  expect(product.variants[0].price).toBe(200);
+});
+
+it('keeps an opening boundary product and its draft when the refresh displaces it onto page two', async () => {
+  const refresh = deferred<Response>();
+  const products = Array.from({ length: 30 }, (_, i) => ({ ...adminProduct(), id: `p-${i}`, slug: `product-${i}`, name: i === 29 ? 'Boundary' : `Product ${i}` }));
+  let reads = 0;
+  await renderAdmin('products', async (url) => {
+    if (url.includes('?')) return Response.json({ products: [products[29]], nextCursor: null });
+    if (++reads > 1) return refresh.promise;
+    return Response.json({ products, nextCursor: 'page-two' });
+  });
+  await clickContaining('Boundary');
+  const dialog = document.querySelector('[role="dialog"]')!;
+  await editField('price', '300');
+  await act(async () => refresh.resolve(Response.json({ products: [{ ...adminProduct(), id: 'new', name: 'New product' }, ...products.slice(0, 29)], nextCursor: 'page-two' })));
+  expect(dialog.isConnected).toBe(true);
+  expect(document.querySelector('[role="dialog"]')!.textContent).toContain('Boundary');
+  expect(document.querySelector<HTMLInputElement>('[name="price"]')!.value).toBe('300');
+});
+
 it('saves an intentional campaign revert after refreshed defaults preserve its dirty field', async () => {
   let server = campaign();
   const api = async (_path: string, body?: any) => {
