@@ -216,9 +216,9 @@ function SaveForm({
         ? Array.from(field.options).find((option) => option.defaultSelected)?.value ?? field.value
         : field.defaultValue;
       if (!(field.name in baseline.current)) baseline.current[field.name] = field.value;
-      else if (defaults.current[field.name] !== next &&
-        (field.value === baseline.current[field.name] || field.value === next)) {
-        field.value = next;
+      else if (defaults.current[field.name] !== next) {
+        if (field.value === baseline.current[field.name] || field.value === next) field.value = next;
+        // Dirty drafts survive, but comparison must use the latest server value.
         baseline.current[field.name] = next;
       }
       defaults.current[field.name] = next;
@@ -548,9 +548,11 @@ export function InventoryLedger({
 export function CampaignList({
   api,
   revision,
+  onSaved,
 }: {
   api: API;
   revision: number;
+  onSaved?: () => Promise<void>;
 }) {
   const [data, setData] = useState<any>(),
     [error, setError] = useState(""),
@@ -651,7 +653,7 @@ export function CampaignList({
               api={api}
               editableDefaults={{ ...c, startsAt: localWib(c.startsAt), endsAt: localWib(c.endsAt) }}
               path={`/api/admin/campaigns/${encodeURIComponent(c.id)}`}
-              onSaved={() => load()}
+              onSaved={onSaved ?? (() => load())}
               build={(f) => ({
                 startsAt: new Date(
                   String(f.get("startsAt")) + "+07:00",

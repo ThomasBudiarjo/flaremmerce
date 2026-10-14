@@ -328,12 +328,65 @@ it('reconciles a late price save into a reopened product without overwriting its
   await clickContaining('Tutup');
   await clickContaining('Detail');
   await editField('weight', '20');
+  await editField('price', '300');
   await act(async () => write.resolve({ updated: true }));
-  expect(document.querySelector<HTMLInputElement>('[name="price"]')!.value).toBe('250');
+  expect(document.querySelector<HTMLInputElement>('[name="price"]')!.value).toBe('300');
   expect(document.querySelector<HTMLInputElement>('[name="weight"]')!.value).toBe('20');
+  await editField('price', '100');
   await submit(document.querySelectorAll('[role="dialog"] form')[1] as HTMLFormElement);
-  expect(product.variants[0].price).toBe(250);
+  expect(product.variants[0].price).toBe(100);
   expect(product.variants[0].weight).toBe(20);
+});
+
+it('saves an intentional campaign revert after refreshed defaults preserve its dirty field', async () => {
+  let server = campaign();
+  const api = async (_path: string, body?: any) => {
+    if (body) server = { ...server, ...body };
+    return { campaigns: [server], nextCursor: null };
+  };
+  await act(async () => root.render(<CampaignList api={api} revision={0} />));
+  await editField('quota', '30');
+  server = { ...server, quota: 20 };
+  await act(async () => root.render(<CampaignList api={api} revision={1} />));
+  expect(document.querySelector<HTMLInputElement>('[name="quota"]')!.value).toBe('30');
+  await editField('quota', '10');
+  await submit(document.querySelector('form')!);
+  expect(server.quota).toBe(10);
+});
+
+it.each(['inventory', 'campaign-create', 'campaign-edit'])('reconciles a committed %s after departure/return without clearing a newer draft', async (kind) => {
+  const write = deferred<any>();
+  let committed = false;
+  const targetTab = kind === 'inventory' ? 'inventory' : 'campaigns';
+  await renderAdmin(targetTab, async (url, init) => {
+    if (init.method === 'POST' || init.method === 'PATCH') {
+      await write.promise;
+      committed = true;
+      return Response.json({ updated: true });
+    }
+    if (url.startsWith('/api/admin/inventory')) return Response.json({ inventory: { onHand: committed ? 15 : 10, reserved: 0, available: committed ? 15 : 10 }, movements: [], nextCursor: null });
+    return Response.json({ products: [adminProduct()], campaigns: kind === 'campaign-create' && !committed ? [] : [{ ...campaign(), quota: committed ? 20 : 10 }], nextCursor: null });
+  });
+  const selectVariant = async () => act(async () => {
+    const field = document.querySelector<HTMLSelectElement>('[name="variantId"]')!;
+    field.value = 'v'; field.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  if (kind === 'inventory') await selectVariant();
+  if (kind === 'campaign-edit') await editField('quota', '20');
+  const form = kind === 'campaign-create' ? document.querySelectorAll('form')[0] : document.querySelector('form')!;
+  await submit(form);
+  for (const tab of ['products', targetTab]) await act(async () => {
+    history.replaceState(null, '', `/admin/#${tab}`); window.dispatchEvent(new Event('hashchange'));
+  });
+  if (kind === 'inventory') await selectVariant();
+  const draftField = kind === 'inventory' ? 'reason' : 'shipTo';
+  const draftValue = kind === 'inventory' ? 'New adjustment draft' : '2027-02-20';
+  await editField(draftField, draftValue);
+  const draftInput = document.querySelector<HTMLInputElement>(`[name="${draftField}"]`)!;
+  await act(async () => write.resolve({ updated: true }));
+  expect(document.body.textContent).toContain(kind === 'inventory' ? 'Fisik: 15' : 'Kuota 20');
+  expect(draftInput.isConnected).toBe(true);
+  expect(draftInput.value).toBe(draftValue);
 });
 
 it('releases an abandoned order operation but its completion cannot unlock the next tab operation', async () => {

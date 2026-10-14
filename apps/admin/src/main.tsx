@@ -715,21 +715,19 @@ function App() {
         const orderId = decodeURIComponent(path.split("/")[4]);
         setOrderRevisions((values) => ({ ...values, [orderId]: (values[orderId] ?? 0) + 1 }));
       }
+      if (path === "/api/admin/inventory" || path === "/api/admin/campaigns") setRevision((v) => v + 1);
       if (
         dialog !== dialogSequence.current
       )
         return false;
-      if (path === "/api/admin/inventory") {
-        setRevision((v) => v + 1);
-      } else if (path.startsWith("/api/admin/orders/")) {
+      if (path.startsWith("/api/admin/orders/")) {
         setDetailReady(null);
         form.reset();
       } else if (path === "/api/admin/campaigns") {
-        setRevision((v) => v + 1);
         form.reset();
       } else if (path.startsWith("/api/admin/products")) {
         form.reset();
-      } else await refresh();
+      } else if (path !== "/api/admin/inventory") await refresh();
       if (dialog !== dialogSequence.current) return false;
       setMessage("Perubahan tersimpan.");
       return true;
@@ -1827,7 +1825,9 @@ function App() {
                 )}
                 {tab === "campaigns" && (
                   <>
-                    <CampaignList key={user.id} api={api} revision={revision} />
+                    <CampaignList key={user.id} api={api} revision={revision} onSaved={async () => {
+                      if (renderedOwner === ownerSequence.current) setRevision((v) => v + 1);
+                    }} />
                     <Card className="max-w-2xl">
                       <CardHeader>
                         <CardTitle>Campaign pre-order</CardTitle>
