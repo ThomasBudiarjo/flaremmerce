@@ -54,6 +54,8 @@ Pengaturan Workers Builds (Settings → Build):
 
 | Pengaturan | Nilai |
 |---|---|
+| Production branch | `staging` (Branch control; hanya push ke branch ini yang men-deploy staging) |
+| Builds for non-production branches | Nonaktif (deploy command non-production memakai `wrangler versions upload` tanpa deploy guard dan migration) |
 | Root directory | `/` |
 | Build command | `npm ci && npm run build:staging` |
 | Deploy command | `npm run deploy:staging` |
