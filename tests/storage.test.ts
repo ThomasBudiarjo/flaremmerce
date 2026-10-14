@@ -57,6 +57,14 @@ it('atomically associates detached creation uploads and persists existing primar
   await admin(request,env,'owner',{...input,slug:'other',variants:[{...input.variants[0],sku:'other'}]});
   expect(await env.DB.prepare('SELECT product_id FROM product_media WHERE id=?').bind(media.id).first('product_id')).toBe(result.product.id);
 });
+it('accepts an r2.dev media origin only in staging', async () => {
+  env.MEDIA_ORIGIN = 'https://pub-test.r2.dev'; env.APP_ENV = 'staging';
+  try {
+    const response = await upload();
+    expect(response!.status).toBe(201);
+    expect(((await response!.json()) as any).url).toMatch(/^https:\/\/pub-test\.r2\.dev\/media\//);
+  } finally { delete env.APP_ENV; env.MEDIA_ORIGIN = 'https://media.example'; }
+});
 it('fails closed for origin, anonymous, revoked role/session, SVG, signature, size and missing HTTPS', async () => {
   expect((await upload(undefined,undefined,undefined,'',env.PUBLIC_ORIGIN))!.status).toBe(401);
   expect((await upload(undefined,undefined,undefined,cookie,'https://evil.example'))!.status).toBe(403);
@@ -64,6 +72,7 @@ it('fails closed for origin, anonymous, revoked role/session, SVG, signature, si
   expect((await upload(undefined,'<html/>','image/png'))!.status).toBe(415);
   expect((await upload(undefined,new Uint8Array(5242881)))!.status).toBe(413);
   env.MEDIA_ORIGIN = 'http://media.example'; expect((await upload())!.status).toBe(503); env.MEDIA_ORIGIN='https://media.example';
+  env.MEDIA_ORIGIN = 'https://pub-test.r2.dev'; expect((await upload())!.status).toBe(503); env.MEDIA_ORIGIN='https://media.example';
   await env.DB.prepare('DELETE FROM admin_roles').run(); expect((await upload())!.status).toBe(403);
   await env.DB.prepare('DELETE FROM session').run(); expect((await upload())!.status).toBe(401);
   expect((await env.MEDIA!.list()).objects).toHaveLength(0);

@@ -8,6 +8,7 @@ export interface StorageEnv {
   MEDIA?: R2Bucket;
   PRIVATE_FILES?: R2Bucket;
   MEDIA_ORIGIN?: string;
+  APP_ENV?: string;
 }
 const LIMIT = 5 * 1024 * 1024;
 const headers = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' };
@@ -63,7 +64,7 @@ export async function storageRequest(request: Request, env: StorageEnv): Promise
     let publicOrigin: URL | undefined;
     if (media) {
       try { publicOrigin = new URL(env.MEDIA_ORIGIN ?? ''); } catch { throw new HttpError(503, 'Public media origin unavailable'); }
-      demand(publicOrigin.protocol === 'https:' && !publicOrigin.username && !publicOrigin.password && publicOrigin.pathname === '/' && !publicOrigin.search && !publicOrigin.hash && !publicOrigin.hostname.endsWith('.r2.dev'), 503, 'Public media origin unavailable');
+      demand(publicOrigin.protocol === 'https:' && !publicOrigin.username && !publicOrigin.password && publicOrigin.pathname === '/' && !publicOrigin.search && !publicOrigin.hash && (env.APP_ENV === 'staging' || !publicOrigin.hostname.endsWith('.r2.dev')), 503, 'Public media origin unavailable');
     }
     demand(Number(request.headers.get('Content-Length') || 0) <= LIMIT, 413, 'Body too large');
     const bytes = await bounded(request.body);
