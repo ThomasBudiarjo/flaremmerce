@@ -1,5 +1,6 @@
 import api, { type Env } from './worker';
 import { handle } from '@astrojs/cloudflare/handler';
+import { catalogParams, publicCacheKey } from './shared';
 
 export default {
   ...api,
@@ -12,12 +13,8 @@ export default {
       return env.ASSETS.fetch(new Request(asset, request));
     }
     const publicPage = request.method === 'GET' && (url.pathname === '/' || url.pathname === '/catalog' || /^\/products\/[a-z0-9-]{1,100}$/.test(url.pathname));
-    const cacheUrl = new URL(`${url.origin}${url.pathname}`);
-    if (url.pathname === '/' || url.pathname === '/catalog') for (const name of ['after','limit']) {
-      const value = url.searchParams.get(name); if (value !== null) cacheUrl.searchParams.set(name,value);
-    }
-    const key = new Request(cacheUrl);
-    if (publicPage) {
+    const key = publicPage ? publicCacheKey(url, url.pathname === '/' || url.pathname === '/catalog' ? catalogParams : {}) : null;
+    if (key) {
       const cached = await caches.default.match(key);
       if (cached) {
         const headers = new Headers(cached.headers);
@@ -29,7 +26,7 @@ export default {
     const headers = new Headers(response.headers);
     headers.set('Referrer-Policy', 'no-referrer');
     headers.set('X-Content-Type-Options', 'nosniff');
-    if (publicPage && response.ok && !headers.has('Set-Cookie')) {
+    if (key && response.ok && !headers.has('Set-Cookie')) {
       headers.set('Cache-Control', 'public, max-age=0, s-maxage=60');
       const result = new Response(response.body, {status:response.status, headers});
       const cachedHeaders = new Headers(headers); cachedHeaders.set('Cache-Control', 'public, max-age=60');

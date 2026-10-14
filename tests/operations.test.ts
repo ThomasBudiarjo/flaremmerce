@@ -9,7 +9,7 @@ const secret = 'test-secret-at-least-thirty-two-characters';
 beforeEach(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-06', d1Databases: { DB: 'operations' } }));
   const DB = await mf.getD1Database('DB');
-  for (const name of ['0001_commerce', '0002_integrations', '0004_manual_review', '0007_operations']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`, import.meta.url), 'utf8').replace(/--[^\n]*/g, '').replace(/\s+/g, ' '));
+  for (const name of ['0001_commerce', '0002_integrations', '0004_manual_review', '0005_customer_orders', '0006_admin_pages', '0007_operations', '0008_lifecycle', '0009_role_audit']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`, import.meta.url), 'utf8').replace(/--[^\n]*/g, '').replace(/\s+/g, ' '));
   env = { DB, PUBLIC_ORIGIN: 'https://shop.example', BETTER_AUTH_SECRET: secret, GOOGLE_CLIENT_ID: 'test', GOOGLE_CLIENT_SECRET: 'test', ASSETS: { fetch: async () => new Response('asset') } } as unknown as Env;
   const now = Date.now();
   await DB.batch([
@@ -92,4 +92,41 @@ it('continues payment exhaustion review when outbox scanning fails and reports b
   expect(JSON.stringify(log.mock.calls)).toContain('payment_recovery');
   expect(JSON.stringify(log.mock.calls)).toContain('outbox_recovery');
   expect(JSON.stringify(log.mock.calls)).not.toMatch(/token-owner|private@example|SQLITE|no such table/);
+});
+
+it('audits effective role changes in audit_logs and migrates legacy role history', async () => {
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO user (id,name,email,email_verified,created_at,updated_at) VALUES (?,?,?,?,?,?)').bind('staff','staff','staff@example.com',1,now,now),
+    env.DB.prepare("INSERT INTO account (id,account_id,provider_id,user_id,created_at,updated_at) VALUES ('staff','staff','google','staff',?,?)").bind(now,now),
+  ]);
+  const roles = (admin: boolean) => worker.fetch(new Request('https://shop.example/api/admin/roles', { method: 'POST', headers: { Cookie: cookie, Origin: 'https://shop.example', 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: 'staff', admin }) }), env);
+  expect(await (await roles(true)).json()).toEqual({ ok: true, changed: true });
+  expect(await (await roles(true)).json()).toEqual({ ok: true, changed: false });
+  expect(await (await roles(false)).json()).toEqual({ ok: true, changed: true });
+  const { results } = await env.DB.prepare("SELECT actor,action,target,details_json FROM audit_logs WHERE action LIKE 'role.%' ORDER BY created_at,action").all();
+  expect(results).toEqual([{ actor: 'owner', action: 'role.grant', target: 'staff', details_json: '{"admin":true}' }, { actor: 'owner', action: 'role.revoke', target: 'staff', details_json: '{"admin":false}' }]);
+  expect(await env.DB.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name='integration_role_audit'").first('n')).toBe(0);
+
+  const legacy = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-06', d1Databases: { DB: 'legacy-roles' } }));
+  try {
+    const DB = await legacy.getD1Database('DB');
+    const run = (name: string) => DB.exec(readFileSync(new URL(`../migrations/${name}.sql`, import.meta.url), 'utf8').replace(/--[^\n]*/g, '').replace(/\s+/g, ' '));
+    for (const name of ['0001_commerce', '0002_integrations', '0004_manual_review']) await run(name);
+    await DB.batch([
+      DB.prepare("INSERT INTO user (id,name,email,email_verified,created_at,updated_at) VALUES ('a','a','a@example.com',1,1,1),('b','b','b@example.com',1,1,1)"),
+      DB.prepare("INSERT INTO integration_role_audit VALUES ('r1','a','b',1,10),('r2','a','b',0,20)"),
+      // A paid order with its paying event, a later duplicate, and a reviewed mismatch.
+      DB.prepare("INSERT INTO orders(id,reference,guest_token_hash,total,contact_json,address_json,shipping_json,created_at,status) VALUES('o','ref','h',1000,'{}','{}','{}',1,'pending_payment')"),
+      DB.prepare("UPDATE orders SET status='paid' WHERE id='o'"),
+      DB.prepare("INSERT INTO payment_events(event_key,reference,amount,currency,status,processed,created_at) VALUES('mismatch','ref',1,'IDR','succeeded',1,1),('payer','ref',1000,'IDR','succeeded',1,2),('duplicate','ref',1000,'IDR','succeeded',1,3)"),
+      DB.prepare("INSERT INTO manual_review(id,event_key,order_id,reason,created_at) VALUES('m','mismatch','o','payment_mismatch',1)"),
+    ]);
+    for (const name of ['0008_lifecycle', '0009_role_audit']) await run(name);
+    expect((await DB.prepare("SELECT id,actor,action,target,details_json,created_at FROM audit_logs ORDER BY created_at").all()).results).toEqual([
+      { id: 'role-audit:r1', actor: 'a', action: 'role.grant', target: 'b', details_json: '{"admin":true,"migratedFrom":"integration_role_audit"}', created_at: 10 },
+      { id: 'role-audit:r2', actor: 'a', action: 'role.revoke', target: 'b', details_json: '{"admin":false,"migratedFrom":"integration_role_audit"}', created_at: 20 },
+    ]);
+    expect((await DB.prepare('SELECT event_key FROM payment_events WHERE applied=1').all()).results).toEqual([{ event_key: 'payer' }]);
+  } finally { await legacy.dispose(); }
 });

@@ -1,5 +1,6 @@
 import type { IntegrationEnv } from './index';
-import { demand, digest, IntegrationError, json, origin } from './security';
+import { demand, json, origin } from './security';
+import { HttpError, digest } from '../shared';
 
 export async function destinations(request: Request, env: IntegrationEnv) {
   demand(request.method === 'POST', 405, 'Method not allowed'); origin(request, env);
@@ -14,7 +15,7 @@ export async function destinations(request: Request, env: IntegrationEnv) {
   try {
     response = await fetch(url.toString(), {headers:{key:env.RAJAONGKIR_API_KEY}, signal:AbortSignal.timeout(10000)});
     result = await response.json();
-  } catch { throw new IntegrationError(502, 'Destination search unavailable'); }
+  } catch { throw new HttpError(502, 'Destination search unavailable'); }
   if ((response.ok || response.status === 404) && result?.meta?.code === 404 && result.meta.status === 'error' && result.data === null) return {destinations:[]};
   demand(response.ok, 502, 'Destination search unavailable');
   demand(result?.meta?.code === 200 && result.meta.status === 'success' && Array.isArray(result.data) && result.data.length <= 20, 502, 'Invalid destination response');
@@ -41,11 +42,15 @@ export async function shipping(request: Request, env: IntegrationEnv) {
     demand(typeof item.variantId === 'string' && item.variantId.length > 0 && item.variantId.length <= 128 && Number.isInteger(item.quantity) && item.quantity > 0 && item.quantity <= 100);
     const count = (items.get(item.variantId) || 0) + item.quantity; demand(count <= 100); items.set(item.variantId,count);
   }
+  // At most 50 distinct IDs: one query stays below D1's 100-bind limit.
+  const ids = [...items.keys()];
+  const {results} = await env.DB.prepare(`SELECT id,weight FROM product_variants WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all<{id:string;weight:number}>();
+  const weights = new Map(results.map(row => [row.id, row.weight]));
   let weight = 0;
   for (const [id,quantity] of items) {
-    const variant = await env.DB.prepare('SELECT weight FROM product_variants WHERE id = ?').bind(id).first<{weight:number}>();
-    demand(variant && Number.isSafeInteger(variant.weight) && variant.weight > 0, 400, 'Invalid shipping item');
-    weight += variant.weight * quantity;
+    const grams = weights.get(id);
+    demand(grams !== undefined && Number.isSafeInteger(grams) && grams > 0, 400, 'Invalid shipping item');
+    weight += grams * quantity;
   }
   demand(Number.isSafeInteger(weight) && weight > 0 && weight <= 1000000);
   const response = await fetch('https://rajaongkir.komerce.id/api/v1/calculate/domestic-cost', {

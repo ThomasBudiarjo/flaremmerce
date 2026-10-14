@@ -1,5 +1,6 @@
 import { requireAdmin } from './integrations/auth';
-import { demand, IntegrationError, origin } from './integrations/security';
+import { demand, origin } from './integrations/security';
+import { HttpError, readBounded } from './shared';
 
 export interface StorageEnv {
   DB: D1Database;
@@ -13,28 +14,16 @@ const headers = { 'Cache-Control': 'private, no-store', 'X-Content-Type-Options'
 
 async function bounded(stream: ReadableStream<Uint8Array> | null, limit = LIMIT): Promise<Uint8Array> {
   demand(stream, 400, 'Empty body');
-  const reader = stream.getReader(), chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > limit) { await reader.cancel(); throw new IntegrationError(413, 'Body too large'); }
-      chunks.push(value);
-    }
-  } finally { reader.releaseLock(); }
-  demand(size > 0, 400, 'Empty body');
-  const result = new Uint8Array(size); let offset = 0;
-  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
-  return result;
+  const bytes = await readBounded(stream, limit);
+  demand(bytes.length > 0, 400, 'Empty body');
+  return bytes;
 }
 function imageExtension(type: string, bytes: Uint8Array): string {
   const starts = (signature: number[]) => signature.every((b, i) => bytes[i] === b);
   if (type === 'image/jpeg' && starts([255, 216, 255])) return 'jpg';
   if (type === 'image/png' && starts([137, 80, 78, 71, 13, 10, 26, 10])) return 'png';
   if (type === 'image/webp' && bytes.length >= 12 && starts([82, 73, 70, 70]) && bytes.slice(8, 12).every((b, i) => b === [87, 69, 66, 80][i])) return 'webp';
-  throw new IntegrationError(415, 'Unsupported image or signature');
+  throw new HttpError(415, 'Unsupported image or signature');
 }
 async function persist(bucket: R2Bucket, key: string, bytes: Uint8Array, type: string, statement: D1PreparedStatement, reference: D1PreparedStatement, publicMedia = false) {
   // Random immutable keys plus a conditional write defend against accidental overwrite.
@@ -71,7 +60,7 @@ export async function storageRequest(request: Request, env: StorageEnv): Promise
     demand(bucket, 503, 'Storage unavailable');
     let publicOrigin: URL | undefined;
     if (media) {
-      try { publicOrigin = new URL(env.MEDIA_ORIGIN ?? ''); } catch { throw new IntegrationError(503, 'Public media origin unavailable'); }
+      try { publicOrigin = new URL(env.MEDIA_ORIGIN ?? ''); } catch { throw new HttpError(503, 'Public media origin unavailable'); }
       demand(publicOrigin.protocol === 'https:' && !publicOrigin.username && !publicOrigin.password && publicOrigin.pathname === '/' && !publicOrigin.search && !publicOrigin.hash && !publicOrigin.hostname.endsWith('.r2.dev'), 503, 'Public media origin unavailable');
     }
     demand(Number(request.headers.get('Content-Length') || 0) <= LIMIT, 413, 'Body too large');
@@ -89,7 +78,7 @@ export async function storageRequest(request: Request, env: StorageEnv): Promise
     await persist(bucket, key, bytes, media ? type : 'application/octet-stream', statement, env.DB.prepare(`SELECT id FROM ${media ? 'product_media' : 'private_files'} WHERE object_key=?`).bind(key), media);
     return Response.json({ id, ...(publicUrl ? { url: publicUrl } : {}) }, { status: 201, headers });
   } catch (error) {
-    return Response.json({ error: error instanceof IntegrationError ? error.message : 'Storage unavailable' }, { status: error instanceof IntegrationError ? error.status : 503, headers });
+    return Response.json({ error: error instanceof HttpError ? error.message : 'Storage unavailable' }, { status: error instanceof HttpError ? error.status : 503, headers });
   }
 }
 
@@ -102,7 +91,7 @@ export async function receiveEmail(message: ForwardableEmailMessage, env: Storag
   let bytes: Uint8Array;
   try { bytes = await bounded(message.raw); }
   catch (error) {
-    if (error instanceof IntegrationError) { message.setReject('Message exceeds supported limits'); return; }
+    if (error instanceof HttpError) { message.setReject('Message exceeds supported limits'); return; }
     throw error;
   }
   const id = crypto.randomUUID(), key = `inbound/${id}.eml`;

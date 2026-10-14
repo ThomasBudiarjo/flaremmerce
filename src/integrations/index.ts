@@ -1,8 +1,9 @@
 import { auth, setup, roles } from './auth';
 import { destinations, shipping } from './shipping';
-import { body, IntegrationError, origin } from './security';
+import { body, origin } from './security';
+import { HttpError } from '../shared';
 export { requireAdmin, getCustomer } from './auth';
-export { verifyTurnstile, IntegrationError } from './security';
+export { verifyTurnstile } from './security';
 export { createPayment, verifyPaymentWebhook, lookupPayment } from './payment';
 
 export interface IntegrationEnv {
@@ -23,6 +24,8 @@ export interface IntegrationEnv {
   RAJAONGKIR_API_KEY?: string;
   RAJAONGKIR_ORIGIN?: string;
   RAJAONGKIR_COURIERS?: string;
+  WEBHOOK_MAX_SKEW_MIN?: string;
+  EXPIRY_GRACE_MIN?: string;
 }
 export async function handleIntegrationRequest(request: Request, env: IntegrationEnv): Promise<Response|null> {
   const path = new URL(request.url).pathname;
@@ -46,6 +49,6 @@ export async function handleIntegrationRequest(request: Request, env: Integratio
     const headers = new Headers(response.headers); headers.set('Cache-Control','private, no-store');
     return new Response(response.body, {status:response.status, headers});
   } catch (error) {
-    return Response.json({error:error instanceof IntegrationError ? error.message : 'Integration unavailable'}, {status:error instanceof IntegrationError ? error.status : 503, headers:{'Cache-Control':'private, no-store'}});
+    return Response.json({error:error instanceof HttpError ? error.message : 'Integration unavailable'}, {status:error instanceof HttpError ? error.status : 503, headers:{'Cache-Control':'private, no-store'}});
   }
 }

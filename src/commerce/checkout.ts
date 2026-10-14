@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createPayment, getCustomer, verifyTurnstile } from '../integrations/index';
-import { digest } from '../integrations/security';
+import { digest } from '../shared';
 import { type CommerceEnv, hash, HttpError, id, json, statement as s } from './types';
 
 export const checkoutInput = z.object({
@@ -53,10 +53,13 @@ export async function checkout(request: Request, env: CommerceEnv, body: unknown
   if (existing) return existing;
   await verifyTurnstile(input.turnstileToken, env);
   const now = Date.now();
+  // At most 30 distinct variants plus two timestamps: one query stays below D1's 100-bind limit.
+  const { results: rows } = await s(env, `SELECT v.*, p.name AS product_name, c.id AS campaign_id, c.ship_from, c.ship_to FROM product_variants v JOIN products p ON p.id=v.product_id LEFT JOIN preorder_campaigns c ON c.variant_id=v.id AND c.active=1 AND c.starts_at<=? AND c.ends_at>? WHERE v.id IN (${input.items.map(() => '?').join(',')}) AND v.active=1 AND p.active=1`, now, now, ...input.items.map(i => i.variantId)).all<VariantRow>();
+  const variants = new Map(rows.map(v => [v.id, v]));
   const vv: { variant: VariantRow; quantity: number }[] = [];
   let subtotal = 0, weight = 0;
   for (const item of input.items) {
-    const v = await s(env, `SELECT v.*, p.name AS product_name, c.id AS campaign_id, c.ship_from, c.ship_to FROM product_variants v JOIN products p ON p.id=v.product_id LEFT JOIN preorder_campaigns c ON c.variant_id=v.id AND c.active=1 AND c.starts_at<=? AND c.ends_at>? WHERE v.id=? AND v.active=1 AND p.active=1`, now, now, item.variantId).first<VariantRow>();
+    const v = variants.get(item.variantId);
     if (!v || (v.mode === 'preorder' && !v.campaign_id)) throw new HttpError(409, 'Variant unavailable');
     subtotal += v.price * item.quantity; weight += v.weight * item.quantity;
     vv.push({ variant: v, quantity: item.quantity });
@@ -71,7 +74,7 @@ export async function checkout(request: Request, env: CommerceEnv, body: unknown
   // DOKU Checkout invoice_number is at most 30 characters; reference is public, never a credential.
   const orderId = id(), reference = `FL-${id().replaceAll('-', '').slice(0, 24)}`, attemptId = id();
   const guestToken = customer ? null : await hash(`order-access:${cookie!}:${orderId}`);
-  const shipping = { quoteId: quote.id, service: quote.service, amount: quote.amount, destination: quote.destination, weight, expiresAt: quote.expires_at, details: JSON.parse(quote.details_json),
+  const shipping = { quoteId: quote.id, service: quote.service, amount: quote.amount, origin: env.RAJAONGKIR_ORIGIN ?? null, destination: quote.destination, weight, expiresAt: quote.expires_at, details: JSON.parse(quote.details_json),
     shipFrom: vv.reduce<string | null>((date, i) => i.variant.mode === 'preorder' && i.variant.ship_from && (!date || i.variant.ship_from > date) ? i.variant.ship_from : date, null),
     shipTo: vv.reduce<string | null>((date, i) => i.variant.mode === 'preorder' && i.variant.ship_to && (!date || i.variant.ship_to > date) ? i.variant.ship_to : date, null), policy: 'single-shipment-latest-item' };
   const batch = [s(env, `INSERT INTO orders(id,reference,customer_id,guest_token_hash,total,contact_json,address_json,shipping_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, orderId, reference, customer?.id ?? null, guestToken ? await hash(guestToken) : null, total, JSON.stringify(input.contact), JSON.stringify(input.address), JSON.stringify(shipping), now),
@@ -93,7 +96,13 @@ export async function checkout(request: Request, env: CommerceEnv, body: unknown
   // Only the winning insert calls provider. Retries never issue another create after ambiguous timeout.
   try {
     const payment = await createPayment({ reference, amount: total, returnUrl: `${env.PUBLIC_ORIGIN}/order?reference=${encodeURIComponent(reference)}` }, env);
-    await s(env, `UPDATE payment_attempts SET url=?,provider_id=?,status=CASE WHEN status IN ('created','unknown') THEN 'pending' ELSE status END WHERE id=?`, payment.url, payment.providerId ?? null, attemptId).run();
+    if ('rejected' in payment) {
+      // Definite provider refusal: no payment can arrive, so release the hold now. order_effects releases reservations.
+      await env.DB.batch([
+        s(env, "UPDATE payment_attempts SET status='failed' WHERE id=? AND status IN ('created','unknown')", attemptId),
+        s(env, "UPDATE orders SET status='cancelled' WHERE id=? AND status='pending_payment' AND EXISTS(SELECT 1 FROM payment_attempts WHERE id=? AND status='failed')", orderId, attemptId),
+      ]);
+    } else await s(env, `UPDATE payment_attempts SET url=?,provider_id=?,status=CASE WHEN status IN ('created','unknown') THEN 'pending' ELSE status END WHERE id=?`, payment.url, payment.providerId ?? null, attemptId).run();
   } catch {
     await s(env, "UPDATE payment_attempts SET status='unknown' WHERE id=? AND status='created'", attemptId).run();
   }

@@ -4,9 +4,10 @@ import migration from '../migrations/0001_commerce.sql?raw';
 import reviewMigration from '../migrations/0004_manual_review.sql?raw';
 import historyMigration from '../migrations/0005_customer_orders.sql?raw';
 import pagesMigration from '../migrations/0006_admin_pages.sql?raw';
+import lifecycleMigration from '../migrations/0008_lifecycle.sql?raw';
 import worker, { type Env } from '../src/worker';
 
-const provider = vi.hoisted(() => ({ failCreate: false, lookup: {status:'unknown'} as Record<string, unknown>, beforeResponse: null as null | ((input: { reference: string }) => Promise<void>) }));
+const provider = vi.hoisted(() => ({ failCreate: false, createStatus: 200, lookupStatus: 200, lookups: 0, lookup: {status:'unknown'} as Record<string, unknown>, beforeResponse: null as null | ((input: { reference: string }) => Promise<void>) }));
 
 // Commerce contract fixture: replace only integration boundary, never D1 or commerce logic.
 // Provider calls traverse native fetch with Vitest's supported workerd outbound mock.
@@ -23,6 +24,7 @@ vi.mock('../src/integrations/index', () => ({
   },
   createPayment: async (input: unknown) => {
     const response = await fetch('https://boundary.test/create', { method: 'POST', body: JSON.stringify(input) });
+    if (response.status >= 400 && response.status < 500) return { rejected: true };
     if (!response.ok) throw new Error('Provider timeout');
     if (provider.beforeResponse) await provider.beforeResponse(input as { reference: string });
     return response.json();
@@ -31,7 +33,11 @@ vi.mock('../src/integrations/index', () => ({
     if (request.headers.get('X-Test-Signature') !== 'valid') throw Object.assign(new Error('Invalid signature'), { status: 401 });
     return request.json();
   },
-  lookupPayment: async (reference: string) => (await fetch(`https://boundary.test/lookup/${reference}`)).json(),
+  lookupPayment: async (reference: string) => {
+    const response = await fetch(`https://boundary.test/lookup/${reference}`);
+    if (!response.ok) throw new Error('Lookup unavailable');
+    return response.json();
+  },
 }));
 
 const e = { ...env, PUBLIC_ORIGIN: 'https://shop.test', RAJAONGKIR_ORIGIN:'1', ASSETS: { fetch: async () => new Response('asset') } } as unknown as Env;
@@ -55,9 +61,12 @@ async function place(key = 'checkout-key', scope = 1, items?: { variantId: strin
   }
   return request('/api/checkout', payload(key, items), { Cookie: cookie(scope) });
 }
-async function notify(reference: string, status = 'succeeded', eventKey = 'event-1', amount = 1100, currency = 'IDR') {
-  return request('/api/payments/webhook', { reference, status, eventKey, amount, currency }, { 'X-Test-Signature': 'valid' });
+async function notify(reference: string, status = 'succeeded', eventKey = 'event-1', amount = 1100, currency = 'IDR', providerTx?: string) {
+  return request('/api/payments/webhook', { reference, status, eventKey, amount, currency, ...(providerTx ? { providerTx } : {}) }, { 'X-Test-Signature': 'valid' });
 }
+const scheduled = () => worker.scheduled({} as ScheduledController, e);
+// Moves an attempt's creation back so the Checkout due date (60 min) plus default grace (30 min) has passed.
+const age = (orderId: string, minutes = 91) => sql('UPDATE payment_attempts SET created_at=?,next_check=0 WHERE order_id=?', Date.now() - minutes * 60_000, orderId).run();
 function statements(source: string) {
   const queries: string[] = []; let current = '', trigger = false;
   for (const raw of source.split('\n')) {
@@ -75,24 +84,25 @@ beforeAll(async () => {
   await applyD1Migrations(db(), [{ name: '0001_commerce.sql', queries: statements(migration) }, { name: '0004_manual_review.sql', queries: statements(reviewMigration) }]);
   await applyD1Migrations(db(), [{ name: '0005_customer_orders.sql', queries: statements(historyMigration) }]);
   await applyD1Migrations(db(), [{ name: '0006_admin_pages.sql', queries: statements(pagesMigration) }]);
+  await applyD1Migrations(db(), [{ name: '0008_lifecycle.sql', queries: statements(lifecycleMigration) }]);
   // Shipping-owned quote contract. Real integration migration is applied by the integration suite.
   await sql('CREATE TABLE IF NOT EXISTS shipping_quotes(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,destination TEXT NOT NULL,service TEXT NOT NULL,amount INTEGER NOT NULL,weight INTEGER NOT NULL,expires_at INTEGER NOT NULL,details_json TEXT NOT NULL)').run();
 });
 beforeEach(async () => {
-  provider.failCreate = false; provider.beforeResponse = null; provider.lookup = {status:'unknown'};
+  provider.failCreate = false; provider.createStatus = 200; provider.lookupStatus = 200; provider.lookups = 0; provider.beforeResponse = null; provider.lookup = {status:'unknown'};
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const req = new Request(input, init), url = new URL(req.url);
     if (url.origin !== 'https://boundary.test') throw new Error('Unexpected outbound request');
     if (url.pathname === '/turnstile') return new Response('{}', {status:await req.text() === 'invalid' ? 400 : 200});
-    if (url.pathname === '/create') return Response.json({url:'https://pay.test/checkout',providerId:(await req.json() as any).reference}, {status:provider.failCreate ? 504 : 200});
-    if (url.pathname.startsWith('/lookup/')) return Response.json(provider.lookup);
+    if (url.pathname === '/create') return Response.json({url:'https://pay.test/checkout',providerId:(await req.json() as any).reference}, {status:provider.failCreate ? 504 : provider.createStatus});
+    if (url.pathname.startsWith('/lookup/')) { provider.lookups++; return Response.json(provider.lookup, {status:provider.lookupStatus}); }
     throw new Error('Unexpected provider route');
   });
   // Vitest 4 no longer rolls storage back between tests. Reset only the test database.
   await sql('DROP TRIGGER review_audit_no_delete').run();
   for (const table of ['audit_logs','outbox_events','order_events','manual_review','payment_events','payment_attempts','inventory_movements','stock_reservations','order_items','checkout_requests','orders','preorder_campaigns','inventory','product_variants','products','shipping_quotes']) await sql(`DELETE FROM ${table}`).run();
   await sql(statements(reviewMigration).find(q => q.startsWith('CREATE TRIGGER review_audit_no_delete'))!).run();
-  for (const path of ['/api/catalog','/api/catalog/product','/api/catalog/new-product','/api/catalog/preorder','/api/catalog?limit=1','/api/catalog?after=product&limit=1','/api/catalog?limit=1&after=product']) await caches.default.delete(new Request(`https://shop.test${path}`));
+  for (const path of ['/api/catalog','/api/catalog/product','/api/catalog/new-product','/api/catalog/preorder','/api/catalog?limit=1','/api/catalog?limit=2','/api/catalog?after=product&limit=1','/api/catalog?limit=1&after=product']) await caches.default.delete(new Request(`https://shop.test${path}`));
   await db().batch([
     sql("INSERT INTO products(id,slug,name) VALUES('p','product','Product')"),
     sql("INSERT INTO product_variants(id,product_id,sku,name,price,weight) VALUES('a','p','SKU-A','A',1000,100),('b','p','SKU-B','B',1000,100)"),
@@ -304,14 +314,14 @@ describe('commerce public API with real D1', () => {
     await notify(order.reference, 'ignored', 'method-failed');
     expect(await sql('SELECT status FROM orders WHERE id=?', order.id).first()).toEqual({status:'pending_payment'});
     expect(await sql("SELECT reserved FROM inventory WHERE variant_id='a'").first()).toEqual({reserved:1});
-    const replies = await Promise.all([notify(order.reference), notify(order.reference)]);
+    const replies = await Promise.all([notify(order.reference,'succeeded','event-1',1100,'IDR','VA_BCA@1'), notify(order.reference,'succeeded','event-1',1100,'IDR','VA_BCA@1')]);
     expect(replies.every(r => r.status === 200)).toBe(true);
     await notify(order.reference, 'expired', 'older-expiry');
     expect(await sql('SELECT status FROM orders WHERE id=?', order.id).first()).toEqual({ status: 'paid' });
     expect(await sql('SELECT status FROM payment_attempts WHERE order_id=?', order.id).first()).toEqual({ status: 'succeeded' });
     expect(await sql("SELECT on_hand,reserved FROM inventory WHERE variant_id='a'").first()).toEqual({ on_hand: 0, reserved: 0 });
     expect(await count('outbox_events')).toBe(1); expect(await count('inventory_movements')).toBe(1);
-    await notify(order.reference, 'succeeded', 'another-confirmation');
+    await notify(order.reference, 'succeeded', 'another-confirmation', 1100, 'IDR', 'QRIS@2');
     expect(await sql('SELECT reason FROM manual_review').first()).toEqual({reason:'additional_payment_confirmation'});
     expect(await count('inventory_movements')).toBe(1);
     await worker.scheduled({} as ScheduledController, e);
@@ -388,8 +398,9 @@ describe('commerce public API with real D1', () => {
     await worker.scheduled({} as ScheduledController, e);
     expect(await sql('SELECT reason FROM manual_review').first()).toEqual({ reason: 'reconciliation_exhausted' });
     // Operators may reconcile again only through an authoritative provider result, never a blind create.
-    await sql('UPDATE payment_attempts SET checks=0,next_check=0').run();
-    provider.lookup = {status:'expired',amount:1100,currency:'IDR'};
+    await sql('UPDATE payment_attempts SET checks=0').run();
+    await age(order.id);
+    provider.lookup = {status:'not_paid',amount:1100,currency:'IDR'};
     await worker.scheduled({} as ScheduledController, e);
     expect(await sql('SELECT status FROM orders WHERE id=?', order.id).first()).toEqual({ status: 'cancelled' });
     expect(await sql("SELECT reserved FROM inventory WHERE variant_id='a'").first()).toEqual({ reserved: 0 });
@@ -595,5 +606,199 @@ describe('local baseline admin contracts',()=>{
     expect((await request('/api/admin/products/p/variants',variant)).status).toBe(403);
     expect((await request('/api/admin/products/p/variants',variant,{...headers,Origin:'https://evil.test'})).status).toBe(403);
     expect((await request('/api/admin/campaigns/missing',{active:false},{...headers,Origin:'https://evil.test'},'PATCH')).status).toBe(403);
+  });
+});
+
+describe('payment expiry, cancellation and provider identity', () => {
+  const admin = { 'X-Test-Admin': 'admin' };
+  const stock = () => sql("SELECT on_hand,reserved FROM inventory WHERE variant_id='a'").first();
+  const status = (orderId: string) => sql('SELECT o.status AS orderStatus,a.status AS attemptStatus FROM orders o JOIN payment_attempts a ON a.order_id=o.id WHERE o.id=?', orderId).first();
+  it('holds stock before the deadline and on lookup failure; expires after due date plus grace', async () => {
+    const { order } = await (await place()).json() as any;
+    provider.lookup = { status: 'not_paid', amount: 1100, currency: 'IDR' };
+    await age(order.id, 89);
+    await scheduled();
+    expect(await status(order.id)).toEqual({ orderStatus: 'pending_payment', attemptStatus: 'pending' });
+    // The next check never lands later than the deadline, however small the backoff step.
+    const next = await sql('SELECT next_check,created_at FROM payment_attempts WHERE order_id=?', order.id).first<{ next_check: number; created_at: number }>();
+    expect(next!.next_check).toBeLessThanOrEqual(next!.created_at + 90 * 60_000);
+    await age(order.id);
+    provider.lookupStatus = 503;
+    await scheduled();
+    expect(await status(order.id)).toEqual({ orderStatus: 'pending_payment', attemptStatus: 'pending' });
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 1 });
+    provider.lookupStatus = 200; provider.lookup = { status: 'unknown' };
+    await age(order.id);
+    await scheduled();
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 1 });
+    provider.lookup = { status: 'not_paid', amount: 1100, currency: 'IDR' };
+    await age(order.id);
+    await scheduled();
+    expect(await status(order.id)).toEqual({ orderStatus: 'cancelled', attemptStatus: 'expired' });
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 0 });
+    expect(await sql("SELECT kind FROM order_events WHERE order_id=?", order.id).all()).toMatchObject({ results: [{ kind: 'cancelled' }] });
+    expect(await count('manual_review')).toBe(0);
+    // A success after expiry is evidence for operators, never a consumption of released stock.
+    await notify(order.reference, 'succeeded', 'late-success');
+    expect(await sql('SELECT reason FROM manual_review').first()).toEqual({ reason: 'late_payment' });
+    expect(await status(order.id)).toEqual({ orderStatus: 'cancelled', attemptStatus: 'expired' });
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 0 });
+    expect(await count('outbox_events')).toBe(0); expect(await count('inventory_movements')).toBe(0);
+  });
+  it('honours EXPIRY_GRACE_MIN and keeps a mismatched not-paid answer on hold', async () => {
+    const { order } = await (await place()).json() as any;
+    provider.lookup = { status: 'not_paid', amount: 1100, currency: 'IDR' };
+    await age(order.id, 91);
+    await worker.scheduled({} as ScheduledController, { ...e, EXPIRY_GRACE_MIN: '45' });
+    expect(await status(order.id)).toMatchObject({ orderStatus: 'pending_payment' });
+    provider.lookup = { status: 'not_paid', amount: 999, currency: 'IDR' };
+    await age(order.id, 106);
+    await worker.scheduled({} as ScheduledController, { ...e, EXPIRY_GRACE_MIN: '45' });
+    expect(await status(order.id)).toMatchObject({ orderStatus: 'pending_payment' });
+    expect(await sql('SELECT reason FROM manual_review').first()).toEqual({ reason: 'payment_mismatch' });
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 1 });
+  });
+  it('moves exhausted attempts out of the scan range with one deterministic review', async () => {
+    const { order } = await (await place()).json() as any;
+    provider.lookupStatus = 503;
+    await sql('UPDATE payment_attempts SET checks=7,next_check=0').run();
+    await scheduled();
+    const attempt = await sql('SELECT checks,next_check FROM payment_attempts WHERE order_id=?', order.id).first();
+    expect(attempt).toEqual({ checks: 8, next_check: 8_640_000_000_000_000 });
+    expect(await sql('SELECT id,event_key,reason FROM manual_review').all()).toMatchObject({ results: [{ id: `recovery:${order.reference}`, event_key: `recovery:${order.reference}`, reason: 'reconciliation_exhausted' }] });
+    const lookups = provider.lookups;
+    await scheduled(); await scheduled();
+    expect(provider.lookups).toBe(lookups);
+    expect(await count('manual_review')).toBe(1);
+    const detail = await (await request(`/api/admin/orders/${order.id}`, undefined, admin)).json() as any;
+    expect(detail.payment).toMatchObject({ checks: 8, nextCheck: null });
+    // An attempt already reviewed under the old random-id path is moved out of range, not filed twice.
+    await sql("UPDATE inventory SET on_hand=2 WHERE variant_id='a'").run();
+    const legacy = (await (await place('legacy-key', 2)).json() as any).order;
+    await sql("INSERT INTO manual_review(id,event_key,order_id,reason,created_at) VALUES('random-uuid',?,?,'reconciliation_exhausted',1)", `recovery:${legacy.reference}`, legacy.id).run();
+    await sql('UPDATE payment_attempts SET checks=8,next_check=0 WHERE order_id=?', legacy.id).run();
+    await scheduled();
+    expect(await count('manual_review')).toBe(2);
+    expect(await sql('SELECT next_check FROM payment_attempts WHERE order_id=?', legacy.id).first('next_check')).toBe(8_640_000_000_000_000);
+  });
+  it('rejected payment creation cancels the order and releases stock; ambiguous failures keep it', async () => {
+    provider.createStatus = 400;
+    const rejected = await (await place('rejected-key', 1)).json() as any;
+    expect(rejected.order.status).toBe('cancelled'); expect(rejected.paymentState).toBe('failed'); expect(rejected.paymentUrl).toBeUndefined();
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 0 });
+    provider.createStatus = 200; provider.failCreate = true;
+    const unknown = await (await place('ambiguous-key', 2)).json() as any;
+    expect(unknown.order.status).toBe('pending_payment'); expect(unknown.paymentState).toBe('unknown');
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 1 });
+  });
+  it('admin cancel confirms with the provider, is audited, idempotent and loses to a found success', async () => {
+    const { order } = await (await place()).json() as any;
+    const route = `/api/admin/orders/${order.id}/cancel`;
+    expect((await request(route, {})).status).toBe(403);
+    expect((await request(route, {}, { ...admin, Origin: 'https://evil.test' })).status).toBe(403);
+    provider.lookupStatus = 503;
+    expect((await request(route, {}, admin)).status).toBe(503);
+    provider.lookupStatus = 200; provider.lookup = { status: 'unknown' };
+    expect((await request(route, {}, admin)).status).toBe(503);
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 1 });
+    provider.lookup = { status: 'not_paid', amount: 1100, currency: 'IDR' };
+    const cancelled = await request(route, { reason: 'Customer called' }, admin);
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toEqual({ order: { id: order.id, reference: order.reference, status: 'cancelled' }, cancelled: true });
+    expect(await status(order.id)).toEqual({ orderStatus: 'cancelled', attemptStatus: 'expired' });
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 0 });
+    expect(await sql("SELECT actor,action,target,details_json FROM audit_logs WHERE action='order.cancel'").first()).toEqual({ actor: 'admin', action: 'order.cancel', target: order.id, details_json: JSON.stringify({ reference: order.reference, reason: 'Customer called' }) });
+    const again = await request(route, {}, admin);
+    expect(again.status).toBe(200); expect((await again.json() as any).cancelled).toBe(false);
+    expect(await count('audit_logs')).toBe(1);
+    const second = await (await place('second-key', 2)).json() as any;
+    provider.lookup = { status: 'succeeded', amount: 1100, currency: 'IDR' };
+    expect((await request(`/api/admin/orders/${second.order.id}/cancel`, {}, admin)).status).toBe(409);
+    expect(await status(second.order.id)).toEqual({ orderStatus: 'paid', attemptStatus: 'succeeded' });
+    expect(await stock()).toEqual({ on_hand: 0, reserved: 0 });
+    expect((await request(`/api/admin/orders/${second.order.id}/cancel`, {}, admin)).status).toBe(409);
+    expect((await request('/api/admin/orders/missing/cancel', {}, admin)).status).toBe(404);
+  });
+  it('customer cancel requires the guest token or owner and records the request on the timeline', async () => {
+    const { order } = await (await place()).json() as any;
+    const route = `/api/orders/${order.reference}/cancel`;
+    provider.lookup = { status: 'not_paid', amount: 1100, currency: 'IDR' };
+    expect((await request(route, {})).status).toBe(404);
+    expect((await request(route, {}, { 'X-Order-Token': 'wrong' })).status).toBe(404);
+    expect((await request(route, {}, { 'X-Order-Token': order.guestToken, Origin: 'https://evil.test' })).status).toBe(403);
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 1 });
+    const response = await request(route, undefined, { 'X-Order-Token': order.guestToken }, 'POST');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ order: { reference: order.reference, status: 'cancelled' }, cancelled: true });
+    expect((await request(route, undefined, { 'X-Order-Token': order.guestToken }, 'POST')).status).toBe(200);
+    const read = await (await request(`/api/orders/${order.reference}`, undefined, { 'X-Order-Token': order.guestToken })).json() as any;
+    expect(read.order.timeline.map((event: any) => event.kind).sort()).toEqual(['cancelled', 'cancelled_by_customer']);
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 0 });
+    const owned = await (await request('/api/checkout', payload('owned-key'), { 'X-Test-Customer': 'owner' })).json() as any;
+    const ownedRoute = `/api/orders/${owned.order.reference}/cancel`;
+    expect((await request(ownedRoute, undefined, { 'X-Test-Customer': 'other' }, 'POST')).status).toBe(404);
+    provider.lookup = { status: 'succeeded', amount: 1100, currency: 'IDR' };
+    expect((await request(ownedRoute, undefined, { 'X-Test-Customer': 'owner' }, 'POST')).status).toBe(409);
+    expect(await status(owned.order.id)).toEqual({ orderStatus: 'paid', attemptStatus: 'succeeded' });
+  });
+  it('resolves a review by cancelling its order atomically with the CAS', async () => {
+    const { order } = await (await place()).json() as any;
+    await sql('UPDATE payment_attempts SET checks=8,next_check=0').run();
+    await scheduled();
+    const review = await sql('SELECT id FROM manual_review').first<{ id: string }>();
+    const route = `/api/admin/review/${review!.id}`;
+    provider.lookup = { status: 'not_paid', amount: 1100, currency: 'IDR' };
+    expect((await request(route, { version: 1, status: 'resolved', note: 'stale', action: 'cancel_order' }, admin, 'PATCH')).status).toBe(409);
+    expect(await status(order.id)).toMatchObject({ orderStatus: 'pending_payment' });
+    expect((await request(route, { version: 0, status: 'resolved', note: 'x', action: 'refund' }, admin, 'PATCH')).status).toBe(400);
+    const resolved = await request(route, { version: 0, status: 'resolved', note: 'Provider confirms unpaid', action: 'cancel_order' }, admin, 'PATCH');
+    expect(resolved.status).toBe(200);
+    expect(await resolved.json()).toMatchObject({ updated: true, version: 1, order: { id: order.id, status: 'cancelled' } });
+    expect(await status(order.id)).toEqual({ orderStatus: 'cancelled', attemptStatus: 'expired' });
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 0 });
+    expect((await sql('SELECT action FROM audit_logs ORDER BY action').all()).results).toEqual([{ action: 'order.cancel' }, { action: 'review.update' }]);
+    expect((await request(route, { version: 1, status: 'open', note: 'Reopen', action: 'cancel_order' }, admin, 'PATCH')).status).toBe(200);
+    expect(await sql('SELECT version,status FROM manual_review').first()).toEqual({ version: 2, status: 'open' });
+  });
+  it('does not review the same payment seen via webhook retry and lookup, but reviews a distinct one', async () => {
+    const { order } = await (await place()).json() as any;
+    await notify(order.reference, 'succeeded', 'doku:first', 1100, 'IDR', 'VA_BCA@1000');
+    await notify(order.reference, 'succeeded', 'doku:retry-new-request-id', 1100, 'IDR', 'VA_BCA@1000');
+    await notify(order.reference, 'succeeded', 'lookup:no-identity');
+    expect(await count('manual_review')).toBe(0);
+    expect(await sql('SELECT count(*) AS n FROM payment_events WHERE processed=1').first('n')).toBe(3);
+    await notify(order.reference, 'succeeded', 'doku:second-payment', 1100, 'IDR', 'QRIS@2000');
+    expect(await sql('SELECT reason,event_key FROM manual_review').first()).toEqual({ reason: 'additional_payment_confirmation', event_key: 'doku:second-payment' });
+    await notify(order.reference, 'succeeded', 'doku:other-amount', 1200, 'IDR', 'VA_BCA@1000');
+    expect(await sql("SELECT reason FROM manual_review WHERE event_key='doku:other-amount'").first('reason')).toBe('payment_mismatch');
+    expect(await count('inventory_movements')).toBe(1); expect(await count('outbox_events')).toBe(1);
+  });
+  it('announces changed campaign estimates to non-cancelled orders that snapshot the campaign', async () => {
+    await sql("UPDATE product_variants SET mode='preorder' WHERE id='a'").run();
+    const now = Date.now();
+    const { campaign } = await (await request('/api/admin/campaigns', { variantId: 'a', startsAt: now - 1000, endsAt: now + 300000, shipFrom: '2026-12-01', shipTo: '2026-12-15', quota: null }, admin)).json() as any;
+    const kept = (await (await place('kept-key', 1)).json() as any).order;
+    const dropped = (await (await place('dropped-key', 2)).json() as any).order;
+    provider.lookup = { status: 'not_paid', amount: 1100, currency: 'IDR' };
+    expect((await request(`/api/admin/orders/${dropped.id}/cancel`, {}, admin)).status).toBe(200);
+    const route = `/api/admin/campaigns/${campaign.id}`;
+    expect((await request(route, { quota: 10 }, admin, 'PATCH')).status).toBe(200);
+    expect(await sql("SELECT count(*) AS n FROM order_events WHERE kind='campaign_updated'").first('n')).toBe(0);
+    expect((await request(route, { shipTo: '2027-01-10' }, admin, 'PATCH')).status).toBe(200);
+    const history = await (await request(`/api/orders/${kept.reference}`, undefined, { 'X-Order-Token': kept.guestToken })).json() as any;
+    expect(history.order.timeline.find((event: any) => event.kind === 'campaign_updated').details).toEqual({ campaignId: campaign.id, shipFrom: '2026-12-01', shipTo: '2027-01-10' });
+    expect(history.order.items[0].campaign.shipTo).toBe('2026-12-15');
+    expect(await sql("SELECT count(*) AS n FROM order_events WHERE kind='campaign_updated' AND order_id=?", dropped.id).first('n')).toBe(0);
+    expect((await request('/api/admin/campaigns/missing', { shipTo: '2027-01-10' }, admin, 'PATCH')).status).toBe(404);
+    expect(await sql("SELECT count(*) AS n FROM order_events WHERE kind='campaign_updated'").first('n')).toBe(1);
+    expect(history.order.shipping.origin).toBe('1');
+  });
+  it('normalizes public cache keys, rejects invalid catalog queries and malformed path encoding', async () => {
+    const first = await (await request('/api/catalog?limit=1')).json() as any;
+    await sql("UPDATE products SET name='Changed' WHERE id='p'").run();
+    expect(await (await request('/api/catalog?limit=01&utm_source=x')).json()).toEqual(first);
+    for (const query of ['limit=1e1', 'limit=0', 'limit=91', 'limit=+5', 'after=Bad_Slug']) expect((await request(`/api/catalog?${query}`)).status).toBe(400);
+    expect((await (await request('/api/catalog?limit=2')).json() as any).products[0].name).toBe('Changed');
+    for (const path of ['/api/catalog/%E0%A4%A', '/api/orders/%E0%A4%A', '/api/orders/%E0%A4%A/cancel']) expect((await request(path, path.endsWith('cancel') ? {} : undefined)).status).toBe(400);
   });
 });

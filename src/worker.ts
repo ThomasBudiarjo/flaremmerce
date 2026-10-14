@@ -3,7 +3,8 @@ import { devLoginEnabled } from './integrations/auth';
 import type { IntegrationEnv } from './integrations/index';
 import { commerceRequest } from './commerce/index';
 import { consumeOutbox, reconcile, recoverOutbox } from './commerce/payments';
-import { HttpError, json } from './commerce/types';
+import { json } from './commerce/types';
+import { catalogParams, HttpError, publicCacheKey } from './shared';
 import { storageRequest, receiveEmail, type StorageEnv } from './storage';
 
 export interface Env extends IntegrationEnv, StorageEnv {
@@ -29,16 +30,12 @@ export default {
       // Explicit public allowlist. No session, cookie, token or PII enters these cache values.
       // Preserve supported pagination; discard tracking/unsupported query parameters.
       if (request.method === 'GET' && (url.pathname === '/api/catalog' || /^\/api\/catalog\/[a-z0-9-]{1,100}$/.test(url.pathname))) {
-        const cacheUrl = new URL(`${url.origin}${url.pathname}`);
-        if (url.pathname === '/api/catalog') for (const name of ['after', 'limit']) {
-          const value = url.searchParams.get(name); if (value !== null) cacheUrl.searchParams.set(name, value);
-        }
-        const key = new Request(cacheUrl);
-        const cached = await caches.default.match(key);
+        const key = publicCacheKey(url, url.pathname === '/api/catalog' ? catalogParams : {});
+        const cached = key && await caches.default.match(key);
         if (cached) return cached;
         const response = await commerceRequest(request, env);
         if (response) {
-          if (response.ok) {
+          if (key && response.ok) {
             const store = caches.default.put(key, response.clone()).catch(() => {});
             if (context) context.waitUntil(store); else await store;
           }
@@ -54,8 +51,9 @@ export default {
       if (commerce) return commerce;
       return env.ASSETS.fetch(request);
     } catch (error) {
+      if (error instanceof URIError) return json({ error: 'Invalid path encoding' }, 400);
       if (error instanceof HttpError) return json({ error: error.message, ...(error.details ? { details: error.details } : {}) }, error.status);
-      // Integration errors may carry HTTP status without sharing commerce's error class.
+      // Status-carrying errors from outside this codebase's error class (e.g. test doubles at the integration seam).
       if (error instanceof Error && 'status' in error && typeof error.status === 'number' && error.status >= 400 && error.status < 500) return json({ error: error.message }, error.status);
       if (/CHECK constraint failed|UNIQUE constraint failed|FOREIGN KEY constraint failed|campaign_overlap|catalog_changed|campaign_changed|checkout_changed|inventory_missing/.test(String(error))) return json({ error: 'Conflicting or invalid business operation' }, 409);
       return json({ error: 'Service temporarily unavailable' }, 503);

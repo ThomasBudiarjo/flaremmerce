@@ -2,13 +2,15 @@ import { and, eq, gt, inArray, lte } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import { campaigns, inventory, products, variants } from './schema';
 import { type CommerceEnv, HttpError, json } from './types';
+import { catalogParams, validSlug } from '../shared';
 
 export async function catalog(env: CommerceEnv, slug?: string, query = new URLSearchParams(), includeInactive = false) {
   const db = drizzle(env.DB);
-  if (slug && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) throw new HttpError(404, 'Product not found');
-  if (slug && slug.length > 100) throw new HttpError(404, 'Product not found');
-  const limit = slug ? 1 : Number(query.get('limit') ?? 30), after = slug ? null : query.get('after');
-  if (!Number.isInteger(limit) || limit < 1 || limit > 90 || (after && (after.length > 100 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(after)))) throw new HttpError(400, 'Invalid catalog pagination');
+  if (slug !== undefined && !validSlug(slug)) throw new HttpError(404, 'Product not found');
+  // Same normalizers as the shared cache key, so every cacheable query is exactly what is served.
+  const rawLimit = slug ? null : query.get('limit'), after = slug ? null : query.get('after');
+  const limit = slug ? 1 : rawLimit === null ? 30 : Number(catalogParams.limit(rawLimit));
+  if (!limit || (after !== null && catalogParams.after(after) === null)) throw new HttpError(400, 'Invalid catalog pagination');
   // Keep IN parameters below D1's 100-bind limit and avoid one query per product.
   const page = await db.select().from(products).where(and(includeInactive ? undefined : eq(products.active, 1), slug ? eq(products.slug, slug) : undefined, after ? gt(products.slug, after) : undefined)).orderBy(products.slug).limit(limit + 1);
   const rows = page.slice(0, limit);

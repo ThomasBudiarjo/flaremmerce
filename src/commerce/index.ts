@@ -4,22 +4,14 @@ import { admin } from './admin';
 import { catalog } from './catalog';
 import { checkout } from './checkout';
 import { webhook } from './payments';
+import { cancelOrder } from './cancel';
+import { readBounded } from '../shared';
 import { type CommerceEnv, hash, HttpError, json, statement as s } from './types';
 
 async function body(request: Request) {
   if (!request.headers.get('Content-Type')?.includes('application/json')) throw new HttpError(415, 'JSON required');
-  const reader = request.body?.getReader();
-  if (!reader) throw new HttpError(400, 'JSON body required');
-  const chunks: Uint8Array[] = []; let size = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > 65_536) { await reader.cancel(); throw new HttpError(413, 'Request too large'); }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(size); let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  if (!request.body) throw new HttpError(400, 'JSON body required');
+  const bytes = await readBounded(request.body, 65_536);
   try { return JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new HttpError(400, 'Invalid JSON'); }
 }
 
@@ -45,7 +37,8 @@ async function orders(request: Request, env: CommerceEnv, url: URL) {
   return json({ ownerId: customer.id, orders: page.map(({ id, ...summary }) => summary), nextCursor: rows.results.length > limit && last ? btoa(JSON.stringify([last.createdAt, last.id])) : null });
 }
 
-async function order(request: Request, env: CommerceEnv, reference: string) {
+// Guest token or verified owner session; every other caller sees the same 404 as a missing order.
+async function authorizedOrder(request: Request, env: CommerceEnv, reference: string) {
   const row = await s(env, 'SELECT * FROM orders WHERE reference=?', reference).first<Record<string, unknown>>();
   if (!row) throw new HttpError(404, 'Order not found');
   const token = request.headers.get('X-Order-Token');
@@ -54,6 +47,11 @@ async function order(request: Request, env: CommerceEnv, reference: string) {
     const owner = await getCustomer(request, env);
     if (!owner || owner.id !== row.customer_id) throw new HttpError(404, 'Order not found');
   }
+  return { row, guestAuthorized };
+}
+
+async function order(request: Request, env: CommerceEnv, reference: string) {
+  const { row, guestAuthorized } = await authorizedOrder(request, env, reference);
   const items = await s(env, 'SELECT id,variant_id AS variantId,campaign_id AS campaignId,quantity,price,snapshot_json FROM order_items WHERE order_id=?', String(row.id)).all();
   const events = await s(env, 'SELECT kind,details_json,created_at AS createdAt FROM order_events WHERE order_id=? ORDER BY created_at,id LIMIT 100', String(row.id)).all();
   const payment = await s(env, 'SELECT status,url FROM payment_attempts WHERE order_id=?', String(row.id)).first<{ status: string; url: string | null }>();
@@ -76,6 +74,13 @@ export async function commerceRequest(request: Request, env: CommerceEnv): Promi
   if (request.method === 'GET' && path.startsWith('/api/catalog/')) return catalog(env, decodeURIComponent(path.slice('/api/catalog/'.length)));
   if (path === '/api/checkout' && request.method === 'POST') return checkout(request, env, await body(request));
   if (path === '/api/orders' && request.method === 'GET') return orders(request, env, url);
+  const cancel = path.match(/^\/api\/orders\/([^/]+)\/cancel$/);
+  if (cancel && request.method === 'POST') {
+    const { row } = await authorizedOrder(request, env, decodeURIComponent(cancel[1]));
+    const outcome = await cancelOrder(env, String(row.id), { kind: 'customer' });
+    if (outcome.order.status !== 'cancelled') throw new HttpError(409, 'Payment already succeeded; order cannot be cancelled');
+    return json({ order: { reference: outcome.order.reference, status: outcome.order.status }, cancelled: outcome.changed });
+  }
   if (path.startsWith('/api/orders/') && request.method === 'GET') return order(request, env, decodeURIComponent(path.slice('/api/orders/'.length)));
   if (path.startsWith('/api/admin/')) {
     const actor = await requireAdmin(request, env);

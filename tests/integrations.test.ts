@@ -84,7 +84,7 @@ describe('public authentication and installation', () => {
   it('only bootstraps one verified Google identity under concurrency and never reopens', async () => {
     const [a,b] = await Promise.all([identity('a'),identity('b')]);
     const results = await Promise.all([handleIntegrationRequest(request('/api/setup',{secret},a),env),handleIntegrationRequest(request('/api/setup',{secret},b),env)]);
-    expect(results.filter(r=>r?.status === 200)).toHaveLength(1);
+    expect(results.map(r=>r?.status).sort()).toEqual([200,409]);
     expect(await env.DB.prepare('SELECT count(*) n FROM admin_roles').first('n')).toBe(1);
     expect((await handleIntegrationRequest(request('/api/setup',{secret},a),env))?.status).toBe(409);
     await expect(env.DB.prepare('DELETE FROM installation').run()).rejects.toThrow();
@@ -101,9 +101,9 @@ describe('public authentication and installation', () => {
   });
 });
 
-async function notification(status: string, original = 'ref1') {
-  const raw = JSON.stringify({order:{invoice_number:'ref1',amount:10000},transaction:{status,original_request_id:original,type:'SALE'}});
-  const time = '2026-10-12T00:00:00Z', id = 'documented-notification-id';
+async function notification(status: string, original = 'ref1', time = new Date().toISOString().replace(/\.\d{3}Z$/,'Z'), extra: Record<string, unknown> = {}) {
+  const raw = JSON.stringify({order:{invoice_number:'ref1',amount:10000},transaction:{status,original_request_id:original,type:'SALE'},...extra});
+  const id = 'documented-notification-id';
   const digest = createHmac; // Signature fixture deliberately independent of integration implementation.
   const {createHash} = await import('node:crypto');
   const components = `Client-Id:MCH-test\nRequest-Id:${id}\nRequest-Timestamp:${time}\nRequest-Target:/api/payment/webhook\nDigest:${createHash('sha256').update(raw).digest('base64')}`;
@@ -172,6 +172,19 @@ describe('provider boundaries', () => {
     await expect(createPayment(input,env)).rejects.toMatchObject({status:502});
     await expect(createPayment(input,{...env,DOKU_SECRET_KEY:undefined})).rejects.toMatchObject({status:503});
   });
+  it('reports definite 4xx creation refusals and keeps timeouts, conflicts, rate limits and 5xx ambiguous', async () => {
+    const input = {reference:'stable-attempt1',amount:10000,returnUrl:'https://shop.example/payment/return'};
+    for (const status of [400,401,403,404,422]) {
+      vi.stubGlobal('fetch',vi.fn(async()=>Response.json({error:{message:'rejected'}},{status})));
+      expect(await createPayment(input,env)).toEqual({rejected:true});
+    }
+    for (const status of [408,409,425,429,500,502,503]) {
+      vi.stubGlobal('fetch',vi.fn(async()=>Response.json({error:{message:'later'}},{status})));
+      await expect(createPayment(input,env)).rejects.toMatchObject({status:502});
+    }
+    vi.stubGlobal('fetch',vi.fn(async()=>{throw new DOMException('timeout','TimeoutError');}));
+    await expect(createPayment(input,env)).rejects.toThrow();
+  });
   it('validates raw signatures, stable identity, and ignores Checkout FAILED/unknown statuses', async () => {
     expect(await verifyPaymentWebhook(await notification('SUCCESS'),env)).toEqual({eventKey:'doku:MCH-test:documented-notification-id',reference:'ref1',amount:10000,currency:'IDR',status:'succeeded'});
     expect((await verifyPaymentWebhook(await notification('FAILED'),env)).status).toBe('ignored');
@@ -183,8 +196,21 @@ describe('provider boundaries', () => {
     const bom = await notification('SUCCESS');
     const bomRaw = await bom.text();
     await expect(verifyPaymentWebhook(new Request(bom,{body:`\uFEFF${bomRaw}`}),env)).rejects.toMatchObject({status:401});
-    vi.stubGlobal('fetch',vi.fn(async()=>Response.json({order:{invoice_number:'ref1',amount:10000},transaction:{status:'EXPIRED'}})));
-    expect(await lookupPayment('ref1',env)).toEqual({status:'unknown'});
+  });
+  it('rejects notifications outside the timestamp window, configurable via WEBHOOK_MAX_SKEW_MIN', async () => {
+    const at = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString().replace(/\.\d{3}Z$/,'Z');
+    for (const minutes of [-16, 16]) await expect(verifyPaymentWebhook(await notification('SUCCESS','ref1',at(minutes)),env)).rejects.toMatchObject({status:401});
+    for (const minutes of [-14, 14]) expect((await verifyPaymentWebhook(await notification('SUCCESS','ref1',at(minutes)),env)).status).toBe('succeeded');
+    await expect(verifyPaymentWebhook(await notification('SUCCESS','ref1',at(-6)),{...env,WEBHOOK_MAX_SKEW_MIN:'5'})).rejects.toMatchObject({status:401});
+    expect((await verifyPaymentWebhook(await notification('SUCCESS','ref1',at(-40)),{...env,WEBHOOK_MAX_SKEW_MIN:'60'})).status).toBe('succeeded');
+    await expect(verifyPaymentWebhook(await notification('SUCCESS','ref1','2026-10-12T00:00:00Z'),{...env,WEBHOOK_MAX_SKEW_MIN:'nonsense'})).rejects.toMatchObject({status:401});
+  });
+  it('derives a stable provider transaction identity when DOKU supplies channel and date', async () => {
+    const extra = {channel:{id:'VIRTUAL_ACCOUNT_BCA'},transaction:{status:'SUCCESS',type:'SALE',original_request_id:'ref1',date:'2026-10-14T01:02:03Z'}};
+    expect(await verifyPaymentWebhook(await notification('SUCCESS','ref1',undefined,extra),env)).toMatchObject({status:'succeeded',providerTx:`VIRTUAL_ACCOUNT_BCA@${Date.parse('2026-10-14T01:02:03Z')}`});
+    vi.stubGlobal('fetch',vi.fn(async()=>Response.json({order:{invoice_number:'ref1',amount:10000},...extra,transaction:{...extra.transaction,date:'2026-10-14T08:02:03+07:00'}})));
+    expect(await lookupPayment('ref1',env)).toEqual({status:'succeeded',amount:10000,currency:'IDR',providerTx:`VIRTUAL_ACCOUNT_BCA@${Date.parse('2026-10-14T01:02:03Z')}`});
+    expect((await verifyPaymentWebhook(await notification('SUCCESS','ref1',undefined,{channel:{id:'bad channel'}}),env)).providerTx).toBeUndefined();
   });
   it('reconciles only authoritative matching sale and signs GET without Digest', async () => {
     const {createHmac} = await import('node:crypto');
@@ -196,12 +222,21 @@ describe('provider boundaries', () => {
       return Response.json({order:{invoice_number:'ref1',amount:'10000'},transaction:{status:'SUCCESS',type:'SALE'}});
     }));
     expect(await lookupPayment('ref1',env)).toEqual({status:'succeeded',amount:10000,currency:'IDR'});
-    for (const status of ['FAILED','PENDING']) {
+    // Every documented non-SUCCESS state is an authoritative "not paid now"; commerce owns the expiry decision.
+    for (const status of ['PENDING','FAILED','TIMEOUT','REDIRECT','EXPIRED']) {
       vi.stubGlobal('fetch',vi.fn(async()=>Response.json({order:{invoice_number:'ref1',amount:10000},transaction:{status}})));
-      expect(await lookupPayment('ref1',env)).toEqual({status:'pending'});
+      expect(await lookupPayment('ref1',env)).toEqual({status:'not_paid',amount:10000,currency:'IDR'});
     }
-    vi.stubGlobal('fetch',vi.fn(async()=>Response.json({order:{invoice_number:'other',amount:10000},transaction:{status:'SUCCESS'}})));
-    expect(await lookupPayment('ref1',env)).toEqual({status:'unknown'});
+    for (const result of [{order:{invoice_number:'other',amount:10000},transaction:{status:'SUCCESS'}},{order:{invoice_number:'ref1',amount:10000},transaction:{status:'FAILED',type:'REFUND'}},{order:{invoice_number:'ref1',amount:10000,currency:'USD'},transaction:{status:'PENDING'}},{order:{invoice_number:'ref1'},transaction:{status:'PENDING'}},{order:{invoice_number:'ref1',amount:10000},transaction:{status:'VOIDED'}}]) {
+      vi.stubGlobal('fetch',vi.fn(async()=>Response.json(result)));
+      expect(await lookupPayment('ref1',env)).toEqual({status:'unknown'});
+    }
+    for (const status of [404,500,503]) {
+      vi.stubGlobal('fetch',vi.fn(async()=>Response.json({order:{invoice_number:'ref1',amount:10000},transaction:{status:'PENDING'}},{status})));
+      expect(await lookupPayment('ref1',env)).toEqual({status:'unknown'});
+    }
+    vi.stubGlobal('fetch',vi.fn(async()=>{throw new DOMException('timeout','TimeoutError');}));
+    await expect(lookupPayment('ref1',env)).rejects.toThrow();
   });
   it('fails closed for invalid, wrong-host, wrong-action and network Turnstile results', async () => {
     for (const result of [{success:false},{success:true,hostname:'evil.example',action:'checkout'},{success:true,hostname:'shop.example',action:'other'}]) {
@@ -220,5 +255,22 @@ describe('provider boundaries', () => {
     const result = await response!.json() as any;
     expect(result.quotes[0].amount).toBe(12000);
     expect(await env.DB.prepare('SELECT weight FROM shipping_quotes WHERE id=?').bind(result.quotes[0].id).first('weight')).toBe(700);
+  });
+});
+describe('integration runtime helpers', () => {
+  it('memoizes Better Auth per env binding object', async () => {
+    const { auth } = await import('../src/integrations/auth');
+    expect(auth(env)).toBe(auth(env));
+    expect(auth({...env})).not.toBe(auth(env));
+    expect(() => auth({...env, BETTER_AUTH_SECRET:'short'})).toThrow();
+  });
+  it('rejects quotes containing an unknown variant with a single lookup', async () => {
+    await env.DB.exec("CREATE TABLE product_variants (id TEXT PRIMARY KEY, weight INTEGER); INSERT INTO product_variants VALUES ('a', 100), ('b', 200);");
+    Object.assign(env,{RAJAONGKIR_API_KEY:'test',RAJAONGKIR_ORIGIN:'1',RAJAONGKIR_COURIERS:'jne'});
+    const fetcher = vi.fn(async (_url:unknown,init:any) => {expect(init.body.get('weight')).toBe('500'); return Response.json({meta:{code:200,status:'success'},data:[{code:'jne',service:'REG',cost:12000}]});});
+    vi.stubGlobal('fetch',fetcher);
+    expect((await handleIntegrationRequest(request('/api/shipping/quote',{destination:'2',items:[{variantId:'a',quantity:1},{variantId:'b',quantity:1},{variantId:'a',quantity:2}]}),env))?.status).toBe(200);
+    expect((await handleIntegrationRequest(request('/api/shipping/quote',{destination:'2',items:[{variantId:'a',quantity:1},{variantId:'missing',quantity:1}]}),env))?.status).toBe(400);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });

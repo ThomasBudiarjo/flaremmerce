@@ -1,10 +1,13 @@
 import { z } from 'zod';
-import { type CommerceEnv, HttpError, id, json, statement as s } from './types';
+import { type CommerceEnv, HttpError, id, json, page, statement as s } from './types';
 import { catalog } from './catalog';
 import { operations } from './operations';
+import { cancelOrder } from './cancel';
+import { EXHAUSTED } from './payments';
+import { validSlug } from '../shared';
 
 const variantInput = z.object({ sku: z.string().min(1).max(100), name: z.string().min(1).max(200), price: z.number().int().min(0).max(1_000_000_000), weight: z.number().int().min(1).max(1_000_000), mode: z.enum(['stock', 'preorder']).default('stock'), stock: z.number().int().min(0).max(1_000_000).default(0) }).strict();
-const productInput = z.object({ slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(100), name: z.string().min(1).max(200), description: z.string().max(10000).default(''), imageUrl: z.string().url().max(2000).optional(), variants: z.array(variantInput).min(1).max(30) }).strict();
+const productInput = z.object({ slug: z.string().refine(validSlug), name: z.string().min(1).max(200), description: z.string().max(10000).default(''), imageUrl: z.string().url().max(2000).optional(), variants: z.array(variantInput).min(1).max(30) }).strict();
 const inventoryInput = z.object({ variantId: z.string().min(1).max(100), delta: z.number().int().min(-1_000_000).max(1_000_000).refine(v => v !== 0), reason: z.string().min(1).max(500) }).strict();
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v => !Number.isNaN(Date.parse(v)) && new Date(v).toISOString().slice(0, 10) === v);
 const campaignInput = z.object({ variantId: z.string().min(1).max(100), startsAt: z.number().int().min(0), endsAt: z.number().int().min(0), shipFrom: date, shipTo: date, quota: z.number().int().min(0).max(1_000_000).nullable() }).strict().refine(v => v.endsAt > v.startsAt && v.shipTo >= v.shipFrom);
@@ -14,6 +17,10 @@ const productUpdate = productInput.omit({variants:true}).extend({description:pro
 const variantUpdate = variantInput.omit({stock:true}).extend({mode:variantInput.shape.mode.unwrap(),active:z.boolean()}).partial().refine(v=>Object.keys(v).length>0);
 const campaignUpdate = z.object({startsAt:z.number().int().min(0),endsAt:z.number().int().min(0),shipFrom:date,shipTo:date,quota:z.number().int().min(0).max(1_000_000).nullable(),active:z.boolean()}).strict().partial().refine(v=>Object.keys(v).length>0);
 const timelineInput = z.object({kind:z.enum(['preparing','production','ready_to_ship']),note:z.string().min(1).max(2000),estimatedDate:date.optional()}).strict();
+const reviewUpdate = z.object({ version: z.number().int().min(0), status: z.enum(['open','resolved']), note: z.string().trim().min(1).max(2000), action: z.literal('cancel_order').optional() }).strict();
+const cancelInput = z.object({ reason: z.string().trim().min(1).max(500).optional() }).strict();
+// The exhaustion sentinel is a scan-range device, not a schedule.
+const nextCheck = `CASE WHEN next_check>=${EXHAUSTED} THEN NULL ELSE next_check END AS nextCheck`;
 function parse<T>(schema: z.ZodType<T>, body: unknown): T {
   const result = schema.safeParse(body);
   if (!result.success) throw new HttpError(400, 'Invalid input', result.error.flatten());
@@ -42,7 +49,7 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     const {contact_json,address_json,shipping_json,...summary} = row;
     const items = await s(env,'SELECT id,variant_id AS variantId,campaign_id AS campaignId,quantity,price,snapshot_json FROM order_items WHERE order_id=? ORDER BY id',target).all();
     const events = await s(env,'SELECT kind,details_json,created_at AS createdAt FROM order_events WHERE order_id=? ORDER BY created_at,id',target).all();
-    const payment = await s(env,'SELECT status,checks,next_check AS nextCheck,created_at AS createdAt FROM payment_attempts WHERE order_id=?',target).first();
+    const payment = await s(env,`SELECT status,checks,${nextCheck},created_at AS createdAt FROM payment_attempts WHERE order_id=?`,target).first();
     return json({order:{...summary,contact:JSON.parse(String(contact_json)),address:JSON.parse(String(address_json)),shipping:JSON.parse(String(shipping_json)),items:items.results.map(({snapshot_json,...item})=>({...item,...JSON.parse(String(snapshot_json))})),timeline:events.results.map(({details_json,...event})=>({...event,details:JSON.parse(String(details_json))}))},payment});
   }
   if (path === '/api/admin/inventory' && request.method === 'GET') {
@@ -50,27 +57,30 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     if (!target || target.length>100) throw new HttpError(400,'variantId required');
     const inventory = await s(env,'SELECT variant_id AS variantId,on_hand AS onHand,reserved,on_hand-reserved AS available FROM inventory WHERE variant_id=?',target).first();
     if (!inventory) throw new HttpError(404,'Variant not found');
-    const page = await s(env,'SELECT id,variant_id AS variantId,delta,reason,order_id AS orderId,actor,created_at AS createdAt FROM inventory_movements WHERE variant_id=? AND (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT ?',target,before,beforeId,limit+1).all();
-    const movements = page.results.slice(0,limit), last=movements.at(-1);
-    return json({inventory,movements,nextCursor:page.results.length>limit && last ? {before:last.createdAt,beforeId:last.id}:null});
+    const rows = await s(env,'SELECT id,variant_id AS variantId,delta,reason,order_id AS orderId,actor,created_at AS createdAt FROM inventory_movements WHERE variant_id=? AND (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT ?',target,before,beforeId,limit+1).all();
+    const { items: movements, nextCursor } = page(rows.results,limit,last=>({before:last.createdAt,beforeId:last.id}));
+    return json({inventory,movements,nextCursor});
   }
   if (path === '/api/admin/campaigns' && request.method === 'GET') {
     // Campaigns have no creation timestamp; paginate deterministically by start time and ID.
     const cutoff = url.searchParams.has('before') ? before : Number.MAX_SAFE_INTEGER;
-    const page = await s(env,'SELECT c.id,c.variant_id AS variantId,v.sku,p.name AS productName,c.starts_at AS startsAt,c.ends_at AS endsAt,c.ship_from AS shipFrom,c.ship_to AS shipTo,c.quota,c.reserved,c.sold,c.active FROM preorder_campaigns c JOIN product_variants v ON v.id=c.variant_id JOIN products p ON p.id=v.product_id WHERE (c.starts_at,c.id)<(?,?) ORDER BY c.starts_at DESC,c.id DESC LIMIT ?',cutoff,beforeId,limit+1).all();
-    const rows=page.results.slice(0,limit),last=rows.at(-1);
-    const campaigns=rows.map(row=>({...row,active:!!row.active}));
-    return json({campaigns,nextCursor:page.results.length>limit && last ? {before:last.startsAt,beforeId:last.id}:null});
+    const rows = await s(env,'SELECT c.id,c.variant_id AS variantId,v.sku,p.name AS productName,c.starts_at AS startsAt,c.ends_at AS endsAt,c.ship_from AS shipFrom,c.ship_to AS shipTo,c.quota,c.reserved,c.sold,c.active FROM preorder_campaigns c JOIN product_variants v ON v.id=c.variant_id JOIN products p ON p.id=v.product_id WHERE (c.starts_at,c.id)<(?,?) ORDER BY c.starts_at DESC,c.id DESC LIMIT ?',cutoff,beforeId,limit+1).all();
+    const { items, nextCursor } = page(rows.results,limit,last=>({before:last.startsAt,beforeId:last.id}));
+    return json({campaigns:items.map(row=>({...row,active:!!row.active})),nextCursor});
   }
   const campaignMatch = path.match(/^\/api\/admin\/campaigns\/([^/]+)$/);
   if (campaignMatch && request.method === 'PATCH') {
     const input=parse(campaignUpdate,body),target=decodeURIComponent(campaignMatch[1]);
     const columns:Record<string,string>={startsAt:'starts_at',endsAt:'ends_at',shipFrom:'ship_from',shipTo:'ship_to',quota:'quota',active:'active'};
-    const fields=Object.entries(input);
+    const fields=Object.entries(input), auditId=id(), now=Date.now();
     // DB CHECKs and overlap triggers validate the merged row, including concurrent counter changes.
+    // Snapshots keep the original promise; a changed estimate is announced on each affected order.
     const result=await env.DB.batch([
       s(env,`UPDATE preorder_campaigns SET ${fields.map(([key])=>`${columns[key]}=?`).join(',')} WHERE id=?`,...fields.map(([,value])=>typeof value==='boolean'?Number(value):value as string|number|null),target),
-      s(env,"INSERT INTO audit_logs(id,actor,action,target,details_json,created_at) SELECT ?,?,'campaign.update',?,?,? WHERE changes()=1",id(),actor,target,JSON.stringify(input),Date.now()),
+      s(env,"INSERT INTO audit_logs(id,actor,action,target,details_json,created_at) SELECT ?,?,'campaign.update',?,?,? WHERE changes()=1",auditId,actor,target,JSON.stringify(input),now),
+      ...(input.shipFrom !== undefined || input.shipTo !== undefined ? [s(env,`INSERT INTO order_events(id,order_id,kind,details_json,created_at)
+        SELECT ? || ':' || o.id,o.id,'campaign_updated',json_object('campaignId',c.id,'shipFrom',c.ship_from,'shipTo',c.ship_to),? FROM preorder_campaigns c JOIN orders o ON o.id IN (SELECT order_id FROM order_items WHERE campaign_id=c.id)
+        WHERE c.id=? AND o.status<>'cancelled' AND EXISTS(SELECT 1 FROM audit_logs WHERE id=?)`,auditId,now,target,auditId)] : []),
     ]);
     if (!result[0].meta.changes) throw new HttpError(404,'Campaign not found');
     return json({updated:true});
@@ -102,6 +112,12 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     if (!result[0].meta.changes) throw new HttpError(404,'Catalog entry not found');
     return json({updated:true});
   }
+  const cancelMatch = path.match(/^\/api\/admin\/orders\/([^/]+)\/cancel$/);
+  if (cancelMatch && request.method === 'POST') {
+    const input = parse(cancelInput, body), outcome = await cancelOrder(env, decodeURIComponent(cancelMatch[1]), {kind:'admin', actor, reason:input.reason});
+    if (outcome.order.status !== 'cancelled') throw new HttpError(409, 'Payment already succeeded; order cannot be cancelled');
+    return json({order:outcome.order, cancelled:outcome.changed});
+  }
   const milestone = path.match(/^\/api\/admin\/orders\/([^/]+)\/timeline$/);
   if (milestone && request.method === 'POST') {
     const input = parse(timelineInput,body), target = decodeURIComponent(milestone[1]), eventId=id();
@@ -113,18 +129,13 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     return json({recorded:true});
   }
   if (path === '/api/admin/orders' && request.method === 'GET') {
-    const orders = await s(env, 'SELECT id,reference,status,fulfillment,total,currency,created_at AS createdAt,contact_json,address_json,shipping_json FROM orders WHERE created_at<? OR (created_at=? AND id<?) ORDER BY created_at DESC,id DESC LIMIT ?', before, before, beforeId, limit+1).all();
-    const more = orders.results.length>limit;
-    orders.results = orders.results.slice(0,limit);
-    const last = orders.results.at(-1);
-    return json({ orders: orders.results.map(({ contact_json, address_json, shipping_json, ...row }) => ({ ...row, contact: JSON.parse(String(contact_json)), address: JSON.parse(String(address_json)), shipping: JSON.parse(String(shipping_json)) })), nextCursor: more && last ? { before: last.createdAt, beforeId: last.id } : null });
+    const rows = await s(env, 'SELECT id,reference,status,fulfillment,total,currency,created_at AS createdAt,contact_json,address_json,shipping_json FROM orders WHERE created_at<? OR (created_at=? AND id<?) ORDER BY created_at DESC,id DESC LIMIT ?', before, before, beforeId, limit+1).all();
+    const { items, nextCursor } = page(rows.results, limit, last => ({ before: last.createdAt, beforeId: last.id }));
+    return json({ orders: items.map(({ contact_json, address_json, shipping_json, ...row }) => ({ ...row, contact: JSON.parse(String(contact_json)), address: JSON.parse(String(address_json)), shipping: JSON.parse(String(shipping_json)) })), nextCursor });
   }
   if (path === '/api/admin/review' && request.method === 'GET') {
     const rows = await s(env, 'SELECT r.id,r.order_id AS orderId,r.reason,r.event_key AS eventKey,r.created_at AS createdAt,r.status,r.note,r.version,r.updated_at AS updatedAt,r.updated_by AS updatedBy,o.reference FROM manual_review r LEFT JOIN orders o ON o.id=r.order_id WHERE r.created_at<? OR (r.created_at=? AND r.id<?) ORDER BY r.created_at DESC,r.id DESC LIMIT ?', before, before, beforeId, limit+1).all();
-    const more = rows.results.length>limit;
-    rows.results = rows.results.slice(0,limit);
-    const last = rows.results.at(-1);
-    return json({ items: rows.results, nextCursor: more && last ? { before: last.createdAt, beforeId: last.id } : null });
+    return json(page(rows.results, limit, last => ({ before: last.createdAt, beforeId: last.id })));
   }
   const reviewMatch = path.match(/^\/api\/admin\/review\/([^/]+)$/);
   if (reviewMatch && (request.method === 'GET' || request.method === 'PATCH')) {
@@ -132,20 +143,29 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     const item = await s(env, 'SELECT id,order_id AS orderId,event_key AS eventKey,reason,created_at AS createdAt,status,note,version,updated_at AS updatedAt,updated_by AS updatedBy FROM manual_review WHERE id=?', target).first();
     if (!item) throw new HttpError(404, 'Review case not found');
     if (request.method === 'PATCH') {
-      const input = parse(z.object({ version: z.number().int().min(0), status: z.enum(['open','resolved']), note: z.string().trim().min(1).max(2000) }).strict(), body);
+      const input = parse(reviewUpdate, body);
       if (item.version !== input.version) throw new HttpError(409, 'Review changed; reload evidence before retrying');
-      const now = Date.now();
+      const now = Date.now(), { action, ...change } = input;
       // The compare-and-swap and its append-only audit are one atomic D1 batch.
-      // No payment/order/reservation/outbox tables are modified by operator review.
-      const result = await env.DB.batch([
-        s(env, 'UPDATE manual_review SET status=?,note=?,version=version+1,updated_at=?,updated_by=? WHERE id=? AND version=?', input.status,input.note,now,actor,target,input.version),
+      const statements = [
+        s(env, `UPDATE manual_review SET status=?,note=?,version=version+1,updated_at=?,updated_by=? WHERE id=? AND version=?${action ? " AND EXISTS(SELECT 1 FROM orders WHERE id=? AND status IN ('pending_payment','cancelled'))" : ''}`, change.status,change.note,now,actor,target,change.version,...(action ? [String(item.orderId)] : [])),
         s(env, `INSERT INTO audit_logs(id,actor,action,target,details_json,created_at) SELECT ?,?,'review.update',?,?,? WHERE changes()=1`,id(),actor,target,JSON.stringify({fromStatus:item.status,fromVersion:input.version,...input}),now),
-      ]);
+      ];
+      // Without an action no payment/order/reservation/outbox table is touched. cancel_order runs the
+      // admin cancel path in the same batch, gated on this CAS winning: both happen or neither.
+      if (action === 'cancel_order') {
+        if (!item.orderId) throw new HttpError(409, 'Review case has no order to cancel');
+        const outcome = await cancelOrder(env, String(item.orderId), { kind: 'admin', actor, reason: `review:${target}` },
+          { before: statements, condition: ' AND EXISTS(SELECT 1 FROM manual_review WHERE id=? AND version=? AND updated_at=? AND updated_by=?)', values: [target, input.version + 1, now, actor] });
+        if (!outcome.results[0].meta.changes) throw new HttpError(409, 'Review or order changed; reload evidence before retrying');
+        return json({ updated: true, version: input.version + 1, order: outcome.order });
+      }
+      const result = await env.DB.batch(statements);
       if (!result[0].meta.changes) throw new HttpError(409, 'Review changed; reload evidence before retrying');
       return json({ updated: true, version: input.version + 1 });
     }
     const order = item.orderId ? await s(env, 'SELECT id,reference,status,fulfillment,total,currency,created_at AS createdAt FROM orders WHERE id=?', String(item.orderId)).first() : null;
-    const attempt = item.orderId ? await s(env, 'SELECT id,reference,status,checks,next_check AS nextCheck,created_at AS createdAt FROM payment_attempts WHERE order_id=?', String(item.orderId)).first() : null;
+    const attempt = item.orderId ? await s(env, `SELECT id,reference,status,checks,${nextCheck},created_at AS createdAt FROM payment_attempts WHERE order_id=?`, String(item.orderId)).first() : null;
     const triggeringEvent = item.eventKey ? await s(env, 'SELECT event_key AS eventKey,reference,amount,currency,status,processed,created_at AS createdAt FROM payment_events WHERE event_key=?', String(item.eventKey)).first() : null;
     const reference = attempt?.reference ?? triggeringEvent?.reference;
     const events = reference ? await s(env, 'SELECT event_key AS eventKey,reference,amount,currency,status,processed,created_at AS createdAt FROM payment_events WHERE reference=? AND event_key<>? ORDER BY created_at DESC,event_key DESC LIMIT 100', String(reference), String(item.eventKey ?? '')).all() : { results: [] };

@@ -6,11 +6,19 @@ import { drizzle } from 'drizzle-orm/d1';
 import * as schema from './schema';
 import type { IntegrationEnv } from './index';
 import { demand, equal, json, origin } from './security';
+import { HttpError } from '../shared';
 
 export function devLoginEnabled(env: IntegrationEnv) {
   return env.APP_ENV === 'development' && env.DEV_LOGIN_ENABLED === 'true';
 }
+// One Better Auth instance per isolate and env binding object; construction is not free per request.
+const instances = new WeakMap<IntegrationEnv, ReturnType<typeof createAuth>>();
 export function auth(env: IntegrationEnv) {
+  let instance = instances.get(env);
+  if (!instance) { instance = createAuth(env); instances.set(env, instance); }
+  return instance;
+}
+function createAuth(env: IntegrationEnv) {
   const development = devLoginEnabled(env);
   demand(env.BETTER_AUTH_SECRET && env.BETTER_AUTH_SECRET.length >= 32 && (development || (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET)), 503, 'Authentication unavailable');
   return betterAuth({
@@ -71,10 +79,15 @@ export async function setup(request: Request, env: IntegrationEnv) {
   const google = await env.DB.prepare("SELECT id FROM account WHERE user_id = ? AND provider_id = 'google'").bind(session.user.id).first();
   demand(session.user.emailVerified && google, 403, 'Verified Google identity required');
   // D1 batch is atomic. The singleton constraint fails the entire losing batch.
-  await env.DB.batch([
-    env.DB.prepare('INSERT INTO installation (id, owner_id, initialized_at) VALUES (1, ?, ?)').bind(session.user.id, Date.now()),
-    env.DB.prepare('INSERT INTO admin_roles (user_id, granted_by, created_at) VALUES (?, ?, ?)').bind(session.user.id, session.user.id, Date.now()),
-  ]);
+  try {
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO installation (id, owner_id, initialized_at) VALUES (1, ?, ?)').bind(session.user.id, Date.now()),
+      env.DB.prepare('INSERT INTO admin_roles (user_id, granted_by, created_at) VALUES (?, ?, ?)').bind(session.user.id, session.user.id, Date.now()),
+    ]);
+  } catch (error) {
+    if (/UNIQUE constraint failed|PRIMARY KEY/.test(String(error))) throw new HttpError(409, 'Already initialized');
+    throw error;
+  }
   return {initialized:true};
 }
 export async function roles(request: Request, env: IntegrationEnv) {
@@ -84,9 +97,11 @@ export async function roles(request: Request, env: IntegrationEnv) {
   demand(input.userId !== actor.id, 409, 'Cannot change own role');
   const target = await env.DB.prepare("SELECT u.id FROM user u JOIN account a ON a.user_id=u.id WHERE u.id=? AND u.email_verified=1 AND a.provider_id='google'").bind(input.userId).first();
   demand(target, 400, 'Verified Google identity required');
-  await env.DB.batch([
-    input.admin ? env.DB.prepare('INSERT INTO admin_roles (user_id, granted_by, created_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO NOTHING').bind(input.userId, actor.id, Date.now()) : env.DB.prepare('DELETE FROM admin_roles WHERE user_id=? AND user_id NOT IN (SELECT owner_id FROM installation)').bind(input.userId),
-    env.DB.prepare('INSERT INTO integration_role_audit (id, actor_id, target_id, admin, created_at) VALUES (?, ?, ?, ?, ?)').bind(crypto.randomUUID(), actor.id, input.userId, input.admin ? 1:0, Date.now()),
+  const now = Date.now();
+  // Only an effective change is audited; changes() is the role statement's own row count.
+  const [, audited] = await env.DB.batch([
+    input.admin ? env.DB.prepare('INSERT INTO admin_roles (user_id, granted_by, created_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO NOTHING').bind(input.userId, actor.id, now) : env.DB.prepare('DELETE FROM admin_roles WHERE user_id=? AND user_id NOT IN (SELECT owner_id FROM installation)').bind(input.userId),
+    env.DB.prepare('INSERT INTO audit_logs (id, actor, action, target, details_json, created_at) SELECT ?, ?, ?, ?, ?, ? WHERE changes()=1').bind(crypto.randomUUID(), actor.id, input.admin ? 'role.grant' : 'role.revoke', input.userId, JSON.stringify({admin:input.admin}), now),
   ]);
-  return {ok:true};
+  return {ok:true, changed:audited.meta.changes === 1};
 }
