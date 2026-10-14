@@ -560,6 +560,10 @@ button.danger:hover {
   font-size: 13px;
   margin: 6px 0 0;
 }
+.required-mark {
+  color: #833520;
+  margin-left: 2px;
+}
 [aria-invalid="true"] {
   border-color: #b84e37;
   box-shadow: inset 0 0 0 1px #b84e37;

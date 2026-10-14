@@ -8,6 +8,7 @@ import { AuthProvider, areaAllowed, type Config, type Session } from "@/lib/auth
 import { RouterProvider } from "@/lib/router";
 import type { Me } from "@/lib/types";
 import { AppShell } from "@/components/app-shell";
+import { RequiredMark } from "@/components/field";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -188,7 +189,10 @@ function Bootstrap() {
                     }}
                   >
                     <div className="grid gap-2">
-                      <Label htmlFor="staging-passphrase">Passphrase staging</Label>
+                      <Label htmlFor="staging-passphrase" className="gap-0">
+                        Passphrase staging
+                        <RequiredMark />
+                      </Label>
                       <Input id="staging-passphrase" type="password" autoComplete="current-password" required value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
                     </div>
                     <Button disabled={busy}>
@@ -221,7 +225,10 @@ function Bootstrap() {
                 }}
               >
                 <div className="grid gap-2">
-                  <Label htmlFor="bootstrap-secret">Bootstrap secret</Label>
+                  <Label htmlFor="bootstrap-secret" className="gap-0">
+                    Bootstrap secret
+                    <RequiredMark />
+                  </Label>
                   <Input id="bootstrap-secret" type="password" autoComplete="off" required value={secret} onChange={(e) => setSecret(e.target.value)} />
                 </div>
                 <Button disabled={busy}>Aktifkan admin pertama</Button>

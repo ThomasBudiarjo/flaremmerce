@@ -10,7 +10,7 @@ import { PageHeader } from "@/components/page-header";
 import { PhotoUpload } from "@/components/photo-upload";
 import { ConflictBanner } from "@/components/conflict-banner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { Field, LoadError, NumberField, TextField } from "@/components/field";
+import { Field, LoadError, NumberField, RequiredMark, TextField } from "@/components/field";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -324,9 +324,15 @@ function NewProductEditor() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>SKU</TableHead>
-                      <TableHead>Nama</TableHead>
-                      <TableHead>Harga</TableHead>
+                      <TableHead>
+                        SKU<RequiredMark />
+                      </TableHead>
+                      <TableHead>
+                        Nama<RequiredMark />
+                      </TableHead>
+                      <TableHead>
+                        Harga<RequiredMark />
+                      </TableHead>
                       <TableHead>Stok awal</TableHead>
                       <TableHead>
                         <span className="sr-only">Aksi</span>
@@ -646,7 +652,9 @@ function ExistingProductEditor({ id }: { id: string }) {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Varian</TableHead>
-                      <TableHead>Harga</TableHead>
+                      <TableHead>
+                        Harga<RequiredMark />
+                      </TableHead>
                       <TableHead>Mode</TableHead>
                       <TableHead className="text-right">Tersedia</TableHead>
                       <TableHead>Status</TableHead>

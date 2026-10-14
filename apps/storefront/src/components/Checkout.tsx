@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, confirmationText, definiteRefusal, downloadText, google, readCart, syncCartCount, writeCart, type ApiError, type CartItem } from "../lib/cart";
 import { money, date } from "../lib/catalog";
 import Turnstile from "./Turnstile";
+import RequiredMark from "./RequiredMark";
 import { labels, paymentLabels } from "../lib/labels";
 import { normalizePhone } from "../../../../src/shared";
 type Destination = { id: string; label: string; city?: string; postalCode: string };
@@ -353,7 +354,7 @@ export default function Checkout() {
             <div className="field-grid">
               {(["name", "email", "phone"] as const).map((f, index) => (
                 <div key={f} className={f === "name" ? "field wide" : "field"}>
-                  <label htmlFor={f}>{["Nama penerima", "Email", "Nomor HP"][index]}</label>
+                  <label htmlFor={f}>{["Nama penerima", "Email", "Nomor HP"][index]}<RequiredMark /></label>
                   <input
                     id={f}
                     ref={f === "phone" ? phoneRef : undefined}
@@ -388,7 +389,7 @@ export default function Checkout() {
                 </select>
               </>
             )}
-            <label htmlFor="line">Alamat lengkap (jalan, nomor, RT/RW)</label>
+            <label htmlFor="line">Alamat lengkap (jalan, nomor, RT/RW)<RequiredMark /></label>
             {/* The street line is not part of the shipping tariff; editing it keeps the selected quote. */}
             <input id="line" required disabled={frozenInputs} autoComplete="street-address" value={address.line} onChange={(e) => setAddress({ ...address, line: e.target.value })} />
             <label htmlFor="destination-search">Cari wilayah pengiriman</label>
@@ -418,7 +419,7 @@ export default function Checkout() {
             </div>
             <p id="destination-help" className="field-hint">Masukkan nama kota, kecamatan, kelurahan, atau kode pos (minimal 3 karakter), lalu cari dan pilih wilayah yang sesuai alamat.</p>
             <p id="destination-status" className="field-hint" role="status" aria-live="polite">{searching ? "Mencari wilayah…" : searchMessage}</p>
-            <label htmlFor="destination">Wilayah tujuan pengiriman</label>
+            <label htmlFor="destination">Wilayah tujuan pengiriman<RequiredMark /></label>
             <select id="destination" required disabled={frozenInputs || searching || !destinations.length} value={address.destination} onChange={(e) => {
               const selected = destinations.find((d) => d.id === e.target.value);
               setAddress({ ...address, destination: selected?.id || "" });
@@ -449,7 +450,7 @@ export default function Checkout() {
             <button type="button" disabled={frozenInputs || unavailable || invalid || !address.destination} onClick={shipping}>
               {busy ? "Memproses…" : "Periksa ongkir"}
             </button>
-            <label htmlFor="shipping">Layanan pengiriman</label>
+            <label htmlFor="shipping">Layanan pengiriman<RequiredMark /></label>
             <select id="shipping" required aria-describedby="shipping-help" disabled={frozenInputs || !liveQuotes.length} value={quote ? quoteId : ""} onChange={(e) => {
               setQuoteId(e.target.value);
               setAccepted(false);
@@ -498,7 +499,7 @@ export default function Checkout() {
             )}
             <label className="consent">
               <input type="checkbox" required disabled={busy} checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />{" "}
-              <span>Saya menyetujui total dan estimasi satu pengiriman di atas.</span>
+              <span>Saya menyetujui total dan estimasi satu pengiriman di atas.<RequiredMark /></span>
             </label>
             {!needsToken ? null : config.turnstileSiteKey ? (
               <Turnstile siteKey={config.turnstileSiteKey} onToken={setToken} reset={reset} />

@@ -3,6 +3,7 @@ import { api, confirmationText, downloadText, syncCartCount, type ApiError } fro
 import { labels, paymentLabels } from "../lib/labels";
 import { money, date } from "../lib/catalog";
 import OrderHistory from "./OrderHistory";
+import RequiredMark from "./RequiredMark";
 export default function OrderStatus() {
   const [reference, setReference] = useState("");
   const [token, setToken] = useState("");
@@ -114,7 +115,7 @@ export default function OrderStatus() {
           load();
         }}
       >
-        <label htmlFor="reference">Referensi pesanan</label>
+        <label htmlFor="reference">Referensi pesanan<RequiredMark /></label>
         <input
           id="reference"
           required

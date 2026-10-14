@@ -234,7 +234,7 @@ function TimelineCard({ order, onAdded }: { order: OrderDetail; onAdded: () => v
               </Field>
               <TextField label="Estimasi tanggal (opsional)" type="date" value={estimatedDate} onChange={(e) => setEstimatedDate(e.target.value)} />
             </div>
-            <Field label="Catatan untuk pembeli">
+            <Field label="Catatan untuk pembeli" required>
               {(id) => <Textarea id={id} rows={2} required maxLength={2000} value={note} onChange={(e) => setNote(e.target.value)} />}
             </Field>
             <Button variant="outline" className="justify-self-start" disabled={add.pending || !note.trim()}>
@@ -291,7 +291,7 @@ function BlockDialog({ order, open, onOpenChange }: { order: OrderDetail; open: 
               </Label>
             ))}
           </fieldset>
-          <Field label="Alasan (wajib)">
+          <Field label="Alasan" required>
             {(id) => <Textarea id={id} required maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />}
           </Field>
         </form>

@@ -65,7 +65,7 @@ function AddDialog({ open, onOpenChange, onAdded }: { open: boolean; onOpenChang
             value={value}
             onChange={(e) => setValue(e.target.value)}
           />
-          <Field label="Alasan (wajib)">{(id) => <Textarea id={id} required maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
+          <Field label="Alasan" required>{(id) => <Textarea id={id} required maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
         </form>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>

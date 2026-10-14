@@ -58,7 +58,7 @@ function AdjustDialog({ target, onClose, onAdjusted }: { target: Target | null; 
           }}
         >
           <NumberField label="Selisih jumlah" required min={-1_000_000} max={1_000_000} value={delta} onValueChange={setDelta} />
-          <Field label="Alasan (wajib)" hint="Contoh: stok opname, barang rusak, retur pembeli.">
+          <Field label="Alasan" required hint="Contoh: stok opname, barang rusak, retur pembeli.">
             {(id) => <Textarea id={id} required maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />}
           </Field>
         </form>
