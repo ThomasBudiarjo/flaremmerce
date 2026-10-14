@@ -3,6 +3,8 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { readFileSync } from 'node:fs';
 import { createHmac, createHash } from 'node:crypto';
 import worker, { type Env } from '../src/worker';
+import { robots } from '../src/seo';
+import { withEnvironmentHeaders } from '../src/headers';
 
 it('order history validates fresh real sessions and never claims same-email guest orders', async () => {
   const mf = new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-08-06',d1Databases:['DB']}));
@@ -86,4 +88,64 @@ it('guest checkout crosses real shipping, Turnstile, DOKU, D1 and private order 
     expect(await DB.prepare("SELECT on_hand,reserved FROM inventory WHERE variant_id='v'").first()).toEqual({on_hand:1,reserved:0});
     expect(await DB.prepare('SELECT count(*) n FROM outbox_events').first('n')).toBe(1);
   } finally {vi.restoreAllMocks();vi.unstubAllGlobals();await mf.dispose();}
+});
+
+it('staging without credentials disables features cleanly and never creates unpayable orders', async () => {
+  const mf = new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-08-06',d1Databases:['DB']}));
+  try {
+    const DB = await mf.getD1Database('DB');
+    for (const migration of ['0001_commerce','0002_integrations','0004_manual_review','0008_lifecycle','0009_role_audit','0010_risk','0011_admin_access','0012_ecommerce','0013_accounts']) await DB.exec(readFileSync(new URL(`../migrations/${migration}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+    await DB.exec("INSERT INTO products(id,slug,name) VALUES('p','test-product','Product'); INSERT INTO product_variants(id,product_id,sku,name,price,weight) VALUES('v','p','TEST','Default',189000,350); INSERT INTO inventory(variant_id,on_hand) VALUES('v',2); INSERT INTO shipping_destinations VALUES('2','MENTENG, JAKARTA PUSAT, DKI JAKARTA, 10310','DKI JAKARTA','JAKARTA PUSAT','MENTENG','MENTENG','10310',0);");
+    const base = {DB,PUBLIC_ORIGIN:'https://shop.example',APP_ENV:'staging',BETTER_AUTH_SECRET:'staging-auth-secret-at-least-32-characters',RISK_HASH_SECRET:'checkout-test-risk-secret-at-least-32-chars'};
+    const shipping = {RAJAONGKIR_API_KEY:'fixture-key',RAJAONGKIR_ORIGIN:'1',RAJAONGKIR_COURIERS:'jne'}, payments = {DOKU_CLIENT_ID:'MCH-fixture',DOKU_SECRET_KEY:'test-merchant-secret'};
+    const outbound: string[] = [];
+    vi.spyOn(globalThis,'fetch').mockImplementation(async (input, init) => {
+      const request = new Request(input,init); outbound.push(new URL(request.url).pathname);
+      if (request.url.includes('/domestic-cost')) return Response.json({meta:{code:200,status:'success'},data:[{code:'jne',service:'REG',cost:12000}]});
+      if (request.url.endsWith('/checkout/v1/payment')) { const body = await request.json() as any; return Response.json({response:{order:body.order,payment:{url:'https://sandbox.doku.com/payment'}}}); }
+      throw new Error('Unexpected provider request');
+    });
+    const call = (env: Record<string, unknown>, path: string, input?: unknown, cookie?: string) => worker.fetch(new Request(`https://shop.example${path}`,{method:input ? 'POST':'GET',headers:{Origin:'https://shop.example','Content-Type':'application/json',...(cookie ? {Cookie:cookie}:{})},...(input ? {body:JSON.stringify(input)}:{})}),env as unknown as Env);
+    const config = async (env: Record<string, unknown>) => (await call(env,'/api/config')).json();
+    expect(await config(base)).toEqual({environment:'staging',turnstileSiteKey:null,turnstile:false,googleEnabled:false,devLoginEnabled:false,stagingLogin:false,payments:false,shipping:false});
+    expect(await config({...base,...shipping,...payments,STAGING_LOGIN_SECRET:'x'.repeat(32),TURNSTILE_SITE_KEY:'site',TURNSTILE_SECRET_KEY:'secret'})).toMatchObject({turnstileSiteKey:'site',turnstile:true,stagingLogin:true,payments:true,shipping:true});
+    // Production never skips Turnstile or offers staging login, whatever the configuration.
+    expect(await config({...base,APP_ENV:undefined,STAGING_LOGIN_SECRET:'x'.repeat(32)})).toMatchObject({environment:'production',turnstile:true,stagingLogin:false,payments:false,shipping:false});
+    const payload = (quote: string) => ({items:[{variantId:'v',quantity:1}],shippingQuoteId:quote,contact:{name:'Fixture',email:'fixture@example.com',phone:'0812345678'},address:{line:'Synthetic address',destination:'2'},expectedTotal:201000,idempotencyKey:'staging-checkout-key',turnstileToken:''});
+    const nothing = async () => expect(await DB.prepare('SELECT (SELECT count(*) FROM orders)+(SELECT count(*) FROM stock_reservations)+(SELECT count(*) FROM checkout_requests)+(SELECT count(*) FROM payment_attempts) n').first('n')).toBe(0);
+    for (const [env, message] of [[base,'Pembayaran belum tersedia'],[{...base,...shipping},'Pembayaran belum tersedia'],[{...base,...payments},'Ongkir belum tersedia'],[{...base,APP_ENV:undefined,...payments},'Ongkir belum tersedia']] as const) {
+      const response = await call(env,'/api/checkout',payload('any-quote'),'__Host-checkout_scope='+'a'.repeat(64));
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({error:message});
+      await nothing();
+    }
+    expect(outbound).toEqual([]);
+    // Fully configured staging without Turnstile keys checks out with no token and no Siteverify call.
+    const ready = {...base,...shipping,...payments};
+    const quotes = await (await call(ready,'/api/shipping/quote',{destination:'2',items:[{variantId:'v',quantity:1}]})).json() as any;
+    const scope = await call(ready,'/api/checkout',payload(quotes.quotes[0].id));
+    expect(scope.status).toBe(428);
+    const placed = await call(ready,'/api/checkout',payload(quotes.quotes[0].id),scope.headers.get('Set-Cookie')!.split(';')[0]);
+    expect(placed.status).toBe(200);
+    expect((await placed.json() as any).paymentUrl).toBe('https://sandbox.doku.com/payment');
+    expect(outbound.some(path => path.includes('siteverify'))).toBe(false);
+    // A production deployment missing the Turnstile secret stays fail-closed.
+    const production = await call({...ready,APP_ENV:'production'},'/api/checkout',{...payload(quotes.quotes[0].id),idempotencyKey:'production-checkout-key',turnstileToken:'token'},scope.headers.get('Set-Cookie')!.split(';')[0]);
+    expect(production.status).toBe(503);
+    expect(await production.json()).toEqual({error:'Turnstile unavailable'});
+  } finally {vi.restoreAllMocks();vi.unstubAllGlobals();await mf.dispose();}
+});
+
+it('keeps staging out of search indexes without touching production responses', async () => {
+  const staging = await robots('https://flaremmerce-staging.example.workers.dev', true).text();
+  expect(staging).toBe('User-agent: *\nDisallow: /\n');
+  expect(await robots('https://shop.example').text()).toContain('Sitemap: https://shop.example/sitemap.xml');
+  const original = new Response('ok', {headers:{'Content-Type':'text/plain'}});
+  expect(withEnvironmentHeaders(original, {})).toBe(original);
+  expect(withEnvironmentHeaders(original, {APP_ENV:'production'})).toBe(original);
+  const marked = withEnvironmentHeaders(new Response('ok', {status:201}), {APP_ENV:'staging'});
+  expect(marked.headers.get('X-Robots-Tag')).toBe('noindex, nofollow');
+  expect(marked.status).toBe(201);
+  const response = await worker.fetch(new Request('https://x.example/robots.txt'), {APP_ENV:'staging', PUBLIC_ORIGIN:'https://x.example'} as unknown as Env);
+  expect(await response.text()).toBe('User-agent: *\nDisallow: /\n');
 });

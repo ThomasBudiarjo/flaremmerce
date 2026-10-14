@@ -20,7 +20,7 @@ ALTER TABLE product_variants ADD COLUMN max_per_customer INTEGER CHECK(max_per_c
 CREATE TRIGGER item_purchase_limit BEFORE INSERT ON order_items BEGIN
  SELECT CASE WHEN EXISTS(SELECT 1 FROM product_variants v WHERE v.id=NEW.variant_id AND (NEW.quantity > v.max_per_order OR (v.max_per_customer IS NOT NULL AND NEW.quantity + (
   SELECT coalesce(sum(i.quantity),0) FROM orders n JOIN orders o ON o.id<>n.id AND o.status<>'cancelled' AND ((n.email_hash IS NOT NULL AND o.email_hash=n.email_hash) OR (n.phone_hash IS NOT NULL AND o.phone_hash=n.phone_hash) OR (n.customer_id IS NOT NULL AND o.customer_id=n.customer_id))
-  JOIN order_items i ON i.order_id=o.id AND i.variant_id=NEW.variant_id WHERE n.id=NEW.order_id) > v.max_per_customer))) THEN RAISE(ABORT,'purchase_limit') END;
+  JOIN order_items i ON i.order_id=o.id AND i.variant_id=NEW.variant_id WHERE n.id=NEW.order_id) > v.max_per_customer))) THEN RAISE(ABORT,'purchase_limit') END AS guard;
 END;
 -- Every audit row is append-only, not only review history.
 DROP TRIGGER IF EXISTS review_audit_no_update;

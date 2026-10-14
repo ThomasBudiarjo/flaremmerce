@@ -77,7 +77,7 @@ it('resumes guest payment without placing another order', async () => {
     : Response.json({}, { status: 401 })));
   await act(async () => root.render(<OrderStatus />));
   expect(document.querySelector<HTMLAnchorElement>('[aria-label="Detail pesanan"] a')?.href).toBe('https://sandbox.doku.com/same-attempt');
-  expect(vi.mocked(fetch).mock.calls.every(([url]) => String(url).startsWith('/api/orders'))).toBe(true);
+  expect(vi.mocked(fetch).mock.calls.every(([url]) => String(url).startsWith('/api/orders') || url === '/api/config')).toBe(true);
 });
 
 it('retries page one after a failed focus refresh instead of appending the next page', async () => {
@@ -139,7 +139,7 @@ describe('admin SPA', () => {
   const me = (role = 'owner') => ({ user: { id: 'admin', name: 'Admin', email: 'admin@example.com' }, role, areas: role === 'owner' ? ['owner', 'ops', 'catalog'] : [role] });
   const summaryBody = { range: 'today', since: 0, now: 1, revenue: 0, paidOrders: 0, averageOrderValue: 0, pendingPayment: 0, toFulfill: 2, openReviews: 1, lowStock: 0 };
   let calls: { url: string; method: string; body: any }[] = [];
-  async function renderAdmin(path: string, handler: Handler, options: { role?: string; signedIn?: boolean } = {}) {
+  async function renderAdmin(path: string, handler: Handler, options: { role?: string; signedIn?: boolean; config?: Record<string, unknown> } = {}) {
     calls = [];
     let signedIn = options.signedIn ?? true;
     history.replaceState(null, '', path);
@@ -148,9 +148,13 @@ describe('admin SPA', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
       const method = init.method ?? 'GET';
       calls.push({ url, method, body: init.body ? JSON.parse(String(init.body)) : undefined });
-      if (url === '/api/config') return Response.json({ devLoginEnabled: true, googleEnabled: false });
+      if (url === '/api/config') return Response.json(options.config ?? { devLoginEnabled: true, googleEnabled: false });
       if (url === '/api/setup') return Response.json({ initialized: true });
       if (url === '/api/auth/development-login') { signedIn = true; return Response.json({ ok: true }); }
+      if (url === '/api/auth/staging-login') {
+        if (JSON.parse(String(init.body)).secret !== 'correct-staging-passphrase') return Response.json({ message: 'Staging login rejected' }, { status: 403 });
+        signedIn = true; return Response.json({ ok: true });
+      }
       if (url.startsWith('/api/auth/get-session')) return Response.json(signedIn ? { user: { id: 'admin' } } : null);
       if (url === '/api/admin/me') return Response.json(me(options.role));
       if (url.startsWith('/api/admin/summary')) return Response.json(summaryBody);
@@ -193,6 +197,43 @@ describe('admin SPA', () => {
     expect(document.querySelector('h1')?.textContent).toBe('Pesanan FL-1');
     expect(document.activeElement?.id).toBe('page-title');
     expect(calls.filter(c => c.url === '/api/config')).toHaveLength(2);
+  });
+
+  it('signs in to staging with the passphrase, without Google, and flags the environment', async () => {
+    const config = { environment: 'staging', devLoginEnabled: false, googleEnabled: false, stagingLogin: true, payments: false, shipping: true, turnstile: false };
+    await renderAdmin('/admin', url => url.startsWith('/api/admin/orders') ? Response.json({ orders: [] }) : url === '/api/admin/operations' ? Response.json({ sections: {} }) : undefined, { signedIn: false, config });
+    expect(text()).toContain('Masuk ke admin');
+    expect(text()).toContain('passphrase staging');
+    expect(button('Masuk dengan Google')).toBeUndefined();
+    expect(button('Masuk admin dev')).toBeUndefined();
+    await type(labelled('Passphrase staging'), 'wrong');
+    await act(async () => button('Masuk staging').closest('form')!.requestSubmit());
+    expect(text()).toContain('Staging login rejected');
+    expect(text()).toContain('Masuk ke admin');
+    await type(labelled('Passphrase staging'), 'correct-staging-passphrase');
+    await act(async () => button('Masuk staging').closest('form')!.requestSubmit());
+    expect(calls.filter(c => c.url === '/api/auth/staging-login').map(c => c.body)).toEqual([{ secret: 'wrong' }, { secret: 'correct-staging-passphrase' }]);
+    expect(document.querySelector('h1')?.textContent).toBe('Beranda');
+    expect([...document.querySelectorAll('header [data-slot="badge"]')].some(b => b.textContent === 'STAGING')).toBe(true);
+    expect(text()).toContain('Staging: integrasi belum dikonfigurasi');
+    expect(text()).toContain('Pembayaran DOKU, Login Google, Turnstile nonaktif di lingkungan ini.');
+  });
+
+  it('offers Google alongside staging login only when Google is configured, and no banner in production', async () => {
+    await renderAdmin('/admin', () => undefined, { signedIn: false, config: { environment: 'staging', devLoginEnabled: false, googleEnabled: true, stagingLogin: true } });
+    expect(button('Masuk dengan Google')).toBeTruthy();
+    expect(button('Masuk staging')).toBeTruthy();
+    await act(async () => root.unmount());
+    root = createRoot(document.getElementById('root')!);
+    await renderAdmin('/admin', url => url.startsWith('/api/admin/orders') ? Response.json({ orders: [] }) : url === '/api/admin/operations' ? Response.json({ sections: {} }) : undefined, { config: { environment: 'production', devLoginEnabled: false, googleEnabled: true, payments: false, shipping: false } });
+    expect(document.querySelector('h1')?.textContent).toBe('Beranda');
+    expect(text()).not.toContain('STAGING');
+    expect(text()).not.toContain('integrasi belum dikonfigurasi');
+    await act(async () => root.unmount());
+    root = createRoot(document.getElementById('root')!);
+    await renderAdmin('/admin', () => undefined, { signedIn: false, config: { environment: 'production', devLoginEnabled: false, googleEnabled: false, stagingLogin: false } });
+    expect(button('Masuk staging')).toBeUndefined();
+    expect(text()).toContain('Google sign-in belum dikonfigurasi');
   });
 
   it('routes with the history API, renders a 404 and never refetches config on navigation', async () => {

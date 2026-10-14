@@ -14,6 +14,7 @@ export interface IntegrationEnv {
   APP_ENV?: string;
   DEV_LOGIN_ENABLED?: string;
   DEV_LOGIN_ALLOW_REMOTE?: string;
+  STAGING_LOGIN_SECRET?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   BETTER_AUTH_SECRET?: string;

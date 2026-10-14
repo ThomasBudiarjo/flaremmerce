@@ -10,7 +10,9 @@
     "test": "vitest run --config vitest.config.ts && vitest run --config vitest.integrations.config.ts",
     "db:migrate": "wrangler d1 migrations apply DB --local",
     "db:seed": "wrangler d1 execute DB --local --file fixtures/catalog.sql",
-    "deploy:check": "node scripts/deploy-guard.mjs && wrangler deploy --config apps/storefront/dist/server/wrangler.json --dry-run"
+    "build:staging": "CLOUDFLARE_ENV=staging npm run build",
+    "deploy:check": "node scripts/deploy-guard.mjs --deploy && wrangler deploy --config apps/storefront/dist/server/wrangler.json --dry-run",
+    "deploy:staging": "node scripts/deploy-guard.mjs --deploy --staging && CLOUDFLARE_ENV= wrangler d1 migrations apply DB --remote --config apps/storefront/dist/server/wrangler.json && CLOUDFLARE_ENV= wrangler deploy --config apps/storefront/dist/server/wrangler.json"
   },
   "dependencies": {
     "better-auth": "1.7.7",

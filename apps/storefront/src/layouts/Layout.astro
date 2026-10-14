@@ -19,6 +19,8 @@ const {
   jsonLd,
   noindex = false,
 } = Astro.props;
+// Build-time constant: prerendered pages would otherwise read a developer's local .dev.vars during a staging build.
+const staging = import.meta.env.FLAREMMERCE_STAGING;
 const pathname = Astro.url.pathname.replace(/\/$/, "") || "/";
 // Prerendered pages are built without the real host, so their canonical stays path-relative.
 const canonicalUrl = Astro.isPrerendered ? (canonical ?? pathname) : new URL(canonical ?? pathname, Astro.url.origin).href;
@@ -34,7 +36,7 @@ const structured = jsonLd && JSON.stringify(jsonLd).replace(/</g, "\\u003c");
     <meta name="viewport" content="width=device-width" />
     <meta name="description" content={summary} />
     <meta name="referrer" content="no-referrer" />
-    {noindex && <meta name="robots" content="noindex" />}
+    {(noindex || staging) && <meta name="robots" content="noindex" />}
     <link rel="canonical" href={canonicalUrl} />
     <meta property="og:site_name" content="Flaremmerce" />
     <meta property="og:type" content={type} />
@@ -53,6 +55,7 @@ const structured = jsonLd && JSON.stringify(jsonLd).replace(/</g, "\\u003c");
     <div class="store-note">Ready stock & pre-order <span aria-hidden="true">·</span> Pengiriman Indonesia</div>
     <header>
       <a class="brand" href="/" aria-label="Flaremmerce — beranda">flaremmerce</a>
+      {staging && <span class="env-badge" title="Lingkungan staging: data uji, bukan toko produksi">STAGING</span>}
       <nav aria-label="Navigasi utama">
         <a href="/catalog" aria-current={pathname === '/' || pathname === '/catalog' || pathname.startsWith('/products/') ? 'page' : undefined}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4z M13 4h7v7h-7z M4 13h7v7H4z M13 13h7v7h-7z" /></svg>

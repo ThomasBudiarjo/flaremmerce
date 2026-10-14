@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { LoaderCircle, LogIn, LogOut } from "lucide-react";
 import "./style.css";
 import { get, post, HttpError } from "@/lib/api";
-import { AuthProvider, areaAllowed, type Session } from "@/lib/auth";
+import { AuthProvider, areaAllowed, type Config, type Session } from "@/lib/auth";
 import { RouterProvider } from "@/lib/router";
 import type { Me } from "@/lib/types";
 import { AppShell } from "@/components/app-shell";
@@ -14,7 +14,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-type Config = { googleEnabled: boolean; devLoginEnabled: boolean };
 type State =
   | { kind: "loading" }
   | { kind: "error"; message: string }
@@ -34,6 +33,7 @@ function Bootstrap() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [secret, setSecret] = useState("");
+  const [passphrase, setPassphrase] = useState("");
   const sequence = useRef(0);
 
   const resolve = useCallback(async () => {
@@ -44,7 +44,7 @@ function Bootstrap() {
       if (current !== sequence.current) return;
       setConfig(nextConfig);
       const session =
-        nextConfig.googleEnabled || nextConfig.devLoginEnabled
+        nextConfig.googleEnabled || nextConfig.devLoginEnabled || nextConfig.stagingLogin
           ? await get<{ user?: { id: string } } | null>("/api/auth/get-session?disableCookieCache=true")
           : null;
       if (current !== sequence.current) return;
@@ -125,7 +125,14 @@ function Bootstrap() {
     );
   }
 
+  const stagingLogin = () =>
+    run(async () => {
+      await post("/api/auth/staging-login", { secret: passphrase });
+      setPassphrase("");
+      await resolve();
+    });
   const loginLabel = config?.devLoginEnabled ? "Masuk admin dev" : "Masuk dengan Google";
+  const anyLogin = !!(config?.devLoginEnabled || config?.googleEnabled || config?.stagingLogin);
   return (
     <Centered>
       {state.kind === "loading" && (
@@ -156,7 +163,9 @@ function Bootstrap() {
               {state.kind === "signed-out"
                 ? config?.devLoginEnabled
                   ? "Development lokal. Tidak memerlukan akun Google atau password."
-                  : "Gunakan akun Google yang memiliki akses administrator."
+                  : config?.stagingLogin && !config.googleEnabled
+                    ? "Lingkungan staging. Masukkan passphrase staging dari operator deployment."
+                    : "Gunakan akun Google yang memiliki akses administrator."
                 : state.kind === "setup"
                   ? "Gunakan bootstrap secret deployment. Setup ditutup setelah berhasil."
                   : state.message}
@@ -170,11 +179,31 @@ function Bootstrap() {
             )}
             {state.kind === "signed-out" && (
               <>
-                <Button onClick={login} disabled={busy || (!config?.devLoginEnabled && !config?.googleEnabled)}>
-                  <LogIn />
-                  {loginLabel}
-                </Button>
-                {!config?.googleEnabled && !config?.devLoginEnabled && (
+                {config?.stagingLogin && !config.devLoginEnabled && (
+                  <form
+                    className="grid gap-4"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void stagingLogin();
+                    }}
+                  >
+                    <div className="grid gap-2">
+                      <Label htmlFor="staging-passphrase">Passphrase staging</Label>
+                      <Input id="staging-passphrase" type="password" autoComplete="current-password" required value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
+                    </div>
+                    <Button disabled={busy}>
+                      <LogIn />
+                      Masuk staging
+                    </Button>
+                  </form>
+                )}
+                {(config?.devLoginEnabled || config?.googleEnabled) && (
+                  <Button variant={config.stagingLogin && !config.devLoginEnabled ? "outline" : "default"} onClick={login} disabled={busy}>
+                    <LogIn />
+                    {loginLabel}
+                  </Button>
+                )}
+                {!anyLogin && (
                   <p className="text-sm text-muted-foreground">Google sign-in belum dikonfigurasi. Hubungi operator deployment.</p>
                 )}
               </>

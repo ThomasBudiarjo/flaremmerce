@@ -19,7 +19,7 @@ const expiry = (q: Quote) => new Date(q.expiresAt).getTime();
 export default function Checkout() {
   const [items, setItems] = useState<CartItem[]>([]);
   const [view, setView] = useState<Preview | null>(null);
-  const [config, setConfig] = useState<{ turnstileSiteKey?: string; googleEnabled?: boolean }>({});
+  const [config, setConfig] = useState<{ turnstileSiteKey?: string | null; turnstile?: boolean; googleEnabled?: boolean; payments?: boolean; shipping?: boolean }>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -88,6 +88,9 @@ export default function Checkout() {
   const preorders = lines.filter((l): l is Extract<Line, { available: true }> => l.available && l.mode === "preorder");
   const promise = view?.shipPromise;
   const frozenInputs = busy || ambiguous;
+  // Older servers omit the flags; only an explicit false disables checkout or the widget.
+  const unavailable = config.payments === false || config.shipping === false;
+  const needsToken = config.turnstile !== false;
 
   function invalidateQuotes() {
     quoteVersion.current++;
@@ -290,6 +293,11 @@ export default function Checkout() {
   );
   return (
     <form onSubmit={checkout} className="checkout-form">
+      {unavailable && (
+        <div className="notice error" role="alert">
+          <strong>Checkout belum tersedia di lingkungan ini.</strong> {config.payments === false && config.shipping === false ? "Pembayaran dan ongkir" : config.payments === false ? "Pembayaran" : "Ongkir"} belum dikonfigurasi; keranjang tetap tersimpan.
+        </div>
+      )}
       <div className="checkout">
         <div className="checkout-main">
           <section className="panel" aria-labelledby="cart-heading">
@@ -392,7 +400,7 @@ export default function Checkout() {
                 maxLength={100}
                 aria-describedby="destination-help destination-status"
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") { e.preventDefault(); if (search.trim().length >= 3) void searchDestinations(); }
+                  if (e.key === "Enter") { e.preventDefault(); if (!unavailable && search.trim().length >= 3) void searchDestinations(); }
                 }}
                 onChange={(e) => {
                   searchVersion.current++;
@@ -404,7 +412,7 @@ export default function Checkout() {
                   invalidateQuotes();
                 }}
               />
-              <button type="button" className="secondary" disabled={frozenInputs || searching || search.trim().length < 3} onClick={searchDestinations}>
+              <button type="button" className="secondary" disabled={frozenInputs || unavailable || searching || search.trim().length < 3} onClick={searchDestinations}>
                 {searching ? "Mencari wilayah…" : "Cari wilayah"}
               </button>
             </div>
@@ -438,7 +446,7 @@ export default function Checkout() {
             <p className="step-intro" id="shipping-help">
               {address.destination ? "Periksa ongkir untuk wilayah tujuan, lalu pilih layanan." : "Pilih wilayah tujuan di langkah 2 untuk menghitung ongkir."}
             </p>
-            <button type="button" disabled={frozenInputs || invalid || !address.destination} onClick={shipping}>
+            <button type="button" disabled={frozenInputs || unavailable || invalid || !address.destination} onClick={shipping}>
               {busy ? "Memproses…" : "Periksa ongkir"}
             </button>
             <label htmlFor="shipping">Layanan pengiriman</label>
@@ -492,7 +500,7 @@ export default function Checkout() {
               <input type="checkbox" required disabled={busy} checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />{" "}
               <span>Saya menyetujui total dan estimasi satu pengiriman di atas.</span>
             </label>
-            {config.turnstileSiteKey ? (
+            {!needsToken ? null : config.turnstileSiteKey ? (
               <Turnstile siteKey={config.turnstileSiteKey} onToken={setToken} reset={reset} />
             ) : (
               <p role="alert">Verifikasi checkout belum tersedia. Pembayaran tidak dapat dilanjutkan.</p>
@@ -507,7 +515,7 @@ export default function Checkout() {
             <button
               type="submit"
               className="cta"
-              disabled={busy || !token || !accepted || (!ambiguous && (invalid || !quote))}
+              disabled={busy || unavailable || (needsToken && !token) || !accepted || (!ambiguous && (invalid || !quote))}
             >
               {busy ? "Memproses…" : ambiguous ? "Kirim ulang pesanan yang sama" : "Buat pesanan & lanjut pembayaran ↗"}
             </button>

@@ -5,10 +5,10 @@ CREATE TABLE inventory (variant_id TEXT PRIMARY KEY REFERENCES product_variants(
 CREATE TABLE preorder_campaigns (id TEXT PRIMARY KEY, variant_id TEXT NOT NULL REFERENCES product_variants(id), starts_at INTEGER NOT NULL, ends_at INTEGER NOT NULL CHECK(ends_at > starts_at), ship_from TEXT NOT NULL, ship_to TEXT NOT NULL CHECK(ship_to >= ship_from), quota INTEGER CHECK(quota IS NULL OR quota >= 0), reserved INTEGER NOT NULL DEFAULT 0 CHECK(reserved >= 0), sold INTEGER NOT NULL DEFAULT 0 CHECK(sold >= 0), active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)), CHECK(quota IS NULL OR reserved + sold <= quota));
 CREATE INDEX campaigns_variant ON preorder_campaigns(variant_id, starts_at, ends_at);
 CREATE TRIGGER campaign_overlap BEFORE INSERT ON preorder_campaigns WHEN NEW.active = 1 BEGIN
- SELECT CASE WHEN EXISTS(SELECT 1 FROM preorder_campaigns WHERE variant_id=NEW.variant_id AND active=1 AND starts_at < NEW.ends_at AND ends_at > NEW.starts_at) THEN RAISE(ABORT,'campaign_overlap') END;
+ SELECT CASE WHEN EXISTS(SELECT 1 FROM preorder_campaigns WHERE variant_id=NEW.variant_id AND active=1 AND starts_at < NEW.ends_at AND ends_at > NEW.starts_at) THEN RAISE(ABORT,'campaign_overlap') END AS guard;
 END;
 CREATE TRIGGER campaign_overlap_update BEFORE UPDATE ON preorder_campaigns WHEN NEW.active = 1 BEGIN
- SELECT CASE WHEN EXISTS(SELECT 1 FROM preorder_campaigns WHERE id<>NEW.id AND variant_id=NEW.variant_id AND active=1 AND starts_at < NEW.ends_at AND ends_at > NEW.starts_at) THEN RAISE(ABORT,'campaign_overlap') END;
+ SELECT CASE WHEN EXISTS(SELECT 1 FROM preorder_campaigns WHERE id<>NEW.id AND variant_id=NEW.variant_id AND active=1 AND starts_at < NEW.ends_at AND ends_at > NEW.starts_at) THEN RAISE(ABORT,'campaign_overlap') END AS guard;
 END;
 CREATE TABLE orders (id TEXT PRIMARY KEY, reference TEXT NOT NULL UNIQUE, customer_id TEXT, guest_token_hash TEXT, status TEXT NOT NULL DEFAULT 'pending_payment' CHECK(status IN ('pending_payment','paid','completed','cancelled')), fulfillment TEXT NOT NULL DEFAULT 'unfulfilled' CHECK(fulfillment IN ('unfulfilled','processing','shipped','delivered')), total INTEGER NOT NULL CHECK(total >= 0), currency TEXT NOT NULL DEFAULT 'IDR' CHECK(currency='IDR'), contact_json TEXT NOT NULL, address_json TEXT NOT NULL, shipping_json TEXT NOT NULL, created_at INTEGER NOT NULL, CHECK(customer_id IS NOT NULL OR guest_token_hash IS NOT NULL));
 CREATE INDEX orders_customer ON orders(customer_id,created_at);
@@ -31,11 +31,11 @@ CREATE TABLE audit_logs (id TEXT PRIMARY KEY, actor TEXT NOT NULL, action TEXT N
 CREATE INDEX review_created ON manual_review(created_at,id);
 CREATE INDEX orders_created ON orders(created_at,id);
 CREATE TRIGGER inventory_ledger_guard BEFORE INSERT ON inventory_movements BEGIN
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM inventory WHERE variant_id=NEW.variant_id) THEN RAISE(ABORT,'inventory_missing') END;
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM inventory WHERE variant_id=NEW.variant_id) THEN RAISE(ABORT,'inventory_missing') END AS guard;
 END;
 CREATE TRIGGER item_snapshot_guard BEFORE INSERT ON order_items BEGIN
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.id=NEW.variant_id AND v.active=1 AND p.active=1 AND v.price=NEW.price AND v.weight=json_extract(NEW.snapshot_json,'$.weight') AND v.sku=json_extract(NEW.snapshot_json,'$.sku') AND v.mode=json_extract(NEW.snapshot_json,'$.mode')) THEN RAISE(ABORT,'catalog_changed') END;
- SELECT CASE WHEN NEW.campaign_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM preorder_campaigns WHERE id=NEW.campaign_id AND variant_id=NEW.variant_id AND ship_from=json_extract(NEW.snapshot_json,'$.campaign.shipFrom') AND ship_to=json_extract(NEW.snapshot_json,'$.campaign.shipTo')) THEN RAISE(ABORT,'campaign_changed') END;
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.id=NEW.variant_id AND v.active=1 AND p.active=1 AND v.price=NEW.price AND v.weight=json_extract(NEW.snapshot_json,'$.weight') AND v.sku=json_extract(NEW.snapshot_json,'$.sku') AND v.mode=json_extract(NEW.snapshot_json,'$.mode')) THEN RAISE(ABORT,'catalog_changed') END AS guard;
+ SELECT CASE WHEN NEW.campaign_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM preorder_campaigns WHERE id=NEW.campaign_id AND variant_id=NEW.variant_id AND ship_from=json_extract(NEW.snapshot_json,'$.campaign.shipFrom') AND ship_to=json_extract(NEW.snapshot_json,'$.campaign.shipTo')) THEN RAISE(ABORT,'campaign_changed') END AS guard;
 END;
 CREATE TRIGGER order_commercial_immutable BEFORE UPDATE OF total,currency,contact_json,address_json,shipping_json,reference,customer_id,guest_token_hash ON orders BEGIN
  SELECT RAISE(ABORT,'commercial_snapshot_immutable');
@@ -46,25 +46,25 @@ END;
 -- The shipping-owned table is created by 0002 before serving traffic. Checking it here,
 -- at the end of the reservation batch, closes quote-expiry and catalogue update races.
 CREATE TRIGGER attempt_checkout_guard BEFORE INSERT ON payment_attempts BEGIN
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM orders o JOIN shipping_quotes q ON q.id=json_extract(o.shipping_json,'$.quoteId') WHERE o.id=NEW.order_id AND o.reference=NEW.reference AND o.status='pending_payment' AND q.expires_at>CAST(unixepoch('subsec')*1000 AS INTEGER) AND q.destination=json_extract(o.address_json,'$.destination') AND q.amount=json_extract(o.shipping_json,'$.amount') AND q.weight=(SELECT sum(quantity*json_extract(snapshot_json,'$.weight')) FROM order_items WHERE order_id=o.id) AND o.total=q.amount+(SELECT sum(quantity*price) FROM order_items WHERE order_id=o.id) AND (SELECT count(*) FROM order_items WHERE order_id=o.id)=(SELECT count(*) FROM stock_reservations WHERE order_id=o.id AND state='active')) THEN RAISE(ABORT,'checkout_changed') END;
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM orders o JOIN shipping_quotes q ON q.id=json_extract(o.shipping_json,'$.quoteId') WHERE o.id=NEW.order_id AND o.reference=NEW.reference AND o.status='pending_payment' AND q.expires_at>CAST(unixepoch('subsec')*1000 AS INTEGER) AND q.destination=json_extract(o.address_json,'$.destination') AND q.amount=json_extract(o.shipping_json,'$.amount') AND q.weight=(SELECT sum(quantity*json_extract(snapshot_json,'$.weight')) FROM order_items WHERE order_id=o.id) AND o.total=q.amount+(SELECT sum(quantity*price) FROM order_items WHERE order_id=o.id) AND (SELECT count(*) FROM order_items WHERE order_id=o.id)=(SELECT count(*) FROM stock_reservations WHERE order_id=o.id AND state='active')) THEN RAISE(ABORT,'checkout_changed') END AS guard;
 END;
 -- D1 batch is atomic. A failed conditional UPDATE must abort, not silently insert a reservation.
 CREATE TRIGGER reserve_item BEFORE INSERT ON stock_reservations BEGIN
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM orders WHERE id=NEW.order_id AND status='pending_payment') THEN RAISE(ABORT,'order_not_pending') END;
- SELECT CASE WHEN NEW.state<>'active' OR NOT EXISTS(SELECT 1 FROM order_items WHERE id=NEW.item_id AND order_id=NEW.order_id AND variant_id=NEW.variant_id AND campaign_id IS NEW.campaign_id AND quantity=NEW.quantity) THEN RAISE(ABORT,'reservation_item_mismatch') END;
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM orders WHERE id=NEW.order_id AND status='pending_payment') THEN RAISE(ABORT,'order_not_pending') END AS guard;
+ SELECT CASE WHEN NEW.state<>'active' OR NOT EXISTS(SELECT 1 FROM order_items WHERE id=NEW.item_id AND order_id=NEW.order_id AND variant_id=NEW.variant_id AND campaign_id IS NEW.campaign_id AND quantity=NEW.quantity) THEN RAISE(ABORT,'reservation_item_mismatch') END AS guard;
  UPDATE inventory SET reserved=reserved+NEW.quantity WHERE variant_id=NEW.variant_id AND NEW.campaign_id IS NULL AND on_hand-reserved >= NEW.quantity AND EXISTS(SELECT 1 FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.id=NEW.variant_id AND v.active=1 AND p.active=1 AND v.mode='stock');
- SELECT CASE WHEN NEW.campaign_id IS NULL AND changes()<>1 THEN RAISE(ABORT,'stock_unavailable') END;
+ SELECT CASE WHEN NEW.campaign_id IS NULL AND changes()<>1 THEN RAISE(ABORT,'stock_unavailable') END AS guard;
  UPDATE preorder_campaigns SET reserved=reserved+NEW.quantity WHERE id=NEW.campaign_id AND variant_id=NEW.variant_id AND active=1 AND starts_at <= CAST(unixepoch('subsec')*1000 AS INTEGER) AND ends_at > CAST(unixepoch('subsec')*1000 AS INTEGER) AND (quota IS NULL OR quota-reserved-sold >= NEW.quantity) AND EXISTS(SELECT 1 FROM product_variants v JOIN products p ON p.id=v.product_id WHERE v.id=NEW.variant_id AND v.active=1 AND p.active=1 AND v.mode='preorder');
- SELECT CASE WHEN NEW.campaign_id IS NOT NULL AND changes()<>1 THEN RAISE(ABORT,'quota_unavailable') END;
+ SELECT CASE WHEN NEW.campaign_id IS NOT NULL AND changes()<>1 THEN RAISE(ABORT,'quota_unavailable') END AS guard;
 END;
 CREATE TRIGGER reservation_transition BEFORE UPDATE OF state ON stock_reservations WHEN OLD.state<>NEW.state BEGIN
- SELECT CASE WHEN OLD.state<>'active' OR NEW.state NOT IN ('consumed','released') THEN RAISE(ABORT,'invalid_reservation_transition') END;
+ SELECT CASE WHEN OLD.state<>'active' OR NEW.state NOT IN ('consumed','released') THEN RAISE(ABORT,'invalid_reservation_transition') END AS guard;
  UPDATE inventory SET reserved=reserved-OLD.quantity, on_hand=on_hand-CASE WHEN NEW.state='consumed' THEN OLD.quantity ELSE 0 END WHERE variant_id=OLD.variant_id AND OLD.campaign_id IS NULL;
  UPDATE preorder_campaigns SET reserved=reserved-OLD.quantity, sold=sold+CASE WHEN NEW.state='consumed' THEN OLD.quantity ELSE 0 END WHERE id=OLD.campaign_id;
  INSERT INTO inventory_movements(id,variant_id,delta,reason,order_id,created_at) SELECT OLD.item_id || ':' || NEW.state, OLD.variant_id, -OLD.quantity, 'sale', OLD.order_id, CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE NEW.state='consumed' AND OLD.campaign_id IS NULL;
 END;
 CREATE TRIGGER order_transition BEFORE UPDATE OF status ON orders WHEN OLD.status<>NEW.status BEGIN
- SELECT CASE WHEN NOT ((OLD.status='pending_payment' AND NEW.status IN ('paid','cancelled')) OR (OLD.status='paid' AND NEW.status='completed' AND NEW.fulfillment='delivered')) THEN RAISE(ABORT,'invalid_order_transition') END;
+ SELECT CASE WHEN NOT ((OLD.status='pending_payment' AND NEW.status IN ('paid','cancelled')) OR (OLD.status='paid' AND NEW.status='completed' AND NEW.fulfillment='delivered')) THEN RAISE(ABORT,'invalid_order_transition') END AS guard;
 END;
 CREATE TRIGGER order_effects AFTER UPDATE OF status ON orders WHEN OLD.status<>NEW.status BEGIN
  UPDATE stock_reservations SET state=CASE WHEN NEW.status='paid' THEN 'consumed' ELSE 'released' END WHERE order_id=NEW.id AND state='active' AND NEW.status IN ('paid','cancelled');

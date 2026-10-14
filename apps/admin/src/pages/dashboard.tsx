@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 const ranges = [
   ["today", "Hari ini"],
@@ -22,7 +23,11 @@ const ranges = [
 ] as const;
 
 export function DashboardPage() {
-  const { can } = useSession();
+  const { can, config } = useSession();
+  const disabled = config.environment === "staging"
+    ? ([[config.payments, "Pembayaran DOKU"], [config.shipping, "Ongkir RajaOngkir"], [config.googleEnabled, "Login Google"], [config.turnstile, "Turnstile"]] as const)
+        .filter(([enabled]) => enabled === false).map(([, label]) => label)
+    : [];
   const [range, setRange] = useState<(typeof ranges)[number][0]>("today");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [orders, setOrders] = useState<OrderSummary[] | null>(null);
@@ -75,6 +80,12 @@ export function DashboardPage() {
           ) : undefined
         }
       />
+      {disabled.length > 0 && (
+        <Alert>
+          <AlertTitle>Staging: integrasi belum dikonfigurasi</AlertTitle>
+          <AlertDescription>{disabled.join(", ")} nonaktif di lingkungan ini.</AlertDescription>
+        </Alert>
+      )}
       {!ops ? (
         <Card className="max-w-xl">
           <CardHeader>

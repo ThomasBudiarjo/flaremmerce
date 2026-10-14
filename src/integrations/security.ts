@@ -1,5 +1,5 @@
 import type { IntegrationEnv } from './index';
-import { HttpError, encode, readBounded } from '../shared';
+import { HttpError, encode, readBounded, turnstileSkipped } from '../shared';
 
 export function demand(ok: unknown, status = 400, message = 'Invalid request'): asserts ok {
   if (!ok) throw new HttpError(status, message);
@@ -37,7 +37,12 @@ export async function equal(a: string, b: string) {
   for (let i=0;i<left.length;i++) diff |= left[i] ^ right[i];
   return diff === 0;
 }
+/** Staging-only passphrase login replacing Google until OAuth credentials exist. */
+export function stagingLoginEnabled(env: IntegrationEnv) {
+  return env.APP_ENV === 'staging' && typeof env.STAGING_LOGIN_SECRET === 'string' && env.STAGING_LOGIN_SECRET.length >= 32;
+}
 export async function verifyTurnstile(token: string, env: IntegrationEnv): Promise<void> {
+  if (turnstileSkipped(env)) return;
   demand(env.TURNSTILE_SECRET_KEY, 503, 'Turnstile unavailable');
   demand(typeof token === 'string' && token.length > 0 && token.length <= 2048);
   let result: any;

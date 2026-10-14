@@ -8,12 +8,12 @@ UPDATE payment_events SET applied=1 WHERE event_key IN (SELECT (SELECT p.event_k
 DROP TRIGGER item_snapshot_guard;
 DROP TRIGGER attempt_checkout_guard;
 CREATE TRIGGER attempt_checkout_guard BEFORE INSERT ON payment_attempts BEGIN
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM orders o JOIN shipping_quotes q ON q.id=json_extract(o.shipping_json,'$.quoteId') WHERE o.id=NEW.order_id AND q.expires_at>CAST(unixepoch('subsec')*1000 AS INTEGER)) THEN RAISE(ABORT,'checkout_changed') END;
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM orders o JOIN shipping_quotes q ON q.id=json_extract(o.shipping_json,'$.quoteId') WHERE o.id=NEW.order_id AND q.expires_at>CAST(unixepoch('subsec')*1000 AS INTEGER)) THEN RAISE(ABORT,'checkout_changed') END AS guard;
 END;
 -- Reservation counters update campaigns on every checkout; only period/activity edits can create overlap.
 DROP TRIGGER campaign_overlap_update;
 CREATE TRIGGER campaign_overlap_update BEFORE UPDATE OF variant_id,starts_at,ends_at,active ON preorder_campaigns WHEN NEW.active = 1 BEGIN
- SELECT CASE WHEN EXISTS(SELECT 1 FROM preorder_campaigns WHERE id<>NEW.id AND variant_id=NEW.variant_id AND active=1 AND starts_at < NEW.ends_at AND ends_at > NEW.starts_at) THEN RAISE(ABORT,'campaign_overlap') END;
+ SELECT CASE WHEN EXISTS(SELECT 1 FROM preorder_campaigns WHERE id<>NEW.id AND variant_id=NEW.variant_id AND active=1 AND starts_at < NEW.ends_at AND ends_at > NEW.starts_at) THEN RAISE(ABORT,'campaign_overlap') END AS guard;
 END;
 -- orders_customer duplicates orders_customer_history. orders_status made the planner range-scan every
 -- pending order for payment transitions and beat the partial age index; status pages need (status,created_at,id).

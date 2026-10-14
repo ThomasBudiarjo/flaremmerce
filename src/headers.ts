@@ -1,4 +1,4 @@
-import { base64, encode } from './shared';
+import { base64, encode, environment } from './shared';
 
 const common = {
   'X-Frame-Options': 'DENY',
@@ -53,4 +53,11 @@ export async function withStorefrontHeaders(response: Response, mediaOrigin?: st
   }
   for (const [name, value] of Object.entries(storefrontHeaders(mediaOrigin, hashes))) headers.set(name, value);
   return { body, headers };
+}
+/** Staging is public on workers.dev but must never be indexed; production and development responses pass through untouched. */
+export function withEnvironmentHeaders(response: Response, env: { APP_ENV?: string }) {
+  if (environment(env) !== 'staging') return response;
+  const headers = new Headers(response.headers);
+  headers.set('X-Robots-Tag', 'noindex, nofollow');
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }

@@ -20,7 +20,9 @@ for (const file of await html('apps/storefront/dist/client')) {
     if (!/\ssrc\s*=/i.test(attributes) && body) hashes.add(`'sha256-${createHash('sha256').update(body).digest('base64')}'`);
   }
 }
-const common = "  X-Frame-Options: DENY\n  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n";
+// Static assets bypass the Worker, so the staging noindex header must also be in _headers.
+const { vars = {} } = JSON.parse(await readFile('apps/storefront/dist/server/wrangler.json', 'utf8'));
+const common = (vars.APP_ENV === 'staging' ? "  X-Robots-Tag: noindex, nofollow\n" : "") + "  X-Frame-Options: DENY\n  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n";
 const base = "default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 const storefront = `${base}; img-src 'self' data: https:; script-src 'self' https://challenges.cloudflare.com ${[...hashes].join(' ')}; frame-src https://challenges.cloudflare.com`;
 const admin = `${base}; img-src 'self' data: blob: https:; script-src 'self'; frame-src 'none'`;

@@ -1,10 +1,10 @@
 import { handleIntegrationRequest } from './integrations/index';
-import { devLoginEnabled } from './integrations/auth';
+import { devLoginEnabled, stagingLoginEnabled } from './integrations/auth';
 import type { IntegrationEnv } from './integrations/index';
 import { commerceRequest } from './commerce/index';
 import { consumeOutbox, reconcile, recoverOutbox } from './commerce/payments';
 import { json } from './commerce/types';
-import { catalogParams, HttpError, publicCacheKey } from './shared';
+import { catalogParams, environment, HttpError, paymentsConfigured, publicCacheKey, shippingConfigured, turnstileSkipped } from './shared';
 import { inboundRetention, storageRequest, receiveEmail, type StorageEnv } from './storage';
 import { autoComplete, commerceRetention } from './commerce/lifecycle';
 import { integrationRetention } from './integrations/retention';
@@ -30,7 +30,7 @@ export default {
       if (limited) return limited;
       if (request.method === 'GET' && (url.pathname === '/sitemap.xml' || url.pathname === '/robots.txt')) {
         const origin = new URL(env.PUBLIC_ORIGIN).origin;
-        if (url.pathname === '/robots.txt') return robots(origin);
+        if (url.pathname === '/robots.txt') return robots(origin, environment(env) === 'staging');
         // Keyed on the canonical origin: the document lists only public URLs, never request data.
         const key = new Request(`${origin}/sitemap.xml`), cached = await caches.default.match(key);
         if (cached) return cached;
@@ -39,11 +39,19 @@ export default {
         if (context) context.waitUntil(store); else await store;
         return response;
       }
-      if (request.method === 'GET' && url.pathname === '/api/config') return json({
-        turnstileSiteKey: env.TURNSTILE_SITE_KEY ?? null,
-        googleEnabled: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.BETTER_AUTH_SECRET),
-        devLoginEnabled: devLoginEnabled(env),
-      });
+      if (request.method === 'GET' && url.pathname === '/api/config') {
+        const skipTurnstile = turnstileSkipped(env);
+        return json({
+          environment: environment(env),
+          turnstileSiteKey: skipTurnstile ? null : env.TURNSTILE_SITE_KEY ?? null,
+          turnstile: !skipTurnstile,
+          googleEnabled: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.BETTER_AUTH_SECRET),
+          devLoginEnabled: devLoginEnabled(env),
+          stagingLogin: stagingLoginEnabled(env),
+          payments: paymentsConfigured(env),
+          shipping: shippingConfigured(env),
+        });
+      }
       // Explicit public allowlist. No session, cookie, token or PII enters these cache values.
       // Preserve supported pagination; discard tracking/unsupported query parameters.
       if (request.method === 'GET' && (url.pathname === '/api/catalog' || url.pathname === '/api/categories' || /^\/api\/catalog\/[a-z0-9-]{1,100}$/.test(url.pathname))) {

@@ -19,7 +19,7 @@ export async function sitemap(env: { DB: D1Database }, origin: string) {
   return new Response(body, { headers: { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=0, s-maxage=3600' } });
 }
 
-export function robots(origin: string) {
-  const body = ['User-agent: *', 'Disallow: /admin', 'Disallow: /cart', 'Disallow: /order', 'Disallow: /api', '', `Sitemap: ${origin}/sitemap.xml`, ''].join('\n');
+export function robots(origin: string, staging = false) {
+  const body = (staging ? ['User-agent: *', 'Disallow: /', ''] : ['User-agent: *', 'Disallow: /admin', 'Disallow: /cart', 'Disallow: /order', 'Disallow: /api', '', `Sitemap: ${origin}/sitemap.xml`, '']).join('\n');
   return new Response(body, { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600' } });
 }

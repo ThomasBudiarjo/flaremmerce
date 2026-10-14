@@ -328,6 +328,7 @@ function Shell() {
           <GlobalSearch />
           <div className="ml-auto flex items-center gap-2">
             {session.config.devLoginEnabled && <Badge variant="outline">Dev</Badge>}
+            {session.config.environment === "staging" && <Badge className="bg-yellow-300 font-bold tracking-widest text-black">STAGING</Badge>}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" aria-label={`Akun ${session.me.user.name}`}>

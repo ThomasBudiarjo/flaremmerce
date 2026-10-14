@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createPayment, getCustomer, verifyTurnstile } from '../integrations/index';
-import { cartWeightMessage, chargeableWeight, clientIp, digest, envCount, maxCartWeight, normalizeEmail, normalizePhone, riskHash, riskSecret, volumetricDivisor } from '../shared';
+import { cartWeightMessage, chargeableWeight, clientIp, digest, envCount, maxCartWeight, normalizeEmail, normalizePhone, paymentsConfigured, riskHash, riskSecret, shippingConfigured, volumetricDivisor } from '../shared';
 import { cartItems, shipPromise } from './cart';
 import { disposableEmail } from './risk';
 import { type CommerceEnv, hash, HttpError, id, json, statement as s } from './types';
@@ -11,7 +11,7 @@ export const checkoutInput = z.object({
   contact: z.object({ name: z.string().trim().min(1).max(200), email: z.string().email().max(254), phone: z.string().trim().min(3).max(40) }).strict(),
   // City/postal code are accepted for older clients but never trusted: the server destination row is snapshotted.
   address: z.object({ line: z.string().trim().min(1).max(500), city: z.string().trim().max(100).optional(), postalCode: z.string().trim().max(20).optional(), destination: z.string().min(1).max(100) }).strict(),
-  expectedTotal: z.number().int().min(0).max(1_000_000_000), idempotencyKey: z.string().min(8).max(128), turnstileToken: z.string().min(1).max(4096),
+  expectedTotal: z.number().int().min(0).max(1_000_000_000), idempotencyKey: z.string().min(8).max(128), turnstileToken: z.string().max(4096),
 }).strict();
 type OrderRow = { id: string; reference: string; status: string; total: number; customer_id: string | null };
 type AttemptRow = { status: string; url: string | null };
@@ -39,6 +39,9 @@ async function checkoutResponse(env: CommerceEnv, orderId: string, guestSecret: 
 export async function checkout(request: Request, env: CommerceEnv, body: unknown) {
   const parsed = checkoutInput.safeParse(body);
   if (!parsed.success) throw new HttpError(400, 'Invalid checkout', parsed.error.flatten());
+  // An order nobody can pay or ship would only hold stock until expiry.
+  if (!paymentsConfigured(env)) throw new HttpError(503, 'Pembayaran belum tersedia');
+  if (!shippingConfigured(env)) throw new HttpError(503, 'Ongkir belum tersedia');
   const input = parsed.data;
   if (new Set(input.items.map(i => i.variantId)).size !== input.items.length) throw new HttpError(400, 'Duplicate variants');
   input.items.sort((a, b) => a.variantId.localeCompare(b.variantId));

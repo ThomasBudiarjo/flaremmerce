@@ -54,6 +54,47 @@ describe('public authentication and installation', () => {
     expect((await handleIntegrationRequest(request(path,{}),dev))?.status).not.toBe(200);
     await expect(requireAdmin(request('/admin',undefined,cookie),dev)).rejects.toMatchObject({status:403});
   });
+  it('logs in to staging only with the passphrase secret, bootstrapping the owner once', async () => {
+    const passphrase = 'staging-passphrase-at-least-32-characters';
+    const staging = {...env, APP_ENV:'staging', STAGING_LOGIN_SECRET:passphrase, GOOGLE_CLIENT_ID:undefined, GOOGLE_CLIENT_SECRET:undefined};
+    const path = '/api/auth/staging-login';
+    const { stagingLoginEnabled } = await import('../src/integrations/auth');
+    expect(stagingLoginEnabled(staging)).toBe(true);
+    for (const flags of [{STAGING_LOGIN_SECRET:undefined}, {STAGING_LOGIN_SECRET:'too-short'}, {APP_ENV:'production'}, {APP_ENV:undefined}, {APP_ENV:'development', DEV_LOGIN_ENABLED:'true'}]) {
+      expect(stagingLoginEnabled({...staging, ...flags})).toBe(false);
+      expect((await handleIntegrationRequest(request(path,{secret:passphrase}), {...staging, ...flags}))?.status).not.toBe(200);
+    }
+    // Without Google and without a staging secret there is no sign-in method at all.
+    expect((await handleIntegrationRequest(request('/api/auth/get-session'), {...staging, STAGING_LOGIN_SECRET:undefined}))?.status).toBe(503);
+    expect((await handleIntegrationRequest(request(path,{secret:`${passphrase}x`}),staging))?.status).toBe(403);
+    expect((await handleIntegrationRequest(request(path,{}),staging))?.status).toBe(400);
+    expect((await handleIntegrationRequest(new Request(`https://shop.example${path}`, {method:'POST',headers:{Origin:'https://evil.example','Content-Type':'application/json'},body:JSON.stringify({secret:passphrase})}),staging))?.status).toBe(403);
+    expect(await env.DB.prepare('SELECT count(*) n FROM installation').first('n')).toBe(0);
+    const response = await handleIntegrationRequest(request(path,{secret:passphrase}),staging);
+    expect(response?.status).toBe(200);
+    const cookie = response!.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
+    expect(cookie).toContain('__Secure-better-auth.session_token=');
+    expect(await requireAdmin(request('/admin',undefined,cookie),staging)).toEqual({id:'flaremmerce-staging-admin',role:'owner'});
+    expect(await env.DB.prepare('SELECT owner_id FROM installation').first('owner_id')).toBe('flaremmerce-staging-admin');
+    expect((await handleIntegrationRequest(request(path,{secret:passphrase}),staging))?.status).toBe(200);
+    expect(await env.DB.prepare('SELECT count(*) n FROM admin_roles').first('n')).toBe(1);
+    // Switching the mode off (secret removed, or a production env) invalidates the fixed identity's session.
+    await expect(requireAdmin(request('/admin',undefined,cookie),{...staging, STAGING_LOGIN_SECRET:undefined, GOOGLE_CLIENT_ID:'g', GOOGLE_CLIENT_SECRET:'g'})).rejects.toMatchObject({status:401});
+    await expect(requireAdmin(request('/admin',undefined,cookie),env)).rejects.toMatchObject({status:401});
+    expect(await getCustomer(request('/customer',undefined,cookie),env)).toBeNull();
+    // A revoked role is never restored by logging in again.
+    await env.DB.prepare('DELETE FROM admin_roles').run();
+    expect((await handleIntegrationRequest(request(path,{secret:passphrase}),staging))?.status).toBe(403);
+    await expect(requireAdmin(request('/admin',undefined,cookie),staging)).rejects.toMatchObject({status:403});
+  });
+  it('does not let staging login take over an existing Google installation', async () => {
+    const cookie = await identity('owner');
+    expect((await handleIntegrationRequest(request('/api/setup',{secret},cookie),env))?.status).toBe(200);
+    const passphrase = 'staging-passphrase-at-least-32-characters';
+    expect((await handleIntegrationRequest(request('/api/auth/staging-login',{secret:passphrase}),{...env,APP_ENV:'staging',STAGING_LOGIN_SECRET:passphrase}))?.status).toBe(403);
+    expect(await env.DB.prepare('SELECT owner_id FROM installation').first('owner_id')).toBe('owner');
+    expect(await env.DB.prepare('SELECT count(*) n FROM admin_roles').first('n')).toBe(1);
+  });
   it('does not let dev login take over an existing Google installation', async () => {
     const cookie = await identity('owner');
     expect((await handleIntegrationRequest(request('/api/setup',{secret},cookie),env))?.status).toBe(200);
@@ -251,6 +292,22 @@ describe('provider boundaries', () => {
     vi.stubGlobal('fetch',vi.fn(async()=>{throw new Error('network')}));
     await expect(verifyTurnstile('token',env)).rejects.toMatchObject({status:503});
   });
+  it('skips Siteverify only in staging without both Turnstile keys; a missing key elsewhere stays 503', async () => {
+    const siteverify = vi.fn(async()=>Response.json({success:true,hostname:'shop.example',action:'checkout'}));
+    vi.stubGlobal('fetch',siteverify);
+    for (const keys of [{TURNSTILE_SECRET_KEY:undefined, TURNSTILE_SITE_KEY:undefined}, {TURNSTILE_SITE_KEY:undefined}, {TURNSTILE_SECRET_KEY:undefined, TURNSTILE_SITE_KEY:'site'}]) {
+      await expect(verifyTurnstile('', {...env, APP_ENV:'staging', ...keys})).resolves.toBeUndefined();
+    }
+    expect(siteverify).not.toHaveBeenCalled();
+    for (const appEnv of [undefined, 'production', 'development']) {
+      await expect(verifyTurnstile('token', {...env, APP_ENV:appEnv, TURNSTILE_SECRET_KEY:undefined, TURNSTILE_SITE_KEY:'site'})).rejects.toMatchObject({status:503});
+    }
+    // Configured staging verifies exactly like production, including empty tokens.
+    const configured = {...env, APP_ENV:'staging', TURNSTILE_SITE_KEY:'site'};
+    await expect(verifyTurnstile('', configured)).rejects.toMatchObject({status:400});
+    await expect(verifyTurnstile('token', configured)).resolves.toBeUndefined();
+    expect(siteverify).toHaveBeenCalledOnce();
+  });
   it('quotes authoritative catalog grams and persists only provider tariffs', async () => {
     await env.DB.exec('CREATE TABLE product_variants (id TEXT PRIMARY KEY, weight INTEGER, length_cm INTEGER, width_cm INTEGER, height_cm INTEGER); INSERT INTO product_variants(id,weight) VALUES (\'sku\', 350);');
     Object.assign(env,{RAJAONGKIR_API_KEY:'test',RAJAONGKIR_ORIGIN:'1',RAJAONGKIR_COURIERS:'jne'});
@@ -407,6 +464,31 @@ describe('anti-abuse integration boundaries', () => {
     expect(run({PUBLIC_ORIGIN:'https://shop.example', DEV_LOGIN_ENABLED:'true'})).toBe(1);
     expect(run({PUBLIC_ORIGIN:'https://shop.example'})).toBe(0);
     expect(run({PUBLIC_ORIGIN:'http://localhost:8787', DEV_LOGIN_ENABLED:'true'})).toBe(0);
+    for (const appEnv of ['production','staging','development']) expect(run({PUBLIC_ORIGIN:'https://shop.example', APP_ENV:appEnv})).toBe(0);
+    expect(run({PUBLIC_ORIGIN:'https://shop.example', APP_ENV:'prod'})).toBe(1);
+    expect(run({PUBLIC_ORIGIN:'https://flaremmerce-staging.example.workers.dev', APP_ENV:'staging', DEV_LOGIN_ENABLED:'true'})).toBe(1);
+    expect(run({PUBLIC_ORIGIN:'https://shop.example', STAGING_LOGIN_SECRET:'x'.repeat(40)})).toBe(1);
+  });
+  it('refuses a placeholder origin or a non-staging build only when deploying', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = mkdtempSync(join(tmpdir(), 'deploy-guard-'));
+    const run = (config: unknown, ...flags: string[]) => {
+      const file = join(dir, `${crypto.randomUUID()}.json`);
+      writeFileSync(file, JSON.stringify(config));
+      try { execFileSync(process.execPath, ['scripts/deploy-guard.mjs', file, ...flags], {stdio:'pipe'}); return 0; } catch (error: any) { return error.status as number; }
+    };
+    const placeholder = {targetEnvironment:'staging', vars:{APP_ENV:'staging', PUBLIC_ORIGIN:'https://flaremmerce-staging.REPLACE.workers.dev'}};
+    const staging = {targetEnvironment:'staging', vars:{APP_ENV:'staging', PUBLIC_ORIGIN:'https://flaremmerce-staging.team.workers.dev'}};
+    const local = {vars:{PUBLIC_ORIGIN:'http://localhost:8787'}};
+    expect(run(placeholder)).toBe(0);
+    expect(run(placeholder, '--deploy')).toBe(1);
+    expect(run(staging, '--deploy', '--staging')).toBe(0);
+    expect(run(local, '--deploy')).toBe(0);
+    expect(run(local, '--deploy', '--staging')).toBe(1);
+    expect(run({...staging, targetEnvironment:undefined}, '--deploy', '--staging')).toBe(1);
   });
 });
 

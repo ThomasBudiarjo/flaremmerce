@@ -78,6 +78,14 @@ Pemeriksaan: `npm run check`, `npm test` (**168 tes**: 69 commerce + 99 integrat
 
 Pemeriksaan: `npm run check`, `npm test` (**159 tes**: 69 commerce + 90 integration/storage/checkout/operations/UI/storefront-UI/recovery; tes rekonsiliasi `SaveForm` lama dihapus bersama kodenya), `npm run build`, `npm run deploy:check`, `npm audit --omit=dev` lulus. Browser Chromium lokal: console tanpa pelanggaran CSP; screenshot di `.artifacts/phase4/` (diabaikan git).
 
+## Mode staging workers.dev — 14 Oktober 2026
+
+- `env.staging` di `wrangler.jsonc` dipilih dengan `CLOUDFLARE_ENV=staging npm run build` (`build:staging`); adapter Astro meratakan config ke `dist/server/wrangler.json`. `deploy:staging` = guard (`--deploy --staging`) + D1 migrations remote + deploy dengan config generated. Sudah dideploy ke `https://flaremmerce-staging.thomasbudiarjo.workers.dev` (D1, R2 media r2.dev + private, Queue + DLQ, 4 secret); 13 migration remote diterapkan setelah guard trigger `CASE … END;` ditulis ulang menjadi `END AS guard;` (pemecah statement Wrangler memotong trigger sebelumnya; perubahan teks saja, belum ada D1 remote lain yang menerapkan versi lama). Smoke: halaman/API publik 200, admin API anonim 401, passphrase salah 403, passphrase benar → owner, ringkasan admin 200, noindex/robots aktif.
+- `APP_ENV=staging`: login admin passphrase `STAGING_LOGIN_SECRET` (session Better Auth, bootstrap owner sekali, RL_AUTH), Turnstile dilewati hanya bila key tidak lengkap, flag fitur di `/api/config`, badge STAGING, noindex/robots `Disallow: /`.
+- Checkout di semua lingkungan menolak 503 sebelum reservasi bila DOKU atau RajaOngkir belum dikonfigurasi, sehingga tidak ada order yang tidak bisa dibayar. Turnstile production tanpa key tetap 503.
+
+Pemeriksaan: `npm run check`, `npm test` (**169 tes**: 69 commerce + 100 integration/storage/checkout/operations/UI/storefront-UI/recovery), `npm run build`, `npm run build:staging`, `npm run deploy:check` lulus; `wrangler deploy --dry-run` atas config staging generated menampilkan binding staging. Binding Rate Limiting diterima saat deploy di akun ini. Production belum diprovision/dideploy.
+
 ## Gate yang tidak boleh disamarkan
 
 1. Resource, secret dan hostname staging/production nyata + otorisasi provision/deploy/migration. Root Wrangler masih lokal/ID dummy.

@@ -144,6 +144,13 @@ export function riskSecret(env: { RISK_HASH_SECRET?: string; APP_ENV?: string })
   if (!secret) throw new HttpError(503, 'Checkout unavailable');
   return secret;
 }
+/** Anything other than an explicit staging/development value behaves as production. */
+export const environment = (env: { APP_ENV?: string }) => env.APP_ENV === 'staging' || env.APP_ENV === 'development' ? env.APP_ENV : 'production';
+type FeatureEnv = { APP_ENV?: string; DOKU_CLIENT_ID?: string; DOKU_SECRET_KEY?: string; RAJAONGKIR_API_KEY?: string; RAJAONGKIR_ORIGIN?: string; RAJAONGKIR_COURIERS?: string; TURNSTILE_SITE_KEY?: string; TURNSTILE_SECRET_KEY?: string };
+export const paymentsConfigured = (env: FeatureEnv) => !!(env.DOKU_CLIENT_ID && env.DOKU_SECRET_KEY);
+export const shippingConfigured = (env: FeatureEnv) => !!(env.RAJAONGKIR_API_KEY && env.RAJAONGKIR_ORIGIN && env.RAJAONGKIR_COURIERS);
+/** Only staging may run checkout without Turnstile keys; elsewhere a missing key keeps checkout fail-closed. */
+export const turnstileSkipped = (env: FeatureEnv) => env.APP_ENV === 'staging' && !(env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY);
 export type RiskKind = 'email' | 'phone' | 'ip';
 // Domain-separated so an email can never collide with a phone or IP of the same text.
 export const riskHash = (secret: string, kind: RiskKind, value: string) => hmac(secret, `${kind}:${value}`);

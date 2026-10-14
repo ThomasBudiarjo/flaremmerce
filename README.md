@@ -46,6 +46,35 @@ Di production, first admin harus sign-in Google terverifikasi lalu menyerahkan b
 
 Root Wrangler memakai resource lokal dan D1 ID dummy, **jangan deploy langsung**. R2 media dan private terpisah; Queues lokal memiliki producer/consumer dan Cron recovery tetap aktif. Staging/production membutuhkan resource, canonical domain, OAuth redirect, merchant settings, Turnstile hostname dan secret terpisah, serta izin operator sebelum provision/deploy/migration. Tidak ada outbound pelanggan/Paid binding.
 
+## Staging (workers.dev) via Workers Builds
+
+`wrangler.jsonc` memiliki `env.staging` (Worker `flaremmerce-staging`, D1 `flaremmerce-staging`, R2 `flaremmerce-staging-media`/`flaremmerce-staging-private`, Queue `flaremmerce-staging-jobs` + DLQ `flaremmerce-staging-jobs-dlq`, rate limit namespace 2001–2004, Cron sama, `workers_dev: true`). Top-level tetap config lokal. Lingkungan dipilih saat **build**: adapter Astro (`@astrojs/cloudflare` → `@cloudflare/vite-plugin`) membaca `CLOUDFLARE_ENV` dan meratakan `env.staging` ke `apps/storefront/dist/server/wrangler.json` (tanpa blok `env`, `migrations_dir` relatif ke folder itu = `migrations/` di root). `npm run build` biasa tetap menghasilkan config lokal. Deploy selalu memakai config generated tersebut, bukan `--env`.
+
+Pengaturan Workers Builds (Settings → Build):
+
+| Pengaturan | Nilai |
+|---|---|
+| Root directory | `/` |
+| Build command | `npm ci && npm run build:staging` |
+| Deploy command | `npm run deploy:staging` |
+| Build variable | `CLOUDFLARE_ENV=staging` |
+| Worker name | `flaremmerce-staging` (harus sama dengan `name` di config generated) |
+
+`deploy:staging` menjalankan `deploy-guard --deploy --staging` (menolak build non-staging dan `PUBLIC_ORIGIN` yang masih berisi `REPLACE`), lalu `wrangler d1 migrations apply DB --remote` dan `wrangler deploy` dengan config generated. `CLOUDFLARE_ENV` dikosongkan untuk kedua perintah karena config generated sudah rata. Staging aktif di `https://flaremmerce-staging.thomasbudiarjo.workers.dev`; resource, secret dan migration sudah disiapkan. Token build Workers Builds membutuhkan izin D1 Edit untuk langkah migration; bila build gagal di `migrations apply`, tambahkan izin itu pada token build.
+
+Pemecah statement `wrangler d1 migrations apply` (port `sqlite3_complete`) menganggap `CASE … END;` di dalam badan trigger sebagai akhir trigger. Tulis guard trigger sebagai `SELECT CASE … END AS guard;` atau `SELECT RAISE(…) WHERE …;`, jangan diakhiri `END;` langsung.
+
+Secret Worker staging (Settings → Variables and Secrets, tipe Secret): `BETTER_AUTH_SECRET`, `BOOTSTRAP_SECRET`, `RISK_HASH_SECRET` (wajib seperti production, ≥32 karakter) dan `STAGING_LOGIN_SECRET` (≥32 karakter random). Opsional saat credential tersedia: `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, `TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY`, `DOKU_CLIENT_ID`/`DOKU_SECRET_KEY`, `RAJAONGKIR_API_KEY` + var `RAJAONGKIR_ORIGIN`/`RAJAONGKIR_COURIERS`. Jangan menaruh `STAGING_LOGIN_SECRET` di `vars` (deploy guard menolak).
+
+Perilaku `APP_ENV=staging` (production dan development tidak berubah):
+
+- **Login admin:** `/admin/` menampilkan form **Masuk staging**; passphrase dibandingkan constant-time dengan `STAGING_LOGIN_SECRET`, dibatasi `RL_AUTH`, menghasilkan session Better Auth asli untuk identitas tetap `admin@staging.flaremmerce.test`. Login pertama pada instalasi kosong menjadi owner; tidak mengambil alih owner yang ada atau memulihkan role yang dicabut. Tanpa secret, login staging nonaktif dan session identitas staging ditolak. Tombol Google hanya tampil bila Google dikonfigurasi.
+- **Turnstile:** bila `TURNSTILE_SITE_KEY` atau `TURNSTILE_SECRET_KEY` tidak ada, Siteverify dilewati dan widget disembunyikan (`turnstile:false`). Production tanpa key tetap 503. Rate limit, blocklist dan batas pending tidak berubah.
+- **Fitur tanpa credential:** `GET /api/config` memuat `environment`, `payments`, `shipping`, `googleEnabled`, `turnstile`, `stagingLogin`. Checkout menolak lebih dulu dengan 503 `Pembayaran belum tersedia`/`Ongkir belum tersedia` sebelum reservasi atau order dibuat (juga di production). Keranjang menampilkan "Checkout belum tersedia di lingkungan ini" dan menonaktifkan pencarian wilayah, ongkir dan tombol pesan; halaman produk tidak terpengaruh. Dashboard admin menampilkan daftar integrasi nonaktif.
+- **Penanda dan SEO:** badge STAGING di header toko dan topbar admin, `X-Robots-Tag: noindex, nofollow` (Worker dan `_headers`), meta robots noindex, `robots.txt` `Disallow: /`.
+
+Media memakai URL `r2.dev` publik; ini **hanya untuk staging** (rate-limited, tanpa cache/WAF). Production memakai custom domain R2.
+
 ## Pemeriksaan
 
 ```sh

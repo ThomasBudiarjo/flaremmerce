@@ -130,6 +130,37 @@ describe('checkout steps', () => {
     expect(badge().hidden).toBe(true);
   });
 
+  it('disables destination search, quotes and ordering when payments or shipping are not configured', async () => {
+    for (const flags of [{ payments: false, shipping: true }, { payments: true, shipping: false }]) {
+      const calls = server(placed);
+      const original = vi.mocked(fetch).getMockImplementation()!;
+      vi.mocked(fetch).mockImplementation(async (input: any, init?: any) => input === '/api/config' ? Response.json({ turnstileSiteKey: 'site-key', turnstile: true, ...flags }) : original(input, init));
+      localStorage.setItem('flaremmerce-cart', JSON.stringify([{ variantId: 'a', quantity: 2 }]));
+      await act(async () => root.render(<Checkout />));
+      expect(document.querySelector('[role="alert"]')!.textContent).toContain('Checkout belum tersedia di lingkungan ini.');
+      await type('destination-search', 'menteng');
+      expect(buttons().find(b => b.textContent === 'Cari wilayah')!.disabled).toBe(true);
+      expect(buttons().find(b => b.textContent === 'Periksa ongkir')!.disabled).toBe(true);
+      expect(submit().disabled).toBe(true);
+      expect(document.body.textContent).toContain('Catan');
+      expect(calls.some(c => c.path.startsWith('/api/shipping') || c.path === '/api/checkout')).toBe(false);
+      await act(async () => root.unmount());
+      root = createRoot(document.getElementById('root')!);
+    }
+  });
+
+  it('orders without a Turnstile token or widget when the server reports Turnstile off (staging)', async () => {
+    const calls = server(placed);
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input: any, init?: any) => input === '/api/config' ? Response.json({ turnstileSiteKey: null, turnstile: false, payments: true, shipping: true }) : original(input, init));
+    await fill();
+    expect(document.body.textContent).not.toContain('Verifikasi checkout belum tersedia');
+    expect(submit().disabled).toBe(false);
+    await act(async () => submit().click());
+    expect(calls.find(c => c.path === '/api/checkout')!.body.turnstileToken).toBe('');
+    expect(document.body.textContent).toContain('Referensi FL-REF');
+  });
+
   it('shows an empty state when the cart is empty', async () => {
     server(placed);
     await act(async () => root.render(<Checkout />));

@@ -9,6 +9,8 @@ export default function OrderHistory({ open, labels, onOwnerChange }: { open: (r
   const [busy, setBusy] = useState(true);
   const [anonymous, setAnonymous] = useState(false);
   const [error, setError] = useState("");
+  // Unknown until /api/config answers; only an explicit false (no Google credentials) hides sign-in.
+  const [googleEnabled, setGoogleEnabled] = useState<boolean | null>(null);
   const ownerId = useRef<string | null>(null);
   const onOwnerChangeRef = useRef(onOwnerChange);
   onOwnerChangeRef.current = onOwnerChange;
@@ -45,6 +47,7 @@ export default function OrderHistory({ open, labels, onOwnerChange }: { open: (r
   }
   useEffect(() => {
     void load();
+    fetch("/api/config", { credentials: "same-origin", cache: "no-store" }).then((r) => r.json()).then((c) => setGoogleEnabled(c?.googleEnabled !== false), () => setGoogleEnabled(true));
     const refresh = () => { if (document.visibilityState === "visible") void load(); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
@@ -57,7 +60,8 @@ export default function OrderHistory({ open, labels, onOwnerChange }: { open: (r
   return <section className="panel" aria-label="Riwayat pesanan">
     <h2>Riwayat pesanan saya</h2>
     <p className="muted">Hanya pesanan yang dibuat dengan akun ini. Pesanan guest tetap memerlukan token privat, meskipun email sama.</p>
-    {anonymous && <button disabled={busy} onClick={async () => {
+    {anonymous && googleEnabled === false && <p className="muted">Login akun belum tersedia di lingkungan ini.</p>}
+    {anonymous && googleEnabled && <button disabled={busy} onClick={async () => {
       setBusy(true); setError("");
       try { await google(location.pathname + location.search); }
       catch (e) { setError((e as Error).message); setBusy(false); }

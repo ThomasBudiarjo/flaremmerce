@@ -53,7 +53,8 @@ vi.mock('../src/integrations/index', () => ({
 }));
 
 // Risk limits are lifted for the general suite; dedicated tests restore the defaults.
-const e = { ...env, PUBLIC_ORIGIN: 'https://shop.test', RAJAONGKIR_ORIGIN:'1', RISK_HASH_SECRET: 'commerce-test-risk-secret-at-least-32-chars', MAX_PENDING_PER_IDENTITY: '1000', MAX_PENDING_PER_IP: '1000', VELOCITY_LIMIT: '1000', VELOCITY_LIMIT_IP: '1000', MEDIA_ORIGIN: 'https://media.test', ASSETS: { fetch: async () => new Response('asset') } } as unknown as Env;
+// Provider credentials only mark payments/shipping as configured; the boundary doubles above answer every call.
+const e = { ...env, PUBLIC_ORIGIN: 'https://shop.test', RAJAONGKIR_ORIGIN:'1', RAJAONGKIR_API_KEY: 'fixture', RAJAONGKIR_COURIERS: 'jne', DOKU_CLIENT_ID: 'fixture', DOKU_SECRET_KEY: 'fixture', RISK_HASH_SECRET: 'commerce-test-risk-secret-at-least-32-chars', MAX_PENDING_PER_IDENTITY: '1000', MAX_PENDING_PER_IP: '1000', VELOCITY_LIMIT: '1000', VELOCITY_LIMIT_IP: '1000', MEDIA_ORIGIN: 'https://media.test', ASSETS: { fetch: async () => new Response('asset') } } as unknown as Env;
 const db = () => e.DB;
 const sql = (query: string, ...values: (string | number | null)[]) => db().prepare(query).bind(...values);
 const count = async (table: string) => (await sql(`SELECT count(*) AS n FROM ${table}`).first<{ n: number }>())!.n;
