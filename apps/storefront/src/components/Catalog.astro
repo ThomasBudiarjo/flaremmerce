@@ -52,6 +52,31 @@ if (limit !== null) nextQuery.set("limit", limit);
 if (category) nextQuery.set("category", category);
 if (q) nextQuery.set("q", q);
 const heading = q ? `Hasil untuk “${q}”` : current ? current.name : "Semua produk";
+const paged = Astro.url.searchParams.has("after");
+const firstPage = new URLSearchParams(nextQuery);
+firstPage.delete("after");
+const monthDay = new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "short", timeZone: "Asia/Jakarta" });
+const shipWindow = (from: string | number, to: string | number) => `${monthDay.format(new Date(from))} – ${monthDay.format(new Date(to))}`;
+type Badge = { label: string; tone: "stock" | "low" | "out" | "preorder" };
+// Exact counts are never public; badges summarise variant stock levels and the earliest pre-order window.
+function summary(p: Product) {
+  const stock = p.variants.filter((v) => v.mode === "stock");
+  const preorder = p.variants.filter((v) => v.mode === "preorder");
+  const badges: Badge[] = [];
+  if (stock.some((v) => v.stockLevel === "in_stock")) badges.push({ label: "Ready stock", tone: "stock" });
+  else if (stock.some((v) => v.stockLevel === "low")) badges.push({ label: "Stok terbatas", tone: "low" });
+  const campaign = preorder.map((v) => v.campaign).filter((c) => !!c).sort((a, b) => new Date(a!.shipFrom).getTime() - new Date(b!.shipFrom).getTime())[0];
+  if (preorder.length) badges.push({ label: "Pre-order", tone: "preorder" });
+  const soldOut = !p.variants.length || p.variants.every((v) => v.stockLevel === "out");
+  if (soldOut) badges.splice(0, badges.length, { label: "Habis", tone: "out" });
+  const prices = p.variants.map((v) => v.price);
+  return {
+    badges,
+    soldOut,
+    ship: !soldOut && campaign ? `Kirim ${shipWindow(campaign.shipFrom, campaign.shipTo)}` : "",
+    price: prices.length ? `${new Set(prices).size > 1 ? "Mulai " : ""}${money(Math.min(...prices))}` : "Belum tersedia",
+  };
+}
 ---
 
 <Layout title={current ? `${current.name} — Flaremmerce` : q ? `Cari “${q}” — Flaremmerce` : "Board game untuk main bareng — Flaremmerce"} canonical={category ? `/catalog?category=${encodeURIComponent(category)}` : Astro.url.pathname} noindex={!!q || !!invalid}>
@@ -78,10 +103,12 @@ const heading = q ? `Hasil untuk “${q}”` : current ? current.name : "Semua p
     <div class="catalog-filters">
       <form class="catalog-search" method="get" action={Astro.url.pathname} role="search">
         <label class="sr-only" for="catalog-q">Cari produk</label>
-        <input id="catalog-q" name="q" type="search" minlength="2" maxlength="60" placeholder="Cari nama produk" value={q ?? rawQ.slice(0, 60)} />
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
+        <input id="catalog-q" name="q" type="search" minlength="2" maxlength="60" placeholder="Cari nama board game" value={q ?? rawQ.slice(0, 60)} aria-describedby="catalog-q-help" />
         {category && <input type="hidden" name="category" value={category} />}
         <button type="submit">Cari</button>
       </form>
+      <p id="catalog-q-help" class="sr-only">Minimal 2 karakter.</p>
       {categories.length > 0 && (
         <nav class="chips" aria-label="Kategori">
           <a class="chip" href={link({ q })} aria-current={!category ? "page" : undefined}>Semua</a>
@@ -93,7 +120,8 @@ const heading = q ? `Hasil untuk “${q}”` : current ? current.name : "Semua p
     </div>
     <div class="catalog-toolbar">
       <h2>{heading}</h2>
-      {!error && <span class="muted">{products.length} produk di halaman ini</span>}
+      {!error && !invalid && products.length > 0 && <span class="muted">{products.length} produk{paged || nextCursor ? " di halaman ini" : ""}</span>}
+      {q && <a class="muted clear-search" href={link({ category })}>Hapus pencarian</a>}
     </div>
     {invalid ? (
       <div class="notice" role="alert">
@@ -104,40 +132,53 @@ const heading = q ? `Hasil untuk “${q}”` : current ? current.name : "Semua p
         {error} <a href={Astro.url.pathname + Astro.url.search}>Muat ulang</a>
       </div>
     ) : products.length === 0 ? (
-      <div class="notice">
-        {q || category ? <>Tidak ada produk yang cocok. <a href={Astro.url.pathname}>Lihat semua produk</a></> : "Koleksi baru sedang disiapkan. Kembali lagi nanti."}
+      <div class="empty-state">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="8" y="8" width="32" height="32" rx="5" /><circle cx="18" cy="18" r="2.5" /><circle cx="30" cy="30" r="2.5" /></svg>
+        {q || category ? (
+          <>
+            <h3>Tidak ada produk yang cocok</h3>
+            <p>Coba kata kunci lain atau pilih kategori berbeda.</p>
+            <a class="button" href={Astro.url.pathname}>Lihat semua produk</a>
+          </>
+        ) : (
+          <>
+            <h3>Koleksi baru sedang disiapkan</h3>
+            <p>Kembali lagi nanti untuk melihat board game terbaru.</p>
+          </>
+        )}
       </div>
     ) : (
-      <div class="grid">
-        {products.map((p) => (
-          <a class="card" href={"/products/" + encodeURIComponent(p.slug)}>
-            <div class="art">
-              {p.imageUrl && (
-                <img src={p.imageUrl} alt={p.name} loading="lazy" />
-              )}
-              <div class="availability">
-                {p.variants.some((v) => v.mode === "stock" && v.stockLevel !== "out") && <span class="badge stock">Ready stock</span>}
-                {p.variants.some((v) => v.mode === "preorder") && <span class="badge preorder">Pre-order</span>}
-                {p.variants.some((v) => v.mode === "stock" && v.stockLevel === "low") && !p.variants.some((v) => v.mode === "stock" && v.stockLevel === "in_stock") && <span class="badge">Stok terbatas</span>}
-                {!p.variants.some((v) => v.mode === "preorder" || v.stockLevel !== "out") && <span class="badge">Habis</span>}
-              </div>
-            </div>
-            <div class="product-heading">
-              <h3>{p.name}</h3>
-              <span>
-                {p.variants.length > 1 && "Mulai "}
-                {p.variants.length
-                  ? money(Math.min(...p.variants.map((v) => v.price)))
-                  : "Belum tersedia"}
-              </span>
-            </div>
-            <p class="product-description">{p.description}</p>
-            <span class="variant-count">{p.variants.length} varian <span aria-hidden="true">↗</span></span>
-          </a>
-        ))}
-      </div>
+      <ul class="grid" role="list">
+        {products.map((p) => {
+          const s = summary(p);
+          return (
+            <li>
+              <a class:list={["card", { "sold-out": s.soldOut }]} href={"/products/" + encodeURIComponent(p.slug)}>
+                <div class="art">
+                  {p.imageUrl && <img src={p.imageUrl} alt="" loading="lazy" />}
+                  <div class="availability">
+                    {s.badges.map((b) => <span class={`badge ${b.tone}`}>{b.label}</span>)}
+                  </div>
+                </div>
+                <div class="card-body">
+                  {p.category && <span class="card-category">{p.category.name}</span>}
+                  <h3>{p.name}</h3>
+                  <span class="card-price">{s.price}</span>
+                  {s.ship && <span class="card-ship">{s.ship}</span>}
+                  {p.variants.length > 1 && <span class="variant-count">{p.variants.length} varian</span>}
+                </div>
+              </a>
+            </li>
+          );
+        })}
+      </ul>
     )}
-    {nextCursor && <a class="button pagination" href={`${Astro.url.pathname}?${nextQuery}`}>Produk berikutnya →</a>}
+    {(paged || nextCursor) && (
+      <nav class="pager" aria-label="Halaman katalog">
+        {paged ? <a class="button secondary" href={`${Astro.url.pathname}${firstPage.size ? `?${firstPage}` : ""}`}>← Halaman pertama</a> : <span />}
+        {nextCursor && <a class="button" href={`${Astro.url.pathname}?${nextQuery}`} rel="next">Produk berikutnya →</a>}
+      </nav>
+    )}
     <div class="shopping-guide">
       <div><h2>Ready stock</h2><p>Pilih varian dan lihat ketersediaannya di halaman produk.</p></div>
       <div><h2>Pre-order</h2><p>Periode pemesanan dan estimasi kirim tertera pada produk.</p></div>

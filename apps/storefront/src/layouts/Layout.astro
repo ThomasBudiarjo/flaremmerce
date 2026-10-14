@@ -54,15 +54,19 @@ const structured = jsonLd && JSON.stringify(jsonLd).replace(/</g, "\\u003c");
     <header>
       <a class="brand" href="/" aria-label="Flaremmerce — beranda">flaremmerce</a>
       <nav aria-label="Navigasi utama">
-        <a href="/catalog" aria-current={pathname === '/' || pathname === '/catalog' ? 'page' : undefined}>Koleksi</a>
+        <a href="/catalog" aria-current={pathname === '/' || pathname === '/catalog' || pathname.startsWith('/products/') ? 'page' : undefined}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4z M13 4h7v7h-7z M4 13h7v7H4z M13 13h7v7h-7z" /></svg>
+          Katalog
+        </a>
         <a class="shopping-info" href="/policies" aria-current={pathname === '/policies' ? 'page' : undefined}>Informasi belanja</a>
         <a href="/order" aria-current={pathname === '/order' ? 'page' : undefined}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4v10l-8 4-8-4V7l8-4Z M4 7l8 4 8-4 M12 11v10 M8 5l8 4" /></svg>
-          Pesanan
+          Pesanan saya
         </a>
         <a class="cartlink" href="/cart" aria-current={pathname === '/cart' ? 'page' : undefined}>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14l1 14H4L5 7Z M9 8V6a3 3 0 0 1 6 0v2" /></svg>
-          Tas belanja
+          Keranjang
+          <span class="cart-count" data-cart-count hidden></span>
         </a>
       </nav>
     </header>
@@ -77,21 +81,21 @@ const structured = jsonLd && JSON.stringify(jsonLd).replace(/</g, "\\u003c");
         </div>
         <div class="footer-links">
           <h2>Belanja</h2>
-          <a href="/catalog">Semua produk</a>
-          <a href="/cart">Tas belanja</a>
+          <a href="/catalog">Katalog</a>
+          <a href="/cart">Keranjang</a>
+          <a href="/order">Pesanan saya</a>
         </div>
         <div class="footer-links">
-          <h2>Informasi</h2>
+          <h2>Bantuan</h2>
           <a href="/policies">Pengiriman & pembayaran</a>
-          <a href="/order">Status pesanan</a>
           <a href="/returns">Komplain & retur</a>
-        </div>
-        <div class="footer-links">
-          <h2>Legal</h2>
           <a href="/about">Tentang & kontak</a>
+        </div>
+        <nav class="footer-links" aria-label="Legal">
+          <h2>Legal</h2>
           <a href="/privacy">Kebijakan privasi</a>
           <a href="/terms">Syarat & ketentuan</a>
-        </div>
+        </nav>
       </div>
       <div class="footer-bottom">
         <small>© {new Date().getFullYear()} Flaremmerce</small>

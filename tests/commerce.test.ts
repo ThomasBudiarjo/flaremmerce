@@ -521,6 +521,12 @@ describe('commerce public API with real D1', () => {
     expect((await request('/api/admin/variants/a',{price:9000,version:0},headers,'PATCH')).status).toBe(200);
     const fresh = await (await request('/api/admin/products',undefined,headers)).json() as any;
     expect(fresh.products[0].active).toBe(false);
+    const single = await request('/api/admin/products/p',undefined,headers);
+    expect(single.headers.get('cache-control')).toBe('private, no-store');
+    const { product: archived } = await single.json() as any;
+    expect(archived).toMatchObject({ id: 'p', active: false, version: 1 });
+    expect(archived.variants.find((v: any) => v.id === 'a')).toMatchObject({ price: 9000, version: 1 });
+    expect((await request('/api/admin/products/missing',undefined,headers)).status).toBe(404);
     expect((await request('/api/catalog/product')).status).toBe(404);
     const history = await (await request(`/api/orders/${order.reference}`,undefined,{'X-Order-Token':order.guestToken})).json() as any;
     expect(history.order.items[0].price).toBe(1000);

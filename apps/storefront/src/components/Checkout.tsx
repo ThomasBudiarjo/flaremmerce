@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { api, confirmationText, definiteRefusal, downloadText, google, readCart, writeCart, type ApiError, type CartItem } from "../lib/cart";
+import { api, confirmationText, definiteRefusal, downloadText, google, readCart, syncCartCount, writeCart, type ApiError, type CartItem } from "../lib/cart";
 import { money, date } from "../lib/catalog";
 import Turnstile from "./Turnstile";
+import { labels, paymentLabels } from "../lib/labels";
 import { normalizePhone } from "../../../../src/shared";
 type Destination = { id: string; label: string; city?: string; postalCode: string };
 type Quote = { id: string; service: string; amount: number; expiresAt: string | number };
@@ -43,6 +44,8 @@ export default function Checkout() {
   const [saved, setSaved] = useState<SavedAddress[] | null>(null);
   const [addressLabel, setAddressLabel] = useState("Rumah");
   const [addressStatus, setAddressStatus] = useState("");
+  const [phoneError, setPhoneError] = useState("");
+  const phoneRef = useRef<HTMLInputElement>(null);
   const searchVersion = useRef(0), quoteVersion = useRef(0), previewVersion = useRef(0);
   const key = useRef("");
   // After an ambiguous failure the exact payload is resent with the same key, so the server returns the
@@ -69,6 +72,7 @@ export default function Checkout() {
       // 401 means a guest; the address book is simply not offered.
       api("/api/account/addresses").then((data) => setSaved(data.addresses), () => setSaved(null)),
     ]).catch((e) => setError(e.message)).finally(() => setLoading(false));
+    syncCartCount(cart);
     const timer = setInterval(() => setNow(Date.now()), 5000);
     return () => clearInterval(timer);
   }, []);
@@ -172,7 +176,8 @@ export default function Checkout() {
         return;
       }
       if (!normalizePhone(contact.phone)) {
-        setError("Nomor HP tidak valid. Gunakan nomor seluler Indonesia, misalnya 0812… atau +62812….");
+        setPhoneError("Nomor HP tidak valid. Gunakan nomor seluler Indonesia, misalnya 0812… atau +62812….");
+        phoneRef.current?.focus();
         return;
       }
       payload = { items, shippingQuoteId: quote.id, contact, address, expectedTotal: total };
@@ -225,14 +230,17 @@ export default function Checkout() {
     }
   }
 
-  if (loading) return <p role="status">Menyiapkan tas belanja…</p>;
+  if (loading) return <p role="status">Menyiapkan keranjang…</p>;
   if (result) {
     const shipment = result.order.shipPromise;
     return (
-      <div className="panel">
+      <div className="panel confirmation">
         <span className="badge">Order tercatat · bukan bukti terbayar</span>
-        <h2 style={{ marginTop: 20 }}>Referensi {result.order.reference}</h2>
-        <p>Status: {result.order.status} · Pembayaran: {result.paymentState || "Belum terkonfirmasi"}</p>
+        <h2>Referensi {result.order.reference}</h2>
+        <p>
+          Status: {labels[result.order.status] || result.order.status} · Pembayaran:{" "}
+          {paymentLabels[result.paymentState] || result.paymentState || "Belum terkonfirmasi"}
+        </p>
         <p className="price">{money(result.order.total)}</p>
         <div className="notice" aria-label="Janji pengiriman">
           {shipment?.shipTo
@@ -243,37 +251,49 @@ export default function Checkout() {
           Pembayaran hanya berhasil setelah konfirmasi server. Jika status belum diketahui, jangan membayar ulang secara terpisah.
         </div>
         {result.order.guestToken && (
-          <>
+          <div className="token-box">
             <label htmlFor="guest-token">Simpan token akses ini secara privat</label>
-            <input id="guest-token" readOnly value={result.order.guestToken} />
-            <p>Token diperlukan untuk melihat pesanan. Tidak ada pemulihan token atau email otomatis yang dijanjikan.</p>
-            <button type="button" onClick={() => downloadText(`pesanan-${result.order.reference}.txt`, confirmationText(result.order.reference, result.order.guestToken, location.origin))}>
+            <input id="guest-token" readOnly value={result.order.guestToken} aria-describedby="guest-token-help" />
+            <p id="guest-token-help" className="field-hint">Token diperlukan untuk melihat pesanan. Tidak ada pemulihan token atau email otomatis yang dijanjikan.</p>
+            <button type="button" className="secondary" onClick={() => downloadText(`pesanan-${result.order.reference}.txt`, confirmationText(result.order.reference, result.order.guestToken, location.origin))}>
               Simpan konfirmasi
-            </button>{" "}
-          </>
+            </button>
+          </div>
         )}
-        {result.paymentUrl && /^https:\/\//.test(result.paymentUrl) && (
-          <a className="button" href={result.paymentUrl} rel="noreferrer">Lanjut ke penyedia pembayaran ↗</a>
-        )}{" "}
-        <a className="button" href="/order">Lihat status pesanan</a>
+        <div className="actions">
+          {result.paymentUrl && /^https:\/\//.test(result.paymentUrl) && (
+            <a className="button" href={result.paymentUrl} rel="noreferrer">Lanjut ke penyedia pembayaran ↗</a>
+          )}
+          <a className="button secondary" href="/order">Lihat status pesanan</a>
+        </div>
       </div>
     );
   }
   if (!items.length)
     return (
-      <div className="panel">
-        {error && <p role="alert">{error}</p>}
-        <h2>Tas masih kosong.</h2>
+      <div className="empty-state">
+        {error && <p role="alert" className="notice error">{error}</p>}
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M10 14h28l2 26H8l2-26Z M18 16v-4a6 6 0 0 1 12 0v4" /></svg>
+        <h2>Keranjang masih kosong</h2>
         <p>Ada ruang untuk favorit barumu.</p>
-        <a className="button" href="/catalog">Lihat koleksi ↗</a>
+        <a className="button" href="/catalog">Lihat katalog</a>
       </div>
     );
+  const contactDone = !!(contact.name && contact.email && contact.phone);
+  const addressDone = !!(address.line && address.destination);
+  const steps = (n: number, title: string, done: boolean, id: string) => (
+    <h2 id={id} className="step-title">
+      <span className="step-number" aria-hidden="true">{n}</span>
+      <span>{title}</span>
+      {done && <span className="step-done">Lengkap</span>}
+    </h2>
+  );
   return (
-    <form onSubmit={checkout}>
+    <form onSubmit={checkout} className="checkout-form">
       <div className="checkout">
-        <div>
-          <div className="panel">
-            <h2>Pilihanmu</h2>
+        <div className="checkout-main">
+          <section className="panel" aria-labelledby="cart-heading">
+            <h2 id="cart-heading">Isi keranjang</h2>
             {!view && <p role="alert">Harga dan stok terbaru belum dapat diperiksa. Muat ulang halaman.</p>}
             {lines.map((l) => (
               <div className="line" key={l.variantId}>
@@ -287,11 +307,11 @@ export default function Checkout() {
                         {l.campaign && <> · Estimasi kirim {date(l.campaign.shipFrom)} – {date(l.campaign.shipTo)}</>}
                       </p>
                     )}
-                    {view?.problems.filter((p) => p.variantId === l.variantId).map((p) => <p key={p.message} className="muted" role="alert">{p.message}</p>)}
+                    {view?.problems.filter((p) => p.variantId === l.variantId).map((p) => <p key={p.message} className="muted error-text" role="alert">{p.message}</p>)}
                   </div>
-                  <span>{l.available ? money(l.lineTotal) : "—"}</span>
+                  <span className="line-total">{l.available ? money(l.lineTotal) : "—"}</span>
                 </div>
-                <div className="row">
+                <div className="row line-controls">
                   <input
                     aria-label={"Jumlah " + (l.available ? l.productName : l.variantId)}
                     type="number"
@@ -301,24 +321,57 @@ export default function Checkout() {
                     disabled={frozenInputs}
                     onChange={(e) => changeCart(items.map((i) => i.variantId === l.variantId ? { ...i, quantity: Math.max(1, Math.min(100, Math.floor(Number(e.target.value) || 1))) } : i))}
                   />
+                  {l.available && l.maxPerOrder != null && <span className="field-hint">Maks. {l.maxPerOrder} per pesanan</span>}
                   <button type="button" disabled={frozenInputs} onClick={() => changeCart(items.filter((i) => i.variantId !== l.variantId))}>Hapus</button>
                 </div>
               </div>
             ))}
             {view?.problems.filter((p) => p.variantId === null).map((p) => <p key={p.message} role="alert">{p.message}</p>)}
-          </div>
-          <div className="panel">
-            <h2>Kontak & alamat</h2>
+          </section>
+          <section className="panel step" aria-labelledby="step-contact">
+            {steps(1, "Kontak", contactDone, "step-contact")}
             {saved === null ? (
-              <>
+              <div className="step-intro">
                 <p>Checkout tamu. Akun tidak diperlukan.</p>
                 {config.googleEnabled && (
-                  <button type="button" onClick={() => google(location.origin + "/cart").catch((e) => setError(e.message))}>
+                  <button type="button" className="secondary" onClick={() => google(location.origin + "/cart").catch((e) => setError(e.message))}>
                     Opsional: lanjut dengan Google
                   </button>
                 )}
-              </>
-            ) : saved.length > 0 && (
+              </div>
+            ) : (
+              <p className="step-intro">Masuk dengan akun. Alamat tersimpan dapat dipilih di langkah berikutnya.</p>
+            )}
+            <div className="field-grid">
+              {(["name", "email", "phone"] as const).map((f, index) => (
+                <div key={f} className={f === "name" ? "field wide" : "field"}>
+                  <label htmlFor={f}>{["Nama penerima", "Email", "Nomor HP"][index]}</label>
+                  <input
+                    id={f}
+                    ref={f === "phone" ? phoneRef : undefined}
+                    required
+                    disabled={frozenInputs}
+                    type={f === "email" ? "email" : f === "phone" ? "tel" : "text"}
+                    autoComplete={f === "name" ? "name" : f === "email" ? "email" : "tel"}
+                    inputMode={f === "phone" ? "tel" : undefined}
+                    aria-describedby={f === "phone" ? (phoneError ? "phone-help phone-error" : "phone-help") : f === "email" ? "email-help" : undefined}
+                    aria-invalid={f === "phone" && phoneError ? true : undefined}
+                    value={contact[f]}
+                    onChange={(e) => {
+                      if (f === "phone") setPhoneError("");
+                      setContact({ ...contact, [f]: e.target.value });
+                    }}
+                  />
+                  {f === "email" && <p id="email-help" className="field-hint">Untuk informasi pesanan; tidak dipakai untuk promosi.</p>}
+                  {f === "phone" && <p id="phone-help" className="field-hint">Nomor seluler Indonesia, misalnya 0812… atau +62812….</p>}
+                  {f === "phone" && phoneError && <p id="phone-error" className="field-error" role="alert">{phoneError}</p>}
+                </div>
+              ))}
+            </div>
+          </section>
+          <section className="panel step" aria-labelledby="step-address">
+            {steps(2, "Alamat", addressDone, "step-address")}
+            {saved !== null && saved.length > 0 && (
               <>
                 <label htmlFor="saved-address">Alamat tersimpan</label>
                 <select id="saved-address" disabled={frozenInputs} defaultValue="" onChange={(e) => applySaved(e.target.value)}>
@@ -327,48 +380,36 @@ export default function Checkout() {
                 </select>
               </>
             )}
-            {(["name", "email", "phone"] as const).map((f, index) => (
-              <div key={f}>
-                <label htmlFor={f}>{["Nama penerima", "Email", "Nomor telepon"][index]}</label>
-                <input
-                  id={f}
-                  required
-                  disabled={frozenInputs}
-                  type={f === "email" ? "email" : f === "phone" ? "tel" : "text"}
-                  autoComplete={f === "name" ? "name" : f === "email" ? "email" : "tel"}
-                  value={contact[f]}
-                  onChange={(e) => setContact({ ...contact, [f]: e.target.value })}
-                />
-              </div>
-            ))}
             <label htmlFor="line">Alamat lengkap (jalan, nomor, RT/RW)</label>
             {/* The street line is not part of the shipping tariff; editing it keeps the selected quote. */}
-            <input id="line" required disabled={frozenInputs} value={address.line} onChange={(e) => setAddress({ ...address, line: e.target.value })} />
+            <input id="line" required disabled={frozenInputs} autoComplete="street-address" value={address.line} onChange={(e) => setAddress({ ...address, line: e.target.value })} />
             <label htmlFor="destination-search">Cari wilayah pengiriman</label>
-            <input
-              id="destination-search"
-              value={search}
-              disabled={frozenInputs}
-              maxLength={100}
-              aria-describedby="destination-help destination-status"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") { e.preventDefault(); if (search.trim().length >= 3) void searchDestinations(); }
-              }}
-              onChange={(e) => {
-                searchVersion.current++;
-                setSearch(e.target.value);
-                setSearching(false);
-                setSearchMessage("");
-                setDestinations([]);
-                setAddress({ ...address, destination: "" });
-                invalidateQuotes();
-              }}
-            />
-            <p id="destination-help" className="muted">Masukkan nama kota, kecamatan, kelurahan, atau kode pos (minimal 3 karakter), lalu cari dan pilih wilayah yang sesuai alamat.</p>
-            <button type="button" disabled={frozenInputs || searching || search.trim().length < 3} onClick={searchDestinations}>
-              {searching ? "Mencari wilayah…" : "Cari wilayah"}
-            </button>
-            <p id="destination-status" role="status" aria-live="polite">{searching ? "Mencari wilayah…" : searchMessage}</p>
+            <div className="inline-search">
+              <input
+                id="destination-search"
+                value={search}
+                disabled={frozenInputs}
+                maxLength={100}
+                aria-describedby="destination-help destination-status"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); if (search.trim().length >= 3) void searchDestinations(); }
+                }}
+                onChange={(e) => {
+                  searchVersion.current++;
+                  setSearch(e.target.value);
+                  setSearching(false);
+                  setSearchMessage("");
+                  setDestinations([]);
+                  setAddress({ ...address, destination: "" });
+                  invalidateQuotes();
+                }}
+              />
+              <button type="button" className="secondary" disabled={frozenInputs || searching || search.trim().length < 3} onClick={searchDestinations}>
+                {searching ? "Mencari wilayah…" : "Cari wilayah"}
+              </button>
+            </div>
+            <p id="destination-help" className="field-hint">Masukkan nama kota, kecamatan, kelurahan, atau kode pos (minimal 3 karakter), lalu cari dan pilih wilayah yang sesuai alamat.</p>
+            <p id="destination-status" className="field-hint" role="status" aria-live="polite">{searching ? "Mencari wilayah…" : searchMessage}</p>
             <label htmlFor="destination">Wilayah tujuan pengiriman</label>
             <select id="destination" required disabled={frozenInputs || searching || !destinations.length} value={address.destination} onChange={(e) => {
               const selected = destinations.find((d) => d.id === e.target.value);
@@ -379,24 +420,38 @@ export default function Checkout() {
               {destinations.map((d) => <option key={d.id} value={d.id}>{d.label} — {d.postalCode}</option>)}
             </select>
             {selectedDestination && <p className="muted" aria-live="polite">Tujuan: {selectedDestination.label} · {selectedDestination.postalCode}</p>}
-            <button type="button" disabled={frozenInputs || invalid || !address.destination} onClick={shipping}>
-              {busy ? "Memproses…" : "Periksa ongkir"}
-            </button>
             {saved !== null && saved.length < 5 && (
               <div className="saved-address">
                 <label htmlFor="address-label">Label alamat</label>
-                <input id="address-label" maxLength={50} value={addressLabel} onChange={(e) => setAddressLabel(e.target.value)} />
-                <button type="button" disabled={busy || !addressLabel.trim() || !contact.name || !contact.phone || !address.line || !address.destination} onClick={saveAddress}>
-                  Simpan ke buku alamat
-                </button>
+                <div className="inline-search">
+                  <input id="address-label" maxLength={50} value={addressLabel} onChange={(e) => setAddressLabel(e.target.value)} />
+                  <button type="button" className="secondary" disabled={busy || !addressLabel.trim() || !contact.name || !contact.phone || !address.line || !address.destination} onClick={saveAddress}>
+                    Simpan ke buku alamat
+                  </button>
+                </div>
                 {addressStatus && <p role="status">{addressStatus}</p>}
               </div>
             )}
-          </div>
-        </div>
-        <aside>
-          <div className="panel">
-            <h2>Ringkasan</h2>
+          </section>
+          <section className="panel step" aria-labelledby="step-shipping">
+            {steps(3, "Pengiriman", !!quote, "step-shipping")}
+            <p className="step-intro" id="shipping-help">
+              {address.destination ? "Periksa ongkir untuk wilayah tujuan, lalu pilih layanan." : "Pilih wilayah tujuan di langkah 2 untuk menghitung ongkir."}
+            </p>
+            <button type="button" disabled={frozenInputs || invalid || !address.destination} onClick={shipping}>
+              {busy ? "Memproses…" : "Periksa ongkir"}
+            </button>
+            <label htmlFor="shipping">Layanan pengiriman</label>
+            <select id="shipping" required aria-describedby="shipping-help" disabled={frozenInputs || !liveQuotes.length} value={quote ? quoteId : ""} onChange={(e) => {
+              setQuoteId(e.target.value);
+              setAccepted(false);
+              setConfirmedTotal(null);
+              setPriceChange(null);
+            }}>
+              <option value="">Pilih layanan</option>
+              {liveQuotes.map((q) => <option value={q.id} key={q.id}>{q.service} — {money(q.amount)}</option>)}
+            </select>
+            {quoteExpired && !ambiguous && <p role="alert" className="field-error">Ongkir kedaluwarsa. Periksa ongkir kembali untuk tarif terbaru.</p>}
             <div className="notice">
               <strong>{preorders.length ? "Satu pengiriman, mengikuti pre-order." : "Seluruh item ready stock."}</strong>
               <br />
@@ -409,20 +464,22 @@ export default function Checkout() {
               <br />
               Estimasi bukan jaminan tanggal. Split shipment tidak tersedia.
             </div>
-            <label htmlFor="shipping">Layanan pengiriman</label>
-            <select id="shipping" required disabled={frozenInputs || !liveQuotes.length} value={quote ? quoteId : ""} onChange={(e) => {
-              setQuoteId(e.target.value);
-              setAccepted(false);
-              setConfirmedTotal(null);
-              setPriceChange(null);
-            }}>
-              <option value="">Pilih layanan</option>
-              {liveQuotes.map((q) => <option value={q.id} key={q.id}>{q.service} — {money(q.amount)}</option>)}
-            </select>
-            {quoteExpired && !ambiguous && <p role="alert">Ongkir kedaluwarsa. Periksa ongkir kembali untuk tarif terbaru.</p>}
+          </section>
+        </div>
+        <aside className="checkout-summary" aria-labelledby="step-summary">
+          <div className="panel step">
+            {steps(4, "Ringkasan & Pembayaran", false, "step-summary")}
+            <ul className="summary-items" role="list">
+              {lines.map((l) => (
+                <li key={l.variantId}>
+                  <span>{l.available ? `${l.productName} — ${l.name}` : "Produk tidak tersedia"} × {l.quantity}</span>
+                  <span>{l.available ? money(l.lineTotal) : "—"}</span>
+                </li>
+              ))}
+            </ul>
             <div className="line row"><span>Subtotal</span><span>{money(subtotal)}</span></div>
             <div className="line row"><span>Ongkir</span><span>{quote ? money(quote.amount) : "Belum dipilih"}</span></div>
-            <div className="line row">
+            <div className="line row summary-total">
               <strong>Total</strong>
               <strong>{total === null ? "Pilih ongkir" : money(total)}</strong>
             </div>
@@ -431,9 +488,9 @@ export default function Checkout() {
                 Total berubah dari {money(priceChange.from)} menjadi {money(priceChange.to)}. Periksa kembali, lalu centang persetujuan untuk melanjutkan.
               </div>
             )}
-            <label>
+            <label className="consent">
               <input type="checkbox" required disabled={busy} checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />{" "}
-              Saya menyetujui total dan estimasi satu pengiriman di atas.
+              <span>Saya menyetujui total dan estimasi satu pengiriman di atas.</span>
             </label>
             {config.turnstileSiteKey ? (
               <Turnstile siteKey={config.turnstileSiteKey} onToken={setToken} reset={reset} />
@@ -449,8 +506,8 @@ export default function Checkout() {
             )}
             <button
               type="submit"
+              className="cta"
               disabled={busy || !token || !accepted || (!ambiguous && (invalid || !quote))}
-              style={{ width: "100%", marginTop: 20 }}
             >
               {busy ? "Memproses…" : ambiguous ? "Kirim ulang pesanan yang sama" : "Buat pesanan & lanjut pembayaran ↗"}
             </button>

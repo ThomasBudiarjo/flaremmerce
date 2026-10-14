@@ -2,10 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ReviewDetail } from '../apps/admin/src/ReviewDetail';
-import { CatalogEditor, CampaignList, OrderSnapshot } from '../apps/admin/src/AdminWorkflows';
 import { AdminApp } from '../apps/admin/src/main';
-import { OperationalStatus } from '../apps/admin/src/OperationalStatus';
 import OrderStatus from '../apps/storefront/src/components/OrderStatus';
 import Checkout from '../apps/storefront/src/components/Checkout';
 import { money } from '../apps/storefront/src/lib/catalog';
@@ -45,47 +42,10 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const evidence = (note = '') => ({ item: { note, version: 0, status: 'open', reason: 'unknown_reference', createdAt: 1 }, order: null, attempt: null, triggeringEvent: null, events: [], history: [] });
-
-it.each(['resolve', 'reject'] as const)('preserves reopened review evidence and draft when an old load %ss', async (completion) => {
-  const old = deferred<any>();
-  const api = vi.fn().mockImplementationOnce(() => old.promise).mockResolvedValue(evidence());
-  await act(async () => root.render(<ReviewDetail id="case" api={api} refresh={async () => {}} />));
-  await click('Bukti & tindakan');
-  await click('Tutup');
-  await click('Bukti & tindakan');
-  await draft('Draft baru');
-  await act(async () => { if (completion === 'resolve') old.resolve(evidence('Catatan lama')); else old.reject(new Error('Error lama')); });
-  expect(document.querySelector('textarea')!.value).toBe('Draft baru');
-  expect(document.body.textContent).not.toContain('Error lama');
-});
-
-it('does not reload a reopened editor when an earlier save completes', async () => {
-  const save = deferred<any>();
-  const api = vi.fn((_path, _body, method) => method === 'PATCH' ? save.promise : Promise.resolve(evidence()));
-  await act(async () => root.render(<ReviewDetail id="case" api={api} refresh={async () => {}} />));
-  await click('Bukti & tindakan'); await draft('Simpan lama'); await click('Simpan catatan');
-  await click('Tutup'); await click('Bukti & tindakan'); await draft('Draft baru');
-  await act(async () => save.resolve({ updated: true }));
-  expect(document.querySelector('textarea')!.value).toBe('Draft baru');
-});
-
 const summary = (reference: string) => ({ reference, status: 'pending_payment', total: 1000, createdAt: 1, fulfillment: 'unfulfilled', currency: 'IDR' });
 const page = (ownerId: string, refs: string[], nextCursor: string | null = null) => Response.json({ ownerId, orders: refs.map(summary), nextCursor });
 const detail = (access: any) => Response.json({ access, order: { ...summary('A-order'), items: [], timeline: [] } });
 async function focus() { await act(async () => window.dispatchEvent(new Event('focus'))); }
-
-it('labels operational samples as lower bounds and removes them on refresh denial', async () => {
-  const api = vi.fn().mockResolvedValueOnce({ now: 100000, sections: { payments: { items: [{ id: 'payment-fixture', status: 'unknown', attempts: 8, createdAt: 0, ageMs: 100000 }], hasMore: true, atLeast: 21 } } })
-    .mockRejectedValueOnce(new Error('Admin role revoked'));
-  await act(async () => root.render(<OperationalStatus api={api} />));
-  expect(document.body.textContent).toContain('1 ditampilkan; setidaknya 21 belum selesai');
-  expect(document.body.textContent).toContain('payment-fixture');
-  await click('Perbarui status');
-  expect(document.body.textContent).not.toContain('payment-fixture');
-  expect(document.body.textContent).toContain('Status tidak tersedia');
-});
-
 it.each([
   ['pending_payment', 'pending', 'https://sandbox.doku.com/existing-attempt', true],
   ['paid', 'succeeded', 'https://sandbox.doku.com/existing-attempt', false],
@@ -174,485 +134,201 @@ it('does not mistake an invalid nonempty token for verified guest access', async
   expect(document.querySelector('[aria-label="Detail pesanan"]')).toBeNull();
 });
 
-const adminProduct = (price = 100, reserved = 0) => ({ id: 'p', name: 'Produk', slug: 'produk', description: 'Deskripsi', version: 3, variants: [{ id: 'v', sku: 'SKU', name: 'Varian', price, weight: 10, mode: 'stock', active: true, onHand: 10, reserved, available: 10 - reserved, version: 4 }] });
-async function editField(name: string, value: string) {
-  await act(async () => {
-    const input = document.querySelector<HTMLInputElement>(`[name="${name}"]`)!;
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-}
-async function submit(form: HTMLFormElement) {
-  await act(async () => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
-}
-
-it('reconciles a confirmed variant write after its editor has closed', async () => {
-  const write = deferred<any>();
-  let product = adminProduct();
-  const api = async () => { await write.promise; product = adminProduct(200); };
-  const render = (open: boolean) => <><p>Catalogue price: {product.variants[0].price}</p>{open && <CatalogEditor product={product} api={api} onSaved={async () => { root.render(render(false)); }} />}</>;
-  await act(async () => root.render(render(true)));
-  await editField('price', '200');
-  await submit(document.querySelectorAll('form')[1]);
-  await act(async () => root.render(render(false)));
-  await act(async () => write.resolve({ updated: true }));
-  expect(document.body.textContent).toContain('Catalogue price: 200');
-});
-
-it('preserves variant drafts and the pending-save lock across counter refreshes', async () => {
-  const write = deferred<any>();
-  const api = vi.fn(() => write.promise);
-  const render = (reserved: number) => <CatalogEditor product={adminProduct(100, reserved)} api={api} onSaved={async () => {}} />;
-  await act(async () => root.render(render(0)));
-  await editField('price', '250');
-  await act(async () => root.render(render(1)));
-  expect(document.querySelector<HTMLInputElement>('[name="price"]')!.value).toBe('250');
-  await submit(document.querySelectorAll('form')[1]);
-  await act(async () => root.render(render(2)));
-  const form = document.querySelectorAll('form')[1];
-  expect(form.querySelector('fieldset')!.disabled).toBe(true);
-  await submit(form);
-  expect(api).toHaveBeenCalledTimes(1);
-  await act(async () => write.resolve({ updated: true }));
-  expect(form.textContent).toContain('Perubahan tersimpan.');
-});
-
-const campaign = (reserved = 0) => ({ id: 'c', productName: 'Produk', sku: 'SKU', startsAt: 1800000001234, endsAt: 1800086405678, shipFrom: '2027-02-01', shipTo: '2027-02-10', quota: 10, active: true, reserved, sold: 0, version: 4 });
-it('ships only edited campaign config, preserving seconds and concurrent deactivation', async () => {
-  let server = campaign();
-  const api = vi.fn(async (_path: string, body?: any) => {
-    if (body) { server = { ...server, ...body }; return { updated: true }; }
-    return { campaigns: [server], nextCursor: null };
-  });
-  await act(async () => root.render(<CampaignList api={api} revision={0} />));
-  await editField('shipTo', '2027-02-15');
-  server = { ...server, active: false };
-  await submit(document.querySelector('form')!);
-  expect(server.active).toBe(false);
-  expect(server.startsAt).toBe(1800000001234);
-  expect(server.endsAt).toBe(1800086405678);
-  expect(server.shipTo).toBe('2027-02-15');
-});
-
-it('keeps campaign drafts and save locks during revision refresh and acknowledges only its edit', async () => {
-  const write = deferred<any>();
-  let reserved = 0;
-  const api = vi.fn(async (_path: string, body?: any) => body ? write.promise : { campaigns: [campaign(reserved)], nextCursor: null });
-  await act(async () => root.render(<CampaignList api={api} revision={0} />));
-  await editField('shipTo', '2027-02-15');
-  await submit(document.querySelector('form')!);
-  reserved = 2;
-  await act(async () => root.render(<CampaignList api={api} revision={1} />));
-  expect(document.querySelector<HTMLInputElement>('[name="shipTo"]')!.value).toBe('2027-02-15');
-  expect(document.querySelector('form fieldset')!.hasAttribute('disabled')).toBe(true);
-  await submit(document.querySelector('form')!);
-  expect(api.mock.calls.filter(([, body]) => body).length).toBe(1);
-  await act(async () => write.resolve({ updated: true }));
-  expect(document.querySelector('form')!.textContent).toContain('Perubahan tersimpan.');
-});
-
-it('clears protected order snapshot immediately on reload and keeps it cleared after denial', async () => {
-  const reload = deferred<any>();
-  const api = vi.fn().mockResolvedValueOnce({ order: { id: 'o', createdAt: 1, items: [], timeline: [], contact: { email: 'protected@example.com' }, shipping: {}, address: {} } }).mockImplementationOnce(() => reload.promise);
-  await act(async () => root.render(<OrderSnapshot id="o" api={api} onLoading={() => {}} onLoaded={() => {}} />));
-  expect(document.body.textContent).toContain('protected@example.com');
-  await click('Perbarui detail');
-  expect(document.body.textContent).not.toContain('protected@example.com');
-  await act(async () => reload.reject(new Error('403 forbidden')));
-  expect(document.body.textContent).not.toContain('protected@example.com');
-  expect(document.body.textContent).toContain('403 forbidden');
-});
-
-async function renderAdmin(tab: string, handler: (url: string, init: RequestInit) => Promise<Response>) {
-  history.replaceState(null, '', `/admin/#${tab}`);
-  vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
-  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
-  vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
-    if (url === '/api/config') return Response.json({ devLoginEnabled: true });
-    if (url === '/api/setup') return Response.json({ initialized: true });
-    if (url.startsWith('/api/auth/get-session')) return Response.json({ user: { id: 'admin', name: 'Admin', email: 'admin@example.com' } });
-    return handler(url, init);
-  }));
-  await act(async () => root.render(<AdminApp />));
-}
-async function clickContaining(text: string) {
-  const button = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes(text))!;
-  expect(button).toBeTruthy();
-  await act(async () => button.click());
-}
-
-it('acknowledges product creation even when catalogue reload fails; retry is read-only', async () => {
-  let created = false, posts = 0;
-  await renderAdmin('products', async (_url, init) => {
-    if (init.method === 'POST') { created = true; posts++; return Response.json({ id: 'p' }, { status: 201 }); }
-    if (created) return Response.json({ error: 'Catalogue down' }, { status: 503 });
-    return Response.json({ products: [], nextCursor: null });
-  });
-  await clickContaining('Tambah produk');
-  await submit(document.querySelector('[role="dialog"] form')!);
-  expect(document.querySelector('[role="dialog"]')).toBeNull();
-  expect(document.body.textContent).toContain('Produk tersimpan.');
-  expect(document.body.textContent).toContain('Catalogue down');
-  await clickContaining('Muat ulang');
-  expect(posts).toBe(1);
-});
-
-it('does not repeat an acknowledged milestone after its only snapshot reload fails', async () => {
-  let writes = 0, detailReads = 0;
-  const order = { id: 'o', reference: 'ORDER', status: 'paid', fulfillment: 'unfulfilled', total: 100, currency: 'IDR', createdAt: 1, items: [], timeline: [], contact: {}, address: {}, shipping: {} };
-  await renderAdmin('orders', async (url, init) => {
-    if (init.method === 'POST') { writes++; return Response.json({ updated: true }); }
-    if (url === '/api/admin/orders/o') {
-      detailReads++;
-      return writes ? Response.json({ error: 'Detail down' }, { status: 503 }) : Response.json({ order });
-    }
-    return Response.json({ orders: [order], nextCursor: null });
-  });
-  await clickContaining('Detail');
-  const form = Array.from(document.querySelectorAll('form')).find((form) => form.textContent?.includes('Tambahkan timeline'))!;
-  await submit(form);
-  expect(document.body.textContent).toContain('Detail down');
-  expect(Array.from(document.querySelectorAll('form')).find((form) => form.textContent?.includes('Tambahkan timeline'))!.closest('[hidden]')).toBeTruthy();
-  expect(detailReads).toBe(2);
-  await click('Perbarui detail');
-  expect(writes).toBe(1);
-});
-
-it('reconciles a late price save into a reopened product without overwriting its new draft', async () => {
-  const write = deferred<any>();
-  let product = adminProduct();
-  await renderAdmin('products', async (_url, init) => {
-    if (init.method === 'PATCH') {
-      const body = JSON.parse(init.body as string);
-      if ('price' in body) await write.promise;
-      product = { ...product, variants: [{ ...product.variants[0], ...body }] };
-      return Response.json({ updated: true });
-    }
-    return Response.json({ products: [product], nextCursor: null });
-  });
-  await clickContaining('Detail');
-  await editField('price', '250');
-  await submit(document.querySelectorAll('[role="dialog"] form')[1] as HTMLFormElement);
-  await clickContaining('Tutup');
-  await clickContaining('Detail');
-  await editField('weight', '20');
-  await editField('price', '300');
-  await act(async () => write.resolve({ updated: true }));
-  expect(document.querySelector<HTMLInputElement>('[name="price"]')!.value).toBe('300');
-  expect(document.querySelector<HTMLInputElement>('[name="weight"]')!.value).toBe('20');
-  await editField('price', '100');
-  await submit(document.querySelectorAll('[role="dialog"] form')[1] as HTMLFormElement);
-  expect(product.variants[0].price).toBe(100);
-  expect(product.variants[0].weight).toBe(20);
-});
-
-it.each(['variant', 'campaign'])('adopts a successful %s reload that returns the original value after saving', async (kind) => {
-  let product = adminProduct(), server = campaign();
-  const field = kind === 'variant' ? 'price' : 'quota';
-  const original = kind === 'variant' ? 100 : 10;
-  const render = (revision: number) => kind === 'variant'
-    ? <CatalogEditor product={product} api={api} onSaved={async () => {
-      product = adminProduct(original);
-      root.render(render(1));
-    }} />
-    : <CampaignList api={api} revision={revision} />;
-  const api = async (_path: string, body?: any) => {
-    if (body) {
-      if (kind === 'variant') product = adminProduct(body.price);
-      else server = { ...server, ...body };
-      // Another administrator restores the original value before our reload.
-      if (kind === 'campaign') server = { ...server, quota: original };
-      return { updated: true };
-    }
-    return { campaigns: [{ ...server }], nextCursor: null };
+describe('admin SPA', () => {
+  type Handler = (url: string, init: RequestInit) => Response | Promise<Response> | undefined;
+  const me = (role = 'owner') => ({ user: { id: 'admin', name: 'Admin', email: 'admin@example.com' }, role, areas: role === 'owner' ? ['owner', 'ops', 'catalog'] : [role] });
+  const summaryBody = { range: 'today', since: 0, now: 1, revenue: 0, paidOrders: 0, averageOrderValue: 0, pendingPayment: 0, toFulfill: 2, openReviews: 1, lowStock: 0 };
+  let calls: { url: string; method: string; body: any }[] = [];
+  async function renderAdmin(path: string, handler: Handler, options: { role?: string; signedIn?: boolean } = {}) {
+    calls = [];
+    let signedIn = options.signedIn ?? true;
+    history.replaceState(null, '', path);
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
+      const method = init.method ?? 'GET';
+      calls.push({ url, method, body: init.body ? JSON.parse(String(init.body)) : undefined });
+      if (url === '/api/config') return Response.json({ devLoginEnabled: true, googleEnabled: false });
+      if (url === '/api/setup') return Response.json({ initialized: true });
+      if (url === '/api/auth/development-login') { signedIn = true; return Response.json({ ok: true }); }
+      if (url.startsWith('/api/auth/get-session')) return Response.json(signedIn ? { user: { id: 'admin' } } : null);
+      if (url === '/api/admin/me') return Response.json(me(options.role));
+      if (url.startsWith('/api/admin/summary')) return Response.json(summaryBody);
+      const response = await handler(url, init);
+      if (response) return response;
+      throw new Error(`Unexpected ${method} ${url}`);
+    }));
+    await act(async () => root.render(<AdminApp />));
+  }
+  const text = () => document.body.textContent ?? '';
+  const button = (label: string) => [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === label) as HTMLButtonElement;
+  async function press(label: string) {
+    const target = button(label);
+    expect(target, label).toBeTruthy();
+    await act(async () => target.click());
+  }
+  async function type(element: Element, value: string) {
+    await act(async () => {
+      const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value')!.set!.call(element, value);
+      element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
+    });
+  }
+  const labelled = (label: string) => {
+    const element = [...document.querySelectorAll('label')].find(l => l.textContent?.trim().startsWith(label));
+    return document.getElementById(element!.htmlFor) as HTMLInputElement;
   };
-  await act(async () => root.render(render(0)));
-  await editField(field, '200');
-  await submit(document.querySelectorAll('form')[kind === 'variant' ? 1 : 0]);
-  expect(document.querySelector<HTMLInputElement>(`[name="${field}"]`)!.value).toBe(String(original));
-});
+  const wait = (ms: number) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
 
-it('keeps acknowledged values over a pre-confirmation snapshot when the post-save reload fails', async () => {
-  const write = deferred<any>();
-  let product = adminProduct();
-  const api = async (_path: string, body: any) => {
-    if (body.price === 200) await write.promise;
-    product = { ...product, variants: [{ ...product.variants[0], ...body }] };
-    return { updated: true };
-  };
-  const render = () => <CatalogEditor product={product} api={api} onSaved={async () => { throw new Error('Reload down'); }} />;
-  await act(async () => root.render(render()));
-  await editField('price', '200');
-  const form = document.querySelectorAll('form')[1];
-  await submit(form);
-  product = adminProduct();
-  await act(async () => root.render(render()));
-  await act(async () => write.resolve({ updated: true }));
-  expect(product.variants[0].price).toBe(200);
-  expect(document.querySelector<HTMLInputElement>('[name="price"]')!.value).toBe('200');
-  expect(form.textContent).toContain('Reload down');
-  await editField('price', '100');
-  await submit(form);
-  expect(product.variants[0].price).toBe(100);
-});
+  const product = { id: 'p', slug: 'produk', name: 'Produk', description: 'Deskripsi', imageUrl: null, category: null, active: true, categoryId: null, version: 3,
+    variants: [{ id: 'v', sku: 'SKU', name: 'Varian', price: 100, weight: 10, mode: 'stock', active: true, maxPerOrder: null, maxPerCustomer: null, lengthCm: null, widthCm: null, heightCm: null, lowStockThreshold: null, version: 4, onHand: 10, reserved: 1, available: 9 }] };
+  const order = (patch: Record<string, unknown> = {}) => ({ order: { id: 'o1', reference: 'FL-1', status: 'paid', fulfillment: 'unfulfilled', total: 1100, currency: 'IDR', createdAt: 1, hold: false, openReviewReasons: [],
+    contact: { name: 'Budi', email: 'budi@example.com', phone: '081234567890' }, address: { line: 'Jl. Mawar 1', city: 'JAKARTA' }, shipping: { service: 'jne:REG', amount: 100 }, tracking: null,
+    items: [{ id: 'i1', variantId: 'v', campaignId: null, quantity: 1, price: 1000, sku: 'SKU', name: 'Varian', productName: 'Produk', mode: 'stock', weight: 10, billedWeight: 10 }], timeline: [], ...patch }, payment: null });
 
-it('reconciles a deferred deactivation without undoing the acknowledged price when reload fails', async () => {
-  const write = deferred<any>();
-  let product = adminProduct();
-  const api = async (_path: string, body: any) => {
-    if ('price' in body) await write.promise;
-    product = { ...product, variants: [{ ...product.variants[0], ...body }] };
-    return { updated: true };
-  };
-  const render = () => <CatalogEditor product={product} api={api} onSaved={async () => { throw new Error('Reload down'); }} />;
-  await act(async () => root.render(render()));
-  await editField('price', '200');
-  const form = document.querySelectorAll('form')[1];
-  await submit(form);
-  product = { ...adminProduct(), variants: [{ ...adminProduct().variants[0], active: false }] };
-  await act(async () => root.render(render()));
-  await act(async () => write.resolve({ updated: true }));
-  const active = form.querySelector<HTMLSelectElement>('[name="active"]')!;
-  expect(document.querySelector<HTMLInputElement>('[name="price"]')!.value).toBe('200');
-  expect(active.value).toBe('false');
-  await act(async () => { active.value = 'true'; active.dispatchEvent(new Event('change', { bubbles: true })); });
-  await submit(form);
-  expect(product.variants[0].active).toBe(true);
-  expect(product.variants[0].price).toBe(200);
-});
+  it('signs in through dev login and deep-links /admin/orders/:id straight to the order detail', async () => {
+    await renderAdmin('/admin/orders/o1', url => url === '/api/admin/orders/o1' ? Response.json(order()) : undefined, { signedIn: false });
+    expect(text()).toContain('Masuk ke admin');
+    await press('Masuk admin dev');
+    expect(document.querySelector('h1')?.textContent).toBe('Pesanan FL-1');
+    expect(document.activeElement?.id).toBe('page-title');
+    expect(calls.filter(c => c.url === '/api/config')).toHaveLength(2);
+  });
 
-it('keeps an opening boundary product and its draft when the refresh displaces it onto page two', async () => {
-  const refresh = deferred<Response>();
-  const products = Array.from({ length: 30 }, (_, i) => ({ ...adminProduct(), id: `p-${i}`, slug: `product-${i}`, name: i === 29 ? 'Boundary' : `Product ${i}` }));
-  let reads = 0;
-  await renderAdmin('products', async (url) => {
-    if (url.includes('?')) return Response.json({ products: [products[29]], nextCursor: null });
-    if (++reads > 1) return refresh.promise;
-    return Response.json({ products, nextCursor: 'page-two' });
+  it('routes with the history API, renders a 404 and never refetches config on navigation', async () => {
+    await renderAdmin('/admin/nope', url => url.startsWith('/api/admin/products') ? Response.json({ products: [], nextCursor: null }) : url === '/api/admin/categories' ? Response.json({ categories: [] }) : undefined);
+    expect(text()).toContain('Halaman tidak ditemukan');
+    const before = calls.length;
+    const link = [...document.querySelectorAll('nav a')].find(a => a.textContent === 'Produk') as HTMLAnchorElement;
+    await act(async () => link.click());
+    expect(location.pathname).toBe('/admin/products');
+    expect(document.querySelector('h1')?.textContent).toBe('Produk');
+    expect(calls.slice(before).some(c => c.url === '/api/config' || c.url === '/api/setup' || c.url === '/api/admin/me')).toBe(false);
   });
-  await clickContaining('Boundary');
-  const dialog = document.querySelector('[role="dialog"]')!;
-  await editField('price', '300');
-  await act(async () => refresh.resolve(Response.json({ products: [{ ...adminProduct(), id: 'new', name: 'New product' }, ...products.slice(0, 29)], nextCursor: 'page-two' })));
-  expect(dialog.isConnected).toBe(true);
-  expect(document.querySelector('[role="dialog"]')!.textContent).toContain('Boundary');
-  expect(document.querySelector<HTMLInputElement>('[name="price"]')!.value).toBe('300');
-});
 
-it('saves an intentional campaign revert after refreshed defaults preserve its dirty field', async () => {
-  let server = campaign();
-  const api = async (_path: string, body?: any) => {
-    if (body) server = { ...server, ...body };
-    return { campaigns: [server], nextCursor: null };
-  };
-  await act(async () => root.render(<CampaignList api={api} revision={0} />));
-  await editField('quota', '30');
-  server = { ...server, quota: 20 };
-  await act(async () => root.render(<CampaignList api={api} revision={1} />));
-  expect(document.querySelector<HTMLInputElement>('[name="quota"]')!.value).toBe('30');
-  await editField('quota', '10');
-  await submit(document.querySelector('form')!);
-  expect(server.quota).toBe(10);
-});
+  it('hides navigation outside the role and blocks deep links into it', async () => {
+    await renderAdmin('/admin/orders', url => (url === '/api/admin/categories' ? Response.json({ categories: [] }) : undefined), { role: 'catalog' });
+    const nav = [...document.querySelectorAll('nav a')].map(a => a.textContent);
+    expect(nav).toContain('Produk');
+    expect(nav).not.toContain('Pesanan');
+    expect(nav).not.toContain('Tim & akses');
+    expect(text()).toContain('Halaman tidak tersedia untuk peranmu');
+    expect(calls.some(c => c.url.startsWith('/api/admin/orders') || c.url.startsWith('/api/admin/summary'))).toBe(false);
+  });
 
-it.each(['inventory', 'campaign-create', 'campaign-edit'])('reconciles a committed %s after departure/return without clearing a newer draft', async (kind) => {
-  const write = deferred<any>();
-  let committed = false;
-  const targetTab = kind === 'inventory' ? 'inventory' : 'campaigns';
-  await renderAdmin(targetTab, async (url, init) => {
-    if (init.method === 'POST' || init.method === 'PATCH') {
-      await write.promise;
-      committed = true;
-      return Response.json({ updated: true });
-    }
-    if (url.startsWith('/api/admin/inventory')) return Response.json({ inventory: { onHand: committed ? 15 : 10, reserved: 0, available: committed ? 15 : 10 }, movements: [], nextCursor: null });
-    return Response.json({ products: [adminProduct()], campaigns: kind === 'campaign-create' && !committed ? [] : [{ ...campaign(), quota: committed ? 20 : 10 }], nextCursor: null });
+  it('maps order tabs and dates onto the API status/from filters', async () => {
+    await renderAdmin('/admin/orders?status=to_fulfill', url => url.startsWith('/api/admin/orders?') ? Response.json({ orders: [], nextCursor: null }) : undefined);
+    expect(calls.map(c => c.url)).toContain('/api/admin/orders?status=to_fulfill&limit=50');
+    const shipped = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'Dikirim')!;
+    await act(async () => shipped.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })));
+    expect(location.search).toBe('?status=shipped');
+    expect(calls.at(-1)!.url).toBe('/api/admin/orders?status=shipped&limit=50');
+    await type(document.getElementById('orders-from')!, '2026-10-01');
+    expect(calls.at(-1)!.url).toBe('/api/admin/orders?status=shipped&from=2026-10-01&limit=50');
   });
-  const selectVariant = async () => act(async () => {
-    const field = document.querySelector<HTMLSelectElement>('[name="variantId"]')!;
-    field.value = 'v'; field.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-  if (kind === 'inventory') await selectVariant();
-  if (kind === 'campaign-edit') await editField('quota', '20');
-  const form = kind === 'campaign-create' ? document.querySelectorAll('form')[0] : document.querySelector('form')!;
-  await submit(form);
-  for (const tab of ['products', targetTab]) await act(async () => {
-    history.replaceState(null, '', `/admin/#${tab}`); window.dispatchEvent(new Event('hashchange'));
-  });
-  if (kind === 'inventory') await selectVariant();
-  const draftField = kind === 'inventory' ? 'reason' : 'shipTo';
-  const draftValue = kind === 'inventory' ? 'New adjustment draft' : '2027-02-20';
-  await editField(draftField, draftValue);
-  const draftInput = document.querySelector<HTMLInputElement>(`[name="${draftField}"]`)!;
-  await act(async () => write.resolve({ updated: true }));
-  expect(document.body.textContent).toContain(kind === 'inventory' ? 'Fisik: 15' : 'Kuota 20');
-  expect(draftInput.isConnected).toBe(true);
-  expect(draftInput.value).toBe(draftValue);
-});
 
-it('releases an abandoned order operation but its completion cannot unlock the next tab operation', async () => {
-  const oldWrite = deferred<any>(), newWrite = deferred<any>();
-  const order = { id: 'o', reference: 'ORDER', status: 'paid', fulfillment: 'unfulfilled', total: 100, items: [], timeline: [], contact: {}, shipping: {}, address: {} };
-  await renderAdmin('orders', async (url, init) => {
-    if (init.method === 'POST') {
-      await (url.includes('/orders/') ? oldWrite.promise : newWrite.promise);
-      return Response.json({ updated: true });
-    }
-    if (url === '/api/admin/products') return Response.json({ products: [adminProduct()], nextCursor: null });
-    if (url === '/api/admin/orders/o') return Response.json({ order });
-    if (url.startsWith('/api/admin/inventory')) return Response.json({ inventory: { onHand: 10, reserved: 0, available: 10 }, movements: [], nextCursor: null });
-    return Response.json({ orders: [order], nextCursor: null });
+  it('offers only the next fulfillment step and blocks it while the order is held', async () => {
+    let fulfillment = 'unfulfilled';
+    await renderAdmin('/admin/orders/o1', (url, init) => {
+      if (url === '/api/admin/orders/o1') return Response.json(order({ fulfillment }));
+      if (url === '/api/admin/orders/o1/fulfillment' && init.method === 'PATCH') { fulfillment = 'processing'; return Response.json({ order: { id: 'o1', fulfillment, status: 'paid' } }); }
+    });
+    expect(button('Mulai proses')).toBeTruthy();
+    expect(button('Tandai dikirim')).toBeUndefined();
+    expect(button('Tandai terkirim')).toBeUndefined();
+    await act(async () => button('Mulai proses').closest('form')!.requestSubmit());
+    expect(calls.find(c => c.method === 'PATCH')!.body).toEqual({ status: 'processing' });
+    expect(button('Tandai dikirim')).toBeTruthy();
+    expect(button('Mulai proses')).toBeUndefined();
   });
-  await clickContaining('Detail');
-  await submit(Array.from(document.querySelectorAll('form')).find((form) => form.textContent?.includes('Tambahkan timeline'))!);
-  await act(async () => {
-    history.replaceState(null, '', '/admin/#inventory');
-    window.dispatchEvent(new Event('hashchange'));
-  });
-  const form = document.querySelector('form')!;
-  expect(form.querySelector('fieldset')!.disabled).toBe(false);
-  await submit(form);
-  await act(async () => oldWrite.resolve({ updated: true }));
-  expect(form.querySelector('fieldset')!.disabled).toBe(true);
-  await act(async () => newWrite.resolve({ updated: true }));
-  expect(form.querySelector('fieldset')!.disabled).toBe(false);
-});
 
-it.each([false, true])('blocks the old order cursor after failed page-one refresh (identity change: %s)', async (changeIdentity) => {
-  const order = { id: 'old', reference: 'OLD-ACCOUNT-ORDER', status: 'paid', fulfillment: 'unfulfilled', total: 100, contact: {} };
-  await renderAdmin('orders', async () => Response.json({ orders: [order], nextCursor: { before: 1, beforeId: 'old' } }));
-  expect(document.body.textContent).toContain('OLD-ACCOUNT-ORDER');
-  const original = vi.mocked(fetch).getMockImplementation()!;
-  vi.mocked(fetch).mockImplementation(async (url, init) => {
-    if (changeIdentity && String(url).startsWith('/api/auth/get-session')) return Response.json({ user: { id: 'other-admin', name: 'Other admin' } });
-    if (String(url).startsWith('/api/admin/orders')) return Response.json({ error: 'Page one down' }, { status: 503 });
-    return original(url, init);
+  it('blocks fulfillment of a held order and links its open review', async () => {
+    await renderAdmin('/admin/orders/o1', url => {
+      if (url === '/api/admin/orders/o1') return Response.json(order({ hold: true, openReviewReasons: ['risk_velocity'] }));
+      if (url.startsWith('/api/admin/review')) return Response.json({ items: [{ id: 'r1', orderId: 'o1', status: 'open', reason: 'risk_velocity' }], nextCursor: null });
+    });
+    expect(text()).toContain('Pengiriman ditahan');
+    expect(button('Mulai proses').disabled).toBe(true);
+    expect([...document.querySelectorAll('a')].some(a => a.getAttribute('href') === '/admin/reviews/r1')).toBe(true);
   });
-  await clickContaining('Perbarui');
-  expect(document.body.textContent).toContain('Page one down');
-  if (changeIdentity) expect(document.body.textContent).not.toContain('OLD-ACCOUNT-ORDER');
-  expect(document.body.textContent).not.toContain('Muat pesanan berikutnya');
-});
 
-it.each(['variant', 'campaign'])('adopts external deactivation and sends intentional %s reactivation', async (kind) => {
-  let product = adminProduct(), server = campaign();
-  const api = vi.fn(async (_path: string, body?: any) => {
-    if (body) return { updated: true };
-    return { campaigns: [server], nextCursor: null };
+  it('keeps the mutation lock after its dialog closes and reopens', async () => {
+    const write = deferred<Response>();
+    await renderAdmin('/admin/blocklist', (url, init) => {
+      if (url === '/api/admin/blocklist' && init.method === 'POST') return write.promise;
+      if (url.startsWith('/api/admin/blocklist?')) return Response.json({ items: [], nextCursor: null });
+    });
+    const fill = async () => {
+      await type(labelled('Email'), 'spam@example.com');
+      await type(labelled('Alasan'), 'Chargeback');
+    };
+    await press('Tambah'); await fill();
+    await act(async () => (document.getElementById('blocklist-form') as HTMLFormElement).requestSubmit());
+    await press('Batal');
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await press('Tambah'); await fill();
+    expect(button('Menyimpan…').disabled).toBe(true);
+    await act(async () => (document.getElementById('blocklist-form') as HTMLFormElement).requestSubmit());
+    expect(calls.filter(c => c.method === 'POST')).toHaveLength(1);
+    await act(async () => write.resolve(Response.json({ created: true, entry: { id: 'b1', kind: 'email', reason: 'Chargeback', actor: 'admin', createdAt: 1 } }, { status: 201 })));
+    expect(text()).toContain('Chargeback');
   });
-  const render = (revision: number) => kind === 'variant'
-    ? <CatalogEditor product={product} api={api} onSaved={async () => {}} />
-    : <CampaignList api={api} revision={revision} />;
-  await act(async () => root.render(render(0)));
-  product.variants[0].active = false; server = { ...server, active: false };
-  await act(async () => root.render(render(1)));
-  const select = document.querySelector<HTMLSelectElement>('[name="active"]')!;
-  expect(select.value).toBe('false');
-  await act(async () => { select.value = 'true'; select.dispatchEvent(new Event('change', { bubbles: true })); });
-  await submit(select.closest('form')!);
-  // The edit carries the version the editor was rendered from, so a stale save is a 409, not a silent overwrite.
-  expect(api.mock.calls.find(([, body]) => body)?.[1]).toEqual({ active: true, version: 4 });
-});
 
-it('retains a boundary campaign draft when a new row displaces it during refresh', async () => {
-  let inserted = false;
-  const boundary = { ...campaign(), id: 'boundary' };
-  const api = vi.fn(async (path: string) => path.includes('?')
-    ? { campaigns: [boundary], nextCursor: null }
-    : { campaigns: inserted ? [{ ...campaign(), id: 'new' }] : [boundary], nextCursor: inserted ? { before: 1, beforeId: 'new' } : null });
-  await act(async () => root.render(<CampaignList api={api} revision={0} />));
-  await editField('shipTo', '2027-02-15');
-  inserted = true;
-  await act(async () => root.render(<CampaignList api={api} revision={1} />));
-  expect(document.querySelectorAll('form').length).toBe(2);
-  expect(document.querySelectorAll<HTMLInputElement>('[name="shipTo"]')[1].value).toBe('2027-02-15');
-});
+  it('PATCHes only changed product and variant fields with their versions', async () => {
+    await renderAdmin('/admin/products/p', (url, init) => {
+      if (url === '/api/admin/categories') return Response.json({ categories: [] });
+      if (url === '/api/admin/products/p' && init.method === 'PATCH') return Response.json({ updated: true, product: { ...product, name: 'Produk baru', version: 4 } });
+      if (url === '/api/admin/variants/v' && init.method === 'PATCH') return Response.json({ updated: true, variant: { ...product.variants[0], price: 250, version: 5 } });
+      if (url === '/api/admin/products/p') return Response.json({ product });
+    });
+    expect(text()).not.toContain('Perubahan belum disimpan');
+    await type(labelled('Nama produk'), 'Produk baru');
+    await type(document.querySelector('[aria-label="Harga SKU"]')!, '250');
+    expect(text()).toContain('Perubahan belum disimpan');
+    await act(async () => (document.getElementById('product-form') as HTMLFormElement).requestSubmit());
+    const patches = calls.filter(c => c.method === 'PATCH');
+    expect(patches).toEqual([
+      { url: '/api/admin/products/p', method: 'PATCH', body: { name: 'Produk baru', version: 3 } },
+      { url: '/api/admin/variants/v', method: 'PATCH', body: { price: 250, version: 4 } },
+    ]);
+    expect(text()).not.toContain('Perubahan belum disimpan');
+    expect(document.querySelector('h1')?.textContent).toBe('Produk baru');
+  });
 
-it.each(['PATCH', 'POST'])('reconciles a committed variant %s after tab departure and return', async (method) => {
-  const write = deferred<any>();
-  let product = adminProduct();
-  await renderAdmin('products', async (_url, init) => {
-    if (init.method === method) {
-      await write.promise;
-      if (method === 'PATCH') product = { ...product, variants: [{ ...product.variants[0], mode: 'preorder', active: false }] };
-      else product = { ...product, variants: [...product.variants, { ...product.variants[0], id: 'new', sku: 'NEW' }] };
-      return Response.json({ updated: true });
-    }
-    return Response.json({ products: [product], campaigns: [], nextCursor: null });
+  it('shows a CAS conflict and reloads the current entity instead of overwriting it', async () => {
+    let server = product;
+    await renderAdmin('/admin/products/p', (url, init) => {
+      if (url === '/api/admin/categories') return Response.json({ categories: [] });
+      if (url === '/api/admin/products/p' && init.method === 'PATCH') {
+        server = { ...product, name: 'Diubah admin lain', version: 4 };
+        return Response.json({ error: 'Data sudah diubah oleh admin lain; muat ulang sebelum menyimpan', details: { current: server } }, { status: 409 });
+      }
+      if (url === '/api/admin/products/p') return Response.json({ product: server });
+    });
+    await type(labelled('Nama produk'), 'Draft saya');
+    await act(async () => (document.getElementById('product-form') as HTMLFormElement).requestSubmit());
+    const banner = () => [...document.querySelectorAll('[role="alert"]')].find(a => a.textContent?.includes('Data sudah diubah orang lain'));
+    expect(banner()).toBeTruthy();
+    expect(button('Simpan').disabled).toBe(true);
+    await press('Muat data terbaru');
+    expect(labelled('Nama produk').value).toBe('Diubah admin lain');
+    expect(banner()).toBeUndefined();
+    expect(calls.filter(c => c.method === 'PATCH')).toHaveLength(1);
   });
-  await clickContaining('Detail');
-  const form = document.querySelectorAll('[role="dialog"] form')[method === 'PATCH' ? 1 : 2] as HTMLFormElement;
-  if (method === 'PATCH') await act(async () => {
-    form.querySelector<HTMLSelectElement>('[name="mode"]')!.value = 'preorder';
-    form.querySelector<HTMLSelectElement>('[name="active"]')!.value = 'false';
-  });
-  await submit(form);
-  for (const tab of ['campaigns', 'products']) await act(async () => {
-    history.replaceState(null, '', `/admin/#${tab}`); window.dispatchEvent(new Event('hashchange'));
-  });
-  await clickContaining('Detail');
-  await editField('weight', '20');
-  await act(async () => write.resolve({ updated: true }));
-  expect(document.querySelector<HTMLInputElement>('[name="weight"]')!.value).toBe('20');
-  if (method === 'PATCH') {
-    expect(document.querySelector<HTMLSelectElement>('[name="mode"]')!.value).toBe('preorder');
-    expect(document.querySelector<HTMLSelectElement>('[name="active"]')!.value).toBe('false');
-  } else expect(document.querySelectorAll('[role="dialog"] form').length).toBe(5);
-});
 
-it('refreshes the reopened same order after a committed milestone without losing its new draft or lock', async () => {
-  const oldWrite = deferred<any>(), newWrite = deferred<any>();
-  let writes = 0, reads = 0, committed = false;
-  const order = { id: 'o', reference: 'ORDER', status: 'paid', fulfillment: 'unfulfilled', total: 100, currency: 'IDR', createdAt: 1, items: [], timeline: [], contact: {}, address: {}, shipping: {} };
-  await renderAdmin('orders', async (url, init) => {
-    if (init.method === 'POST') {
-      const current = ++writes;
-      await (current === 1 ? oldWrite.promise : newWrite.promise);
-      committed = true;
-      return Response.json({ updated: true });
-    }
-    if (url === '/api/admin/orders/o') {
-      reads++;
-      return Response.json({ order: { ...order, timeline: committed ? [{ id: 'event', kind: 'production', createdAt: 1, details: { note: 'Committed old milestone' } }] : [] } });
-    }
-    return Response.json({ orders: [order], nextCursor: null });
+  it('searches variants on the server for the pre-order picker, beyond any loaded page', async () => {
+    await renderAdmin('/admin/preorders', url => {
+      if (url.startsWith('/api/admin/campaigns')) return Response.json({ campaigns: [], nextCursor: null });
+      if (url.startsWith('/api/admin/variants/search')) return Response.json({ variants: [{ id: 'po', sku: 'SKU-PO-99', name: 'Edisi', mode: 'preorder', price: 5000, active: true, productId: 'p9', productName: 'Produk jauh' }] });
+    });
+    await press('Campaign baru');
+    await type(document.getElementById('campaign-variant')!, 'PO-99');
+    await wait(260);
+    expect(calls.map(c => c.url)).toContain('/api/admin/variants/search?q=PO-99&mode=preorder');
+    await act(async () => (document.querySelector('[role="option"]') as HTMLButtonElement).click());
+    expect(text()).toContain('Produk jauh · Edisi');
+    expect(button('Ganti varian')).toBeTruthy();
   });
-  const timelineForm = () => Array.from(document.querySelectorAll('form')).find((form) => form.textContent?.includes('Tambahkan timeline'))!;
-  await clickContaining('Detail'); await submit(timelineForm());
-  await clickContaining('Tutup'); await clickContaining('Detail');
-  const form = timelineForm();
-  form.querySelector<HTMLInputElement>('[name="note"]')!.value = 'New draft';
-  await submit(form);
-  await act(async () => oldWrite.resolve({ updated: true }));
-  expect(reads).toBe(3);
-  expect(document.body.textContent).toContain('Committed old milestone');
-  expect(form.querySelector<HTMLInputElement>('[name="note"]')!.value).toBe('New draft');
-  expect(form.querySelector('fieldset')!.disabled).toBe(true);
-  await submit(form); expect(writes).toBe(2);
-  await act(async () => newWrite.resolve({ updated: true }));
-  expect(form.querySelector('fieldset')!.disabled).toBe(false);
-});
-
-it('rejects an old session variant write reconciliation after identity changes', async () => {
-  const write = deferred<any>();
-  let reads = 0;
-  await renderAdmin('products', async (_url, init) => {
-    if (init.method === 'PATCH') { await write.promise; return Response.json({ updated: true }); }
-    reads++;
-    return Response.json({ products: [adminProduct()], orders: [], nextCursor: null });
-  });
-  await clickContaining('Detail'); await editField('price', '200');
-  await submit(document.querySelectorAll('[role="dialog"] form')[1] as HTMLFormElement);
-  const original = vi.mocked(fetch).getMockImplementation()!;
-  vi.mocked(fetch).mockImplementation(async (url, init) => String(url).startsWith('/api/auth/get-session')
-    ? Response.json({ user: { id: 'other-admin', name: 'Other admin' } }) : original(url, init));
-  await act(async () => {
-    history.replaceState(null, '', '/admin/#orders'); window.dispatchEvent(new Event('hashchange'));
-  });
-  const before = reads;
-  await act(async () => write.resolve({ updated: true }));
-  expect(reads).toBe(before);
-  expect(document.querySelector('[role="dialog"]')).toBeNull();
 });
 
 describe('storefront checkout and order status', () => {

@@ -50,11 +50,17 @@ const jsonLd = product && {
   noindex={!product}
 >
   <section class="section">
-    <p class="muted">
-      <a href="/catalog">Koleksi</a> /{" "}
-      {product?.category && <><a href={`/catalog?category=${encodeURIComponent(product.category.slug)}`}>{product.category.name}</a> / </>}
-      {product?.name || "Produk"}
-    </p>
+    <nav class="breadcrumbs" aria-label="Breadcrumb">
+      <ol>
+        <li><a href="/">Beranda</a></li>
+        {product?.category ? (
+          <li><a href={`/catalog?category=${encodeURIComponent(product.category.slug)}`}>{product.category.name}</a></li>
+        ) : (
+          <li><a href="/catalog">Katalog</a></li>
+        )}
+        <li aria-current="page">{product?.name || "Produk"}</li>
+      </ol>
+    </nav>
     {product ? (
       <div class="detail">
         <div class="art">
@@ -62,19 +68,23 @@ const jsonLd = product && {
             <img src={product.imageUrl} alt={product.name} />
           )}
         </div>
-        <div>
-          <p class="eyebrow">Koleksi Flaremmerce</p>
+        <div class="detail-info">
+          {product.category && <p class="eyebrow">{product.category.name}</p>}
           <h1>{product.name}</h1>
-          <p>{product.description}</p>
           <ProductPicker product={product} client:load />
+          {product.description && (
+            <div class="detail-description">
+              <h2>Tentang produk</h2>
+              <p>{product.description}</p>
+            </div>
+          )}
         </div>
       </div>
     ) : (
-      <div class="notice" role="alert">
-        {failed
-          ? "Katalog sementara tidak tersedia."
-          : "Produk tidak ditemukan."}{" "}
-        <a href="/catalog">Kembali ke koleksi</a>
+      <div class="empty-state" role="alert">
+        <h3>{failed ? "Katalog sementara tidak tersedia" : "Produk tidak ditemukan"}</h3>
+        <p>{failed ? "Silakan muat ulang beberapa saat lagi." : "Produk ini mungkin sudah tidak dijual."}</p>
+        <a class="button" href="/catalog">Kembali ke katalog</a>
       </div>
     )}
   </section>

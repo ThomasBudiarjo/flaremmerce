@@ -4,3 +4,4 @@ dist/
 .dev.vars
 .amp/in/
 .amp/portals/
+.artifacts/

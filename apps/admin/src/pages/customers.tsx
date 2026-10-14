@@ -1,0 +1,132 @@
+import { useState } from "react";
+import { MoreHorizontal } from "lucide-react";
+import { post } from "@/lib/api";
+import { useSession } from "@/lib/auth";
+import { href, useRoute } from "@/lib/router";
+import { dateWIB, number } from "@/lib/format";
+import type { Customer } from "@/lib/types";
+import { useMutation } from "@/hooks/use-mutation";
+import { usePagedList } from "@/hooks/use-paged-list";
+import { PageHeader } from "@/components/page-header";
+import { DataTable } from "@/components/data-table";
+import { LoadError } from "@/components/field";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { TableCell, TableRow } from "@/components/ui/table";
+
+type Action = { kind: "revoke" | "ban" | "unban"; customer: Customer };
+
+const copy: Record<Action["kind"], { title: (c: Customer) => string; description: string; confirm: string }> = {
+  revoke: { title: (c) => `Keluarkan ${c.name} dari semua perangkat?`, description: "Semua sesi login dihapus. Pelanggan bisa masuk lagi.", confirm: "Cabut sesi" },
+  ban: {
+    title: (c) => `Blokir akun ${c.name}?`,
+    description: "Sesi aktif berakhir dan akun tidak bisa checkout atau melihat pesanan saat login. Pesanan lama tidak berubah.",
+    confirm: "Blokir akun",
+  },
+  unban: { title: (c) => `Buka blokir ${c.name}?`, description: "Akun dapat login dan berbelanja kembali.", confirm: "Buka blokir" },
+};
+
+export function CustomersPage() {
+  const { me } = useSession();
+  const { navigate } = useRoute();
+  const list = usePagedList<Customer>("/api/admin/customers", { listKey: "customers", cursor: "keyset" });
+  const [action, setAction] = useState<Action | null>(null);
+  const run = useMutation(
+    async ({ kind, customer }: Action) => {
+      const path = `/api/admin/users/${encodeURIComponent(customer.id)}/${kind === "revoke" ? "revoke-sessions" : "ban"}`;
+      const result = await post<{ revoked?: number; banned?: boolean }>(path, kind === "revoke" ? {} : { banned: kind === "ban" });
+      return { kind, customer, result };
+    },
+    {
+      key: "customer-action",
+      success: ({ kind, result }) => (kind === "revoke" ? `${number(result.revoked ?? 0)} sesi dicabut.` : kind === "ban" ? "Akun diblokir." : "Blokir dibuka."),
+      onSuccess: ({ kind, customer }) => {
+        if (kind !== "revoke") list.setItems((items) => items.map((c) => (c.id === customer.id ? { ...c, banned: kind === "ban" } : c)));
+      },
+    },
+  );
+  return (
+    <>
+      <PageHeader title="Pelanggan" description="Akun pelanggan yang login dengan Google. Pembeli tamu tidak tercantum." />
+      {list.error && <LoadError message={list.error} onRetry={list.reload} />}
+      <DataTable
+        loading={list.loading}
+        columns={[{ head: "Pelanggan" }, { head: "Bergabung" }, { head: "Pesanan", className: "text-right" }, { head: "Status" }, { head: <span className="sr-only">Aksi</span> }]}
+        empty={{ title: "Belum ada pelanggan terdaftar" }}
+      >
+        {list.items.map((c) => (
+          <TableRow key={c.id}>
+            <TableCell className="whitespace-normal">
+              <div className="font-medium">{c.name}</div>
+              <div className="text-xs break-all text-muted-foreground">{c.email}</div>
+            </TableCell>
+            <TableCell className="whitespace-nowrap">{dateWIB(c.createdAt)}</TableCell>
+            <TableCell className="text-right tabular-nums">{number(c.orders)}</TableCell>
+            <TableCell className="space-x-1">
+              {c.banned && <Badge variant="destructive">Diblokir</Badge>}
+              {c.admin && <Badge variant="secondary">Admin</Badge>}
+              {!c.banned && !c.admin && <Badge variant="outline">Aktif</Badge>}
+            </TableCell>
+            <TableCell className="text-right">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon-sm" aria-label={`Aksi untuk ${c.name}`}>
+                    <MoreHorizontal />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem disabled={c.admin && me.role !== "owner"} onSelect={() => setAction({ kind: "revoke", customer: c })}>
+                    Cabut semua sesi
+                  </DropdownMenuItem>
+                  {!c.admin && (
+                    <DropdownMenuItem variant={c.banned ? "default" : "destructive"} onSelect={() => setAction({ kind: c.banned ? "unban" : "ban", customer: c })}>
+                      {c.banned ? "Buka blokir akun" : "Blokir akun"}
+                    </DropdownMenuItem>
+                  )}
+                  {me.role === "owner" && !c.admin && !c.banned && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onSelect={() => navigate(href("settings-team", {}, { userId: c.id }))}>Beri akses admin</DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </TableCell>
+          </TableRow>
+        ))}
+      </DataTable>
+      {list.cursor && (
+        <Button variant="outline" className="self-center" disabled={list.loadingMore} onClick={list.loadMore}>
+          {list.loadingMore ? "Memuat…" : "Muat lebih banyak"}
+        </Button>
+      )}
+      <AlertDialog open={!!action} onOpenChange={(open) => !open && setAction(null)}>
+        {action && (
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{copy[action.kind].title(action.customer)}</AlertDialogTitle>
+              <AlertDialogDescription>{copy[action.kind].description}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Batal</AlertDialogCancel>
+              <AlertDialogAction variant={action.kind === "unban" ? "default" : "destructive"} disabled={run.pending} onClick={() => void run.mutate(action)}>
+                {copy[action.kind].confirm}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        )}
+      </AlertDialog>
+    </>
+  );
+}

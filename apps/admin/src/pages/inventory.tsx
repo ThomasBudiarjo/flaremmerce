@@ -1,0 +1,237 @@
+import { useState } from "react";
+import { History, SlidersHorizontal } from "lucide-react";
+import { post } from "@/lib/api";
+import { href, Link, useRoute } from "@/lib/router";
+import { number, timeWIB } from "@/lib/format";
+import type { InventoryMovement, LowStockRow, Product, VariantSearchResult } from "@/lib/types";
+import { useMutation } from "@/hooks/use-mutation";
+import { usePagedList } from "@/hooks/use-paged-list";
+import { useResource } from "@/hooks/use-resource";
+import { PageHeader } from "@/components/page-header";
+import { DataTable } from "@/components/data-table";
+import { Field, LoadError, NumberField } from "@/components/field";
+import { VariantPicker } from "@/components/variant-picker";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { TableCell, TableRow } from "@/components/ui/table";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+
+type Row = { variantId: string; sku: string; name: string; productId: string; productName: string; onHand: number; reserved: number; available: number; threshold?: number };
+type Target = Pick<Row, "variantId" | "sku" | "name" | "productName">;
+
+function AdjustDialog({ target, onClose, onAdjusted }: { target: Target | null; onClose: () => void; onAdjusted: (variantId: string, inventory: { onHand: number; reserved: number }) => void }) {
+  const [delta, setDelta] = useState<number | null>(null);
+  const [reason, setReason] = useState("");
+  const variantId = target?.variantId ?? "";
+  const adjust = useMutation(
+    (body: { variantId: string; delta: number; reason: string }) => post<{ inventory: { variantId: string; onHand: number; reserved: number } }>("/api/admin/inventory", body),
+    {
+      key: `inventory-adjust:${variantId}`,
+      success: "Stok disesuaikan.",
+      onSuccess: (result) => {
+        onAdjusted(result.inventory.variantId, result.inventory);
+        setDelta(null);
+        setReason("");
+        onClose();
+      },
+    },
+  );
+  return (
+    <Dialog open={!!target} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Sesuaikan stok</DialogTitle>
+          <DialogDescription>
+            {target ? `${target.productName} · ${target.name} (${target.sku}). ` : ""}Masukkan selisih: positif untuk menambah, negatif untuk mengurangi. Stok fisik tidak
+            dapat turun di bawah jumlah yang direservasi.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          id="adjust-form"
+          className="grid gap-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (delta) void adjust.mutate({ variantId, delta, reason: reason.trim() });
+          }}
+        >
+          <NumberField label="Selisih jumlah" required min={-1_000_000} max={1_000_000} value={delta} onValueChange={setDelta} />
+          <Field label="Alasan (wajib)" hint="Contoh: stok opname, barang rusak, retur pembeli.">
+            {(id) => <Textarea id={id} required maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />}
+          </Field>
+        </form>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Batal
+          </Button>
+          <Button form="adjust-form" disabled={adjust.pending || !delta || !reason.trim()}>
+            {adjust.pending ? "Menyimpan…" : "Simpan penyesuaian"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function Ledger({ target, onClose }: { target: Target | null; onClose: () => void }) {
+  const list = usePagedList<InventoryMovement>("/api/admin/inventory", {
+    listKey: "movements",
+    cursor: "keyset",
+    params: { variantId: target?.variantId ?? "" },
+    enabled: !!target,
+    limit: 20,
+  });
+  return (
+    <Sheet open={!!target} onOpenChange={(open) => !open && onClose()}>
+      <SheetContent className="w-full overflow-y-auto sm:max-w-lg">
+        <SheetHeader>
+          <SheetTitle>Riwayat stok {target?.sku}</SheetTitle>
+          <SheetDescription>{target ? `${target.productName} · ${target.name}` : ""}</SheetDescription>
+        </SheetHeader>
+        <div className="grid gap-3 px-4 pb-4">
+          {list.error && <LoadError message={list.error} onRetry={list.reload} />}
+          <DataTable
+            loading={list.loading}
+            columns={[{ head: "Waktu (WIB)" }, { head: "Selisih", className: "text-right" }, { head: "Alasan" }]}
+            empty={{ title: "Belum ada pergerakan stok" }}
+          >
+            {list.items.map((m) => (
+              <TableRow key={m.id}>
+                <TableCell className="text-xs whitespace-nowrap">{timeWIB(m.createdAt)}</TableCell>
+                <TableCell className={`text-right tabular-nums ${m.delta < 0 ? "text-destructive" : ""}`}>
+                  {m.delta > 0 ? "+" : ""}
+                  {number(m.delta)}
+                </TableCell>
+                <TableCell className="whitespace-normal">
+                  {m.reason}
+                  {m.orderId && <div className="text-xs text-muted-foreground">Pesanan {m.orderId}</div>}
+                </TableCell>
+              </TableRow>
+            ))}
+          </DataTable>
+          {list.cursor && (
+            <Button variant="outline" disabled={list.loadingMore} onClick={list.loadMore}>
+              {list.loadingMore ? "Memuat…" : "Muat lebih banyak"}
+            </Button>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function rowsFromProducts(products: Product[]): Row[] {
+  return products.flatMap((p) =>
+    p.variants
+      .filter((v) => v.mode === "stock")
+      .map((v) => ({ variantId: v.id, sku: v.sku, name: v.name, productId: p.id, productName: p.name, onHand: v.onHand, reserved: v.reserved, available: v.onHand - v.reserved })),
+  );
+}
+
+export function InventoryPage() {
+  const { route, navigate } = useRoute();
+  const low = route.query.get("low") === "1";
+  const [adjusting, setAdjusting] = useState<Target | null>(null);
+  const [ledger, setLedger] = useState<Target | null>(null);
+  const [picked, setPicked] = useState<VariantSearchResult | null>(null);
+  const lowList = useResource<{ lowStock: LowStockRow[] }>(low ? "/api/admin/inventory?low=1" : null);
+  const all = usePagedList<Product>("/api/admin/products", { listKey: "products", cursor: "slug", limit: 30, enabled: !low });
+  const rows: Row[] = low ? (lowList.data?.lowStock ?? []) : rowsFromProducts(all.items);
+  const loading = low ? lowList.loading : all.loading;
+  const error = low ? lowList.error : all.error;
+
+  const applyAdjustment = (variantId: string, inventory: { onHand: number; reserved: number }) => {
+    if (low) void lowList.reload({ keep: true });
+    all.setItems((products) =>
+      products.map((p) => ({ ...p, variants: p.variants.map((v) => (v.id === variantId ? { ...v, ...inventory, available: inventory.onHand - inventory.reserved } : v)) })),
+    );
+  };
+
+  return (
+    <>
+      <PageHeader title="Inventori" description="Saldo stok ready stock, penyesuaian dengan alasan, dan riwayat pergerakan." />
+      <Tabs value={low ? "low" : "all"} onValueChange={(value) => navigate(href("inventory", {}, value === "low" ? { low: "1" } : {}), true)}>
+        <TabsList aria-label="Filter inventori">
+          <TabsTrigger value="all">Semua</TabsTrigger>
+          <TabsTrigger value="low">Stok menipis</TabsTrigger>
+        </TabsList>
+      </Tabs>
+      <div className="max-w-md">
+        <VariantPicker
+          id="inventory-variant"
+          label="Cari varian untuk disesuaikan"
+          mode="stock"
+          selected={picked}
+          onSelect={(variant) => {
+            setPicked(variant);
+            if (variant) setAdjusting({ variantId: variant.id, sku: variant.sku, name: variant.name, productName: variant.productName });
+          }}
+        />
+      </div>
+      {error && <LoadError message={error} onRetry={() => (low ? void lowList.reload() : all.reload())} />}
+      <DataTable
+        loading={loading}
+        columns={[
+          { head: "Varian" },
+          { head: "Tersedia", className: "text-right" },
+          { head: "Direservasi", className: "text-right" },
+          { head: "Fisik", className: "text-right" },
+          { head: <span className="sr-only">Aksi</span> },
+        ]}
+        empty={low ? { title: "Tidak ada stok menipis", description: "Semua varian aktif di atas ambang." } : { title: "Belum ada varian ready stock" }}
+      >
+        {rows.map((row) => {
+          const target = { variantId: row.variantId, sku: row.sku, name: row.name, productName: row.productName };
+          return (
+            <TableRow key={row.variantId}>
+              <TableCell className="whitespace-normal">
+                <Link to={href("product-edit", { id: row.productId })} className="font-medium underline-offset-4 hover:underline">
+                  {row.productName}
+                </Link>
+                <div className="text-xs text-muted-foreground">
+                  {row.name} · {row.sku}
+                </div>
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {number(row.available)}
+                {row.threshold !== undefined && (
+                  <Badge variant="destructive" className="ml-2">
+                    ≤ {row.threshold}
+                  </Badge>
+                )}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">{number(row.reserved)}</TableCell>
+              <TableCell className="text-right tabular-nums">{number(row.onHand)}</TableCell>
+              <TableCell className="text-right whitespace-nowrap">
+                <Button variant="outline" size="sm" onClick={() => setAdjusting(target)}>
+                  <SlidersHorizontal />
+                  Sesuaikan<span className="sr-only"> {row.sku}</span>
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setLedger(target)}>
+                  <History />
+                  Riwayat<span className="sr-only"> {row.sku}</span>
+                </Button>
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </DataTable>
+      {!low && all.cursor && (
+        <Button variant="outline" className="self-center" disabled={all.loadingMore} onClick={all.loadMore}>
+          {all.loadingMore ? "Memuat…" : "Muat lebih banyak"}
+        </Button>
+      )}
+      <AdjustDialog
+        target={adjusting}
+        onClose={() => {
+          setAdjusting(null);
+          setPicked(null);
+        }}
+        onAdjusted={applyAdjustment}
+      />
+      <Ledger target={ledger} onClose={() => setLedger(null)} />
+    </>
+  );
+}

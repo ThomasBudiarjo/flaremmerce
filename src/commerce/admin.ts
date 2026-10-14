@@ -139,6 +139,15 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     response.headers.set('Cache-Control','private, no-store');
     return response;
   }
+  const productDetail = path.match(/^\/api\/admin\/products\/([^/]+)$/);
+  if (productDetail && request.method === 'GET') {
+    // The editor deep-links by ID; the catalog reader is keyed by slug and already includes inactive data for admins.
+    const slug = await s(env,'SELECT slug FROM products WHERE id=?',decodeURIComponent(productDetail[1])).first<string>('slug');
+    if (!slug) throw new HttpError(404,'Product not found');
+    const response = await catalog(env,slug,undefined,true);
+    response.headers.set('Cache-Control','private, no-store');
+    return response;
+  }
   const detail = path.match(/^\/api\/admin\/orders\/([^/]+)$/);
   if (detail && request.method === 'GET') {
     const target = decodeURIComponent(detail[1]);

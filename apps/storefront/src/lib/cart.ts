@@ -21,6 +21,20 @@ export function readCart(): CartItem[] {
 }
 export function writeCart(items: CartItem[]) {
   localStorage.setItem(key, JSON.stringify(items));
+  syncCartCount(items);
+}
+/**
+ * Header badge is filled by islands that already run on the page; cached SSR HTML never carries a
+ * count and no extra script is shipped just for it.
+ */
+export function syncCartCount(items: CartItem[] = readCart()) {
+  if (typeof document === "undefined") return;
+  const count = items.reduce((sum, item) => sum + item.quantity, 0);
+  for (const badge of document.querySelectorAll<HTMLElement>("[data-cart-count]")) {
+    badge.textContent = count ? String(count) : "";
+    badge.hidden = !count;
+    badge.closest("a")?.setAttribute("aria-label", count ? `Keranjang, ${count} barang` : "Keranjang");
+  }
 }
 /** Error from api(): `status` is absent for network failures; `details` carries server data such as the authoritative total. */
 export type ApiError = Error & { status?: number; details?: any };

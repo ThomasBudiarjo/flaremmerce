@@ -1,97 +1,111 @@
-import { useState } from "react";
-import { type Product, money, date } from "../lib/catalog";
-import { MAX_CART_LINES, readCart, writeCart } from "../lib/cart";
+import { useEffect, useState } from "react";
+import { type Product, type Variant, money, date } from "../lib/catalog";
+import { MAX_CART_LINES, readCart, syncCartCount, writeCart } from "../lib/cart";
+
+const stockText = (v: Variant) =>
+  v.stockLevel === "out" ? "Habis" : v.stockLevel === "low" ? "Stok terbatas" : v.mode === "preorder" ? "Kuota tersedia" : "Ready stock";
+
 export default function ProductPicker({ product }: { product: Product }) {
   const [id, setId] = useState(product.variants[0]?.id);
   const [quantity, setQuantity] = useState(1);
   const [message, setMessage] = useState("");
+  useEffect(() => syncCartCount(), []);
   const v = product.variants.find((v) => v.id === id);
-  if (!v) return <p>Varian belum tersedia.</p>;
-  const unavailable = v.stockLevel === "out" || (v.maxPerOrder != null && quantity > v.maxPerOrder);
-  const stockNote = v.stockLevel === "out" ? " Habis." : v.stockLevel === "low" ? " Stok terbatas." : "";
+  if (!v) return <p className="notice">Varian belum tersedia.</p>;
+  const max = v.maxPerOrder ?? 99;
+  const overLimit = v.maxPerOrder != null && quantity > v.maxPerOrder;
+  const unavailable = v.stockLevel === "out" || overLimit;
+  const tone = v.stockLevel === "out" ? "out" : v.stockLevel === "low" ? "low" : v.mode === "preorder" ? "preorder" : "stock";
   return (
-    <>
-      <p className="price">{money(v.price)}</p>
+    <div className="picker">
+      <p className="price" aria-live="polite">
+        {money(v.price)}
+        {product.variants.length > 1 && <span className="muted"> · {v.name}</span>}
+      </p>
+      <div className="picker-badges">
+        {v.mode === "preorder" && <span className="badge preorder">Pre-order</span>}
+        <span className={`badge ${tone}`}>{stockText(v)}</span>
+      </div>
       {product.variants.length > 1 && (
-        <>
-          <label>Varian</label>
+        <fieldset className="variant-field">
+          <legend>Pilih varian</legend>
           <div className="choices">
             {product.variants.map((x) => (
               <button
+                type="button"
                 key={x.id}
                 aria-pressed={id === x.id}
+                className={x.stockLevel === "out" ? "is-out" : undefined}
                 onClick={() => {
                   setId(x.id);
                   setMessage("");
                 }}
               >
-                {x.name}
+                <span>{x.name}</span>
+                <small>{x.stockLevel === "out" ? "Habis" : money(x.price)}</small>
               </button>
             ))}
           </div>
-        </>
+        </fieldset>
       )}
-      <div className="notice">
+      <div className="notice availability-note">
         {v.mode === "preorder" ? (
-          <>
-            Pre-order ·{" "}
-            {v.campaign ? (
-              <>
-                Estimasi kirim {date(v.campaign.shipFrom)} –{" "}
-                {date(v.campaign.shipTo)}. Pemesanan sampai{" "}
-                {date(v.campaign.endsAt)}.
-                {stockNote}
-              </>
-            ) : (
-              "Estimasi belum tersedia; checkout akan memvalidasi campaign."
-            )}
-          </>
+          v.campaign ? (
+            <>
+              <strong>Pre-order · estimasi kirim {date(v.campaign.shipFrom)} – {date(v.campaign.shipTo)}</strong>
+              <br />
+              Pemesanan dibuka sampai {date(v.campaign.endsAt)}.
+            </>
+          ) : (
+            <strong>Pre-order · estimasi belum tersedia; checkout akan memvalidasi campaign.</strong>
+          )
         ) : (
-          `Ready stock ·${stockNote} Ketersediaan diperiksa kembali saat checkout.`
+          <strong>{v.stockLevel === "out" ? "Stok habis untuk varian ini." : "Ready stock · dikirim setelah pembayaran terkonfirmasi."}</strong>
         )}
         <br />
-        Satu pengiriman mengikuti item paling lambat jika digabung dengan
-        pre-order.
+        Ketersediaan diperiksa kembali saat checkout. Jika digabung dengan pre-order, satu pengiriman mengikuti item paling lambat.
       </div>
       <label htmlFor="quantity">Jumlah</label>
-      <input
-        id="quantity"
-        type="number"
-        min="1"
-        max={v.maxPerOrder ?? 99}
-        value={quantity}
-        onChange={(e) =>
-          setQuantity(Math.max(1, Math.floor(Number(e.target.value) || 1)))
-        }
-        style={{ maxWidth: 100, marginBottom: 20 }}
-      />
-      <br />
-      <button
-        disabled={unavailable}
-        onClick={() => {
-          try {
-            const cart = readCart();
-            const existing = cart.find((i) => i.variantId === id);
-            if (existing) existing.quantity += quantity;
-            else if (cart.length >= MAX_CART_LINES) {
-              setMessage(`Tas belanja maksimal ${MAX_CART_LINES} varian berbeda.`);
-              return;
-            } else cart.push({ variantId: v.id, quantity });
-            writeCart(cart);
-            setMessage("Ditambahkan ke tas belanja.");
-          } catch {
-            setMessage(
-              "Penyimpanan browser tidak tersedia. Izinkan penyimpanan untuk menggunakan tas belanja.",
-            );
-          }
-        }}
-      >
-        {v.stockLevel === "out" ? "Habis" : unavailable ? "Melebihi batas per pesanan" : "Tambah ke tas ↗"}
-      </button>
-      <p role="status">
-        {message}{" "}
-        {message.startsWith("Ditambahkan") && <a href="/cart">Lihat tas →</a>}
+      <div className="quantity-row">
+        <input
+          id="quantity"
+          type="number"
+          min="1"
+          max={max}
+          value={quantity}
+          aria-describedby="quantity-help"
+          aria-invalid={overLimit || undefined}
+          onChange={(e) => setQuantity(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+        />
+        <button
+          className="cta"
+          disabled={unavailable}
+          onClick={() => {
+            try {
+              const cart = readCart();
+              const existing = cart.find((i) => i.variantId === id);
+              if (existing) existing.quantity += quantity;
+              else if (cart.length >= MAX_CART_LINES) {
+                setMessage(`Keranjang maksimal ${MAX_CART_LINES} varian berbeda.`);
+                return;
+              } else cart.push({ variantId: v.id, quantity });
+              writeCart(cart);
+              setMessage("Ditambahkan ke keranjang.");
+            } catch {
+              setMessage("Penyimpanan browser tidak tersedia. Izinkan penyimpanan untuk menggunakan keranjang.");
+            }
+          }}
+        >
+          {v.stockLevel === "out" ? "Habis" : overLimit ? "Melebihi batas per pesanan" : "Tambah ke keranjang"}
+        </button>
+      </div>
+      <p id="quantity-help" className={overLimit ? "field-hint error-text" : "field-hint"}>
+        {v.maxPerOrder != null ? `Maksimal ${v.maxPerOrder} per pesanan.` : "Jumlah akhir diperiksa saat checkout."}
       </p>
-    </>
+      <p role="status" className="picker-status">
+        {message}{" "}
+        {message.startsWith("Ditambahkan") && <a href="/cart">Lihat keranjang →</a>}
+      </p>
+    </div>
   );
 }

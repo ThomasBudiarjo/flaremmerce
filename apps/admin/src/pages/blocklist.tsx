@@ -1,0 +1,143 @@
+import { useState } from "react";
+import { Plus, Trash2 } from "lucide-react";
+import { del, post } from "@/lib/api";
+import { blocklistKind, label, timeWIB } from "@/lib/format";
+import type { BlocklistEntry } from "@/lib/types";
+import { useMutation } from "@/hooks/use-mutation";
+import { usePagedList } from "@/hooks/use-paged-list";
+import { PageHeader } from "@/components/page-header";
+import { DataTable } from "@/components/data-table";
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { Field, LoadError, TextField } from "@/components/field";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { TableCell, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
+
+function AddDialog({ open, onOpenChange, onAdded }: { open: boolean; onOpenChange: (open: boolean) => void; onAdded: (entry: BlocklistEntry, created: boolean) => void }) {
+  const [kind, setKind] = useState<BlocklistEntry["kind"]>("email");
+  const [value, setValue] = useState("");
+  const [reason, setReason] = useState("");
+  const add = useMutation(() => post<{ created: boolean; entry: BlocklistEntry }>("/api/admin/blocklist", { kind, value: value.trim(), reason: reason.trim() }), {
+    key: "blocklist-add",
+    success: (result) => (result.created ? "Ditambahkan ke blocklist." : "Identitas ini sudah ada di blocklist."),
+    onSuccess: (result) => {
+      onAdded(result.entry, result.created);
+      setValue("");
+      setReason("");
+      onOpenChange(false);
+    },
+  });
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Tambah ke blocklist</DialogTitle>
+          <DialogDescription>Checkout dengan identitas ini ditolak. Nilai asli tidak disimpan, hanya hash-nya.</DialogDescription>
+        </DialogHeader>
+        <form
+          id="blocklist-form"
+          className="grid gap-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void add.mutate(undefined);
+          }}
+        >
+          <Field label="Jenis">
+            {(id) => (
+              <NativeSelect id={id} className="w-full" value={kind} onChange={(e) => setKind(e.target.value as BlocklistEntry["kind"])}>
+                {Object.entries(blocklistKind).map(([value, text]) => (
+                  <NativeSelectOption key={value} value={value}>
+                    {text}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            )}
+          </Field>
+          <TextField
+            label={label(blocklistKind, kind)}
+            required
+            maxLength={254}
+            type={kind === "email" ? "email" : "text"}
+            inputMode={kind === "phone" ? "tel" : undefined}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+          />
+          <Field label="Alasan (wajib)">{(id) => <Textarea id={id} required maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
+        </form>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Batal
+          </Button>
+          <Button form="blocklist-form" variant="destructive" disabled={add.pending || !value.trim() || !reason.trim()}>
+            {add.pending ? "Menyimpan…" : "Blokir"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RemoveEntry({ entry, onRemoved }: { entry: BlocklistEntry; onRemoved: () => void }) {
+  const remove = useMutation(() => del(`/api/admin/blocklist/${encodeURIComponent(entry.id)}`), { key: `blocklist-remove:${entry.id}`, success: "Dihapus dari blocklist.", onSuccess: onRemoved });
+  return (
+    <ConfirmDialog
+      trigger={
+        <Button variant="ghost" size="sm" disabled={remove.pending}>
+          <Trash2 />
+          Hapus
+        </Button>
+      }
+      title="Hapus dari blocklist?"
+      description="Identitas ini dapat checkout kembali."
+      confirmLabel="Hapus"
+      onConfirm={() => void remove.mutate(undefined)}
+    />
+  );
+}
+
+export function BlocklistPage() {
+  const list = usePagedList<BlocklistEntry>("/api/admin/blocklist", { listKey: "items", cursor: "keyset" });
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <PageHeader
+        title="Blocklist"
+        description="Email, nomor HP, atau alamat IP yang ditolak saat checkout."
+        actions={
+          <Button onClick={() => setOpen(true)}>
+            <Plus />
+            Tambah
+          </Button>
+        }
+      />
+      {list.error && <LoadError message={list.error} onRetry={list.reload} />}
+      <DataTable
+        loading={list.loading}
+        columns={[{ head: "Jenis" }, { head: "Alasan" }, { head: "Ditambahkan (WIB)" }, { head: <span className="sr-only">Aksi</span> }]}
+        empty={{ title: "Blocklist kosong", description: "Blokir identitas dari detail pesanan atau tambahkan manual." }}
+      >
+        {list.items.map((entry) => (
+          <TableRow key={entry.id}>
+            <TableCell>
+              <Badge variant="outline">{label(blocklistKind, entry.kind)}</Badge>
+            </TableCell>
+            <TableCell className="whitespace-normal">{entry.reason}</TableCell>
+            <TableCell className="text-xs whitespace-nowrap">{timeWIB(entry.createdAt)}</TableCell>
+            <TableCell className="text-right">
+              <RemoveEntry entry={entry} onRemoved={() => list.setItems((items) => items.filter((e) => e.id !== entry.id))} />
+            </TableCell>
+          </TableRow>
+        ))}
+      </DataTable>
+      {list.cursor && (
+        <Button variant="outline" className="self-center" disabled={list.loadingMore} onClick={list.loadMore}>
+          {list.loadingMore ? "Memuat…" : "Muat lebih banyak"}
+        </Button>
+      )}
+      <AddDialog open={open} onOpenChange={setOpen} onAdded={(entry, created) => created && list.setItems((items) => [entry, ...items])} />
+    </>
+  );
+}

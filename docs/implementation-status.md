@@ -70,6 +70,14 @@ Lokal, belum dipush/deploy. Migration `0012_ecommerce.sql` (commerce) dan `0013_
 
 Pemeriksaan: `npm run check`, `npm test` (**168 tes**: 69 commerce + 99 integration/storage/checkout/operations/UI/recovery), `npm run build`, `npm run deploy:check` lulus. Belum diuji di browser nyata: halaman katalog dengan filter, print preview struk, link kurir, hidrasi island di bawah CSP. URL pelacakan kurir dan teks legal belum diverifikasi.
 
+## Fase 4: refactor dan refresh UI — 14 Oktober 2026
+
+- Admin: `main.tsx` 2117 → 224 baris (bootstrap saja). Router history di `/admin/`, satu halaman per route (Beranda, Pesanan + detail, Produk + editor halaman penuh, Kategori, Inventori, Pre-order, Pelanggan, Review + detail, Blocklist, Operasional, Tim & akses), sidebar terkelompok, pencarian global, navigasi sesuai role. `SaveForm`, `AdminWorkflows.tsx`, `ReviewDetail.tsx` dan `OperationalStatus.tsx` dihapus; form terkontrol mengirim field berubah + `version`, 409 menampilkan banner konflik. Lock mutasi bertahan sampai request selesai; picker varian memakai pencarian server; config/setup/me dimuat sekali. Tambahan backend: `GET /api/admin/products/:id`.
+- Storefront: grid katalog, breadcrumb produk, checkout bertahap (Kontak, Alamat, Pengiriman, Ringkasan) tanpa mengubah protokol, stepper status pesanan, kartu pelacakan, count keranjang di header.
+- Batas: filter status produk/review hanya atas halaman yang dimuat; bundle admin ~553 kB (belum lazy-load); count keranjang tidak tampil di halaman katalog tanpa island; screenshot 390px pesanan diambil sebelum perbaikan layout tab.
+
+Pemeriksaan: `npm run check`, `npm test` (**159 tes**: 69 commerce + 90 integration/storage/checkout/operations/UI/storefront-UI/recovery; tes rekonsiliasi `SaveForm` lama dihapus bersama kodenya), `npm run build`, `npm run deploy:check`, `npm audit --omit=dev` lulus. Browser Chromium lokal: console tanpa pelanggaran CSP; screenshot di `.artifacts/phase4/` (diabaikan git).
+
 ## Gate yang tidak boleh disamarkan
 
 1. Resource, secret dan hostname staging/production nyata + otorisasi provision/deploy/migration. Root Wrangler masih lokal/ID dummy.

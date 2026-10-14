@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, confirmationText, downloadText, type ApiError } from "../lib/cart";
+import { api, confirmationText, downloadText, syncCartCount, type ApiError } from "../lib/cart";
 import { labels, paymentLabels } from "../lib/labels";
 import { money, date } from "../lib/catalog";
 import OrderHistory from "./OrderHistory";
@@ -22,6 +22,7 @@ export default function OrderStatus() {
     }
   }, [data]);
   useEffect(() => {
+    syncCartCount();
     const returnedReference = new URLSearchParams(location.search).get("reference");
     let saved: { reference: string; token: string } | null = null;
     try {
@@ -83,6 +84,7 @@ export default function OrderStatus() {
   const order = data?.order;
   const receipt = order && (order.status === "paid" || order.status === "completed");
   const itemsTotal = order?.items?.reduce((sum: number, i: any) => sum + i.price * i.quantity, 0) ?? 0;
+  const fulfillment: string = order ? order.fulfillment || order.fulfillmentStatus || data.fulfillment?.status || "" : "";
   return (
     <>
       <OrderHistory labels={labels} onOwnerChange={(owner) => {
@@ -142,33 +144,31 @@ export default function OrderStatus() {
       )}
       {order && (
         <section ref={detailRef} className="panel" aria-label="Detail pesanan" tabIndex={-1}>
-          <span className="badge">{order.reference}</span>
-          <h2 style={{ marginTop: 20 }}>
-            {labels[order.status] || order.status}
-          </h2>
-          <p className="price">{money(order.total)}</p>
-          <p>
-            Pembayaran:{" "}
-            {paymentLabels[data.paymentState] || data.paymentState || "Lihat status order di atas"}
-          </p>
-          <p>
-            Pengiriman:{" "}
-            {labels[order.fulfillment || order.fulfillmentStatus || data.fulfillment?.status] ||
-              order.fulfillmentStatus ||
-              data.fulfillment?.status ||
-              "Belum ada pembaruan"}
-          </p>
+          <div className="order-head">
+            <span className="badge">{order.reference}</span>
+            <span className="muted">Dibuat {date(order.createdAt)}</span>
+          </div>
+          <h2>{labels[order.status] || order.status}</h2>
+          <OrderStepper status={order.status} fulfillment={fulfillment} />
+          <dl className="order-facts">
+            <div><dt>Total</dt><dd className="price">{money(order.total)}</dd></div>
+            <div><dt>Pembayaran</dt><dd>{paymentLabels[data.paymentState] || data.paymentState || "Lihat status order di atas"}</dd></div>
+            <div><dt>Pengiriman</dt><dd>{labels[fulfillment] || fulfillment || "Belum ada pembaruan"}</dd></div>
+          </dl>
           {order.tracking && (
-            <p>
-              Resi {order.tracking.courierName ? `${order.tracking.courierName} ` : ""}<strong>{order.tracking.number}</strong>
+            <div className="tracking-card" aria-label="Informasi pengiriman" role="group">
+              <span className="muted">Nomor resi{order.tracking.courierName ? ` · ${order.tracking.courierName}` : ""}</span>
+              <p>
+                Resi {order.tracking.courierName ? `${order.tracking.courierName} ` : ""}<strong>{order.tracking.number}</strong>
+              </p>
               {order.tracking.url && /^https:\/\//.test(order.tracking.url) && (
-                <> · <a href={order.tracking.url} target="_blank" rel="noreferrer noopener">Lacak di situs kurir ↗</a> (tempel nomor resi di halaman tersebut)</>
+                <p className="muted"><a href={order.tracking.url} target="_blank" rel="noreferrer noopener">Lacak di situs kurir ↗</a> (tempel nomor resi di halaman tersebut)</p>
               )}
-            </p>
+            </div>
           )}
           {(order.items || data.items)?.map((i: any, n: number) => (
             <div className="line" key={i.id || n}>
-              {i.name || i.productName || i.variantName || i.sku} × {i.quantity}
+              {i.productName && i.name ? `${i.productName} — ${i.name}` : i.name || i.productName || i.variantName || i.sku} × {i.quantity}
               {i.campaign?.shipFrom && i.campaign?.shipTo && (
                 <p>
                   Estimasi kirim: {date(i.campaign.shipFrom)} – {date(i.campaign.shipTo)}
@@ -176,7 +176,7 @@ export default function OrderStatus() {
               )}
             </div>
           ))}
-          {!!order.timeline?.length && <ol aria-label="Timeline pesanan">{order.timeline.map((event:any,n:number) => <li key={n}>{labels[event.kind] || event.kind} · {date(event.createdAt)}{event.details?.tracking && <p>Resi: {event.details.tracking}</p>}{event.details?.note && <p>{event.details.note}</p>}{event.details?.estimatedDate && <p>Estimasi: {date(event.details.estimatedDate)} (bukan jaminan tanggal)</p>}</li>)}</ol>}
+          {!!order.timeline?.length && <ol className="timeline" aria-label="Timeline pesanan">{order.timeline.map((event:any,n:number) => <li key={n}>{labels[event.kind] || event.kind} · {date(event.createdAt)}{event.details?.tracking && <p>Resi: {event.details.tracking}</p>}{event.details?.note && <p>{event.details.note}</p>}{event.details?.estimatedDate && <p>Estimasi: {date(event.details.estimatedDate)} (bukan jaminan tanggal)</p>}</li>)}</ol>}
           <div className="notice">
             Kembali dari penyedia pembayaran tidak berarti pembayaran berhasil.
             Status di atas berasal dari server. Jika hasil belum diketahui,
@@ -205,26 +205,55 @@ export default function OrderStatus() {
             </section>
           )}
           {cancelState && <p role="status">{cancelState}</p>}
-          <div className="row no-print" style={{ flexWrap: "wrap", justifyContent: "flex-start", marginTop: 16 }}>
+          <div className="actions no-print">
             {order.status === "pending_payment" && data.paymentState === "pending" &&
               typeof data.paymentUrl === "string" && /^https:\/\//.test(data.paymentUrl) && (
               <a className="button" href={data.paymentUrl} rel="noreferrer">
                 Lanjutkan pembayaran yang sama
               </a>
             )}
-            <button onClick={() => opened && load(opened.reference, opened.token)} disabled={busy}>
+            <button className="secondary" onClick={() => opened && load(opened.reference, opened.token)} disabled={busy}>
               Perbarui status
             </button>
-            {receipt && <button onClick={() => window.print()}>Cetak struk</button>}
+            {receipt && <button className="secondary" onClick={() => window.print()}>Cetak struk</button>}
             {data.access?.type === "guest" && opened?.token && (
-              <button onClick={() => downloadText(`pesanan-${order.reference}.txt`, confirmationText(order.reference, opened.token, location.origin))}>Simpan konfirmasi</button>
+              <button className="secondary" onClick={() => downloadText(`pesanan-${order.reference}.txt`, confirmationText(order.reference, opened.token, location.origin))}>Simpan konfirmasi</button>
             )}
             {order.status === "pending_payment" && (
-              <button onClick={cancel} disabled={busy}>Batalkan pesanan</button>
+              <button className="danger" onClick={cancel} disabled={busy}>Batalkan pesanan</button>
             )}
           </div>
         </section>
       )}
     </>
+  );
+}
+
+const STEPS = ["Menunggu pembayaran", "Dibayar", "Diproses", "Dikirim", "Selesai"];
+const PROCESSING = new Set(["preparing", "production", "processing", "ready_to_ship"]);
+function stepIndex(status: string, fulfillment: string) {
+  if (status === "completed") return 4;
+  if (status === "pending_payment") return 0;
+  if (fulfillment === "shipped" || fulfillment === "delivered") return 3;
+  if (PROCESSING.has(fulfillment)) return 2;
+  return 1;
+}
+function OrderStepper({ status, fulfillment }: { status: string; fulfillment: string }) {
+  if (status === "cancelled")
+    return <ol className="stepper cancelled" aria-label="Progres pesanan"><li aria-current="step" data-state="cancelled"><span aria-hidden="true">×</span>Dibatalkan</li></ol>;
+  const current = stepIndex(status, fulfillment);
+  return (
+    <ol className="stepper" aria-label="Progres pesanan">
+      {STEPS.map((label, n) => {
+        const state = n < current || (n === current && n === STEPS.length - 1) ? "done" : n === current ? "current" : "todo";
+        return (
+          <li key={label} data-state={state} aria-current={n === current ? "step" : undefined}>
+            <span aria-hidden="true">{state === "done" ? "✓" : n + 1}</span>
+            {label}
+            {state === "done" && <span className="sr-only"> (selesai)</span>}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
