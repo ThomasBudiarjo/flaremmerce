@@ -37,6 +37,12 @@ Browser Chromium desktop/390px memeriksa session dev asli, foto di R2/D1 lokal b
 
 Migration 0006/0007 hanya diterapkan lokal. Oracle telah mereview katalog, inventory/campaign, order, operations, payment resume dan recovery; finding dibetulkan dan review ulang masing-masing tidak menyisakan blocker. Pemeriksaan ulang 13 Oktober 20:16 UTC: **100 tes lulus** (34 commerce + 66 integration/storage/checkout/operations/UI/recovery), termasuk restore workerd nyata. Check/build/deploy dry-run lulus; production dependency audit tidak menemukan vulnerability. Bukti sebelum/sesudah, angka query dan batas klaim dicatat di [local-verification.md](local-verification.md). Durasi soak hanya boleh diklaim setelah prosesnya selesai dan timestamp diverifikasi.
 
+## Hasil overnight — 14 Oktober 2026
+
+Lima jam nyata (18000.091 detik): 60 suite penuh, 6000 GET load + 240 smoke, nol unexpected failure; 60 anonymous-admin 401/private-no-store memang diharapkan. Sesudah soak, final Oracle review menemukan dua race UI tambahan; lima regression scenarios gagal sebelum fixes lalu lulus. Final suite **104 tes lulus**, checks/build/deploy dry-run lulus, Oracle follow-up clear. Browser server nyata mengonfirmasi write inventory terlambat merekonsiliasi balance/ledger tanpa menghapus draft baru. Soak memakai snapshot sebelum final fixes, bukan klaim bahwa fixes tersebut mendapat soak lima jam.
+
+RSS workerd meningkat pada soak dan bounded controls; bahkan Worker minimal tanpa aplikasi/D1/auth menunjukkan pertumbuhan. Root cause/native allocation policy dan kapasitas cloud tetap belum terbukti. Jangan menyebut leak-free/production-ready. Semua perubahan committed lokal; belum push/deploy. Rincian dan evidence scope ada di [local-verification.md](local-verification.md).
+
 ## Gate yang tidak boleh disamarkan
 
 1. Resource, secret dan hostname staging/production nyata + otorisasi provision/deploy/migration. Root Wrangler masih lokal/ID dummy.
