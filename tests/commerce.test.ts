@@ -6,7 +6,10 @@ import historyMigration from '../migrations/0005_customer_orders.sql?raw';
 import pagesMigration from '../migrations/0006_admin_pages.sql?raw';
 import lifecycleMigration from '../migrations/0008_lifecycle.sql?raw';
 import riskMigration from '../migrations/0010_risk.sql?raw';
+import ecommerceMigration from '../migrations/0012_ecommerce.sql?raw';
 import worker, { type Env } from '../src/worker';
+import { chargeableWeight, publicCacheKey, catalogParams, riskHash, tracking } from '../src/shared';
+import { csvCell } from '../src/commerce/reports';
 import { withAdminHeaders, withStorefrontHeaders } from '../src/headers';
 
 const provider = vi.hoisted(() => ({ failCreate: false, createStatus: 200, lookupStatus: 200, lookups: 0, lookup: {status:'unknown'} as Record<string, unknown>, beforeResponse: null as null | ((input: { reference: string }) => Promise<void>) }));
@@ -50,7 +53,7 @@ vi.mock('../src/integrations/index', () => ({
 }));
 
 // Risk limits are lifted for the general suite; dedicated tests restore the defaults.
-const e = { ...env, PUBLIC_ORIGIN: 'https://shop.test', RAJAONGKIR_ORIGIN:'1', RISK_HASH_SECRET: 'commerce-test-risk-secret-at-least-32-chars', MAX_PENDING_PER_IDENTITY: '1000', VELOCITY_LIMIT: '1000', MEDIA_ORIGIN: 'https://media.test', ASSETS: { fetch: async () => new Response('asset') } } as unknown as Env;
+const e = { ...env, PUBLIC_ORIGIN: 'https://shop.test', RAJAONGKIR_ORIGIN:'1', RISK_HASH_SECRET: 'commerce-test-risk-secret-at-least-32-chars', MAX_PENDING_PER_IDENTITY: '1000', MAX_PENDING_PER_IP: '1000', VELOCITY_LIMIT: '1000', VELOCITY_LIMIT_IP: '1000', MEDIA_ORIGIN: 'https://media.test', ASSETS: { fetch: async () => new Response('asset') } } as unknown as Env;
 const db = () => e.DB;
 const sql = (query: string, ...values: (string | number | null)[]) => db().prepare(query).bind(...values);
 const count = async (table: string) => (await sql(`SELECT count(*) AS n FROM ${table}`).first<{ n: number }>())!.n;
@@ -96,6 +99,7 @@ beforeAll(async () => {
   await applyD1Migrations(db(), [{ name: '0006_admin_pages.sql', queries: statements(pagesMigration) }]);
   await applyD1Migrations(db(), [{ name: '0008_lifecycle.sql', queries: statements(lifecycleMigration) }]);
   await applyD1Migrations(db(), [{ name: '0010_risk.sql', queries: statements(riskMigration) }]);
+  await applyD1Migrations(db(), [{ name: '0012_ecommerce.sql', queries: statements(ecommerceMigration) }]);
   // Shipping-owned quote/destination contract. Real integration migrations are applied by the integration suite.
   await sql('CREATE TABLE IF NOT EXISTS shipping_quotes(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,destination TEXT NOT NULL,service TEXT NOT NULL,amount INTEGER NOT NULL,weight INTEGER NOT NULL,expires_at INTEGER NOT NULL,details_json TEXT NOT NULL)').run();
   await sql('CREATE TABLE IF NOT EXISTS shipping_destinations(id TEXT PRIMARY KEY,label TEXT NOT NULL,province TEXT NOT NULL,city TEXT NOT NULL,district TEXT NOT NULL,subdistrict TEXT NOT NULL,postal_code TEXT NOT NULL,updated_at INTEGER NOT NULL)').run();
@@ -112,9 +116,9 @@ beforeEach(async () => {
   });
   // Vitest 4 no longer rolls storage back between tests. Reset only the test database.
   await sql('DROP TRIGGER audit_logs_no_delete').run();
-  for (const table of ['audit_logs','outbox_events','order_events','manual_review','payment_events','payment_attempts','inventory_movements','stock_reservations','order_items','checkout_requests','orders','preorder_campaigns','inventory','product_variants','products','shipping_quotes','shipping_destinations','blocklist','rate_counters']) await sql(`DELETE FROM ${table}`).run();
+  for (const table of ['audit_logs','outbox_events','order_events','manual_review','payment_events','payment_attempts','inventory_movements','stock_reservations','order_items','checkout_requests','orders','preorder_campaigns','inventory','product_variants','products','categories','shipping_quotes','shipping_destinations','blocklist','rate_counters']) await sql(`DELETE FROM ${table}`).run();
   await sql(statements(riskMigration).find(q => q.startsWith('CREATE TRIGGER audit_logs_no_delete'))!).run();
-  for (const path of ['/api/catalog','/api/catalog/product','/api/catalog/new-product','/api/catalog/preorder','/api/catalog?limit=1','/api/catalog?limit=2','/api/catalog?after=product&limit=1','/api/catalog?limit=1&after=product']) await caches.default.delete(new Request(`https://shop.test${path}`));
+  for (const path of ['/api/catalog','/api/catalog/product','/api/catalog/new-product','/api/catalog/preorder','/api/catalog?limit=1','/api/catalog?limit=2','/api/catalog?after=product&limit=1','/api/catalog?limit=1&after=product','/api/categories','/sitemap.xml']) await caches.default.delete(new Request(`https://shop.test${path}`));
   await db().batch([
     sql("INSERT INTO products(id,slug,name) VALUES('p','product','Product')"),
     sql("INSERT INTO product_variants(id,product_id,sku,name,price,weight) VALUES('a','p','SKU-A','A',1000,100),('b','p','SKU-B','B',1000,100)"),
@@ -513,8 +517,8 @@ describe('commerce public API with real D1', () => {
     expect(await sql('SELECT status,fulfillment FROM orders WHERE id=?', order.id).first()).toEqual({ status: 'completed', fulfillment: 'delivered' });
     expect(await count('audit_logs')).toBe(4);
     expect((await request('/api/admin/orders', undefined, headers)).headers.get('cache-control')).toBe('private, no-store');
-    expect((await request('/api/admin/products/p',{active:false},headers,'PATCH')).status).toBe(200);
-    expect((await request('/api/admin/variants/a',{price:9000},headers,'PATCH')).status).toBe(200);
+    expect((await request('/api/admin/products/p',{active:false,version:0},headers,'PATCH')).status).toBe(200);
+    expect((await request('/api/admin/variants/a',{price:9000,version:0},headers,'PATCH')).status).toBe(200);
     const fresh = await (await request('/api/admin/products',undefined,headers)).json() as any;
     expect(fresh.products[0].active).toBe(false);
     expect((await request('/api/catalog/product')).status).toBe(404);
@@ -530,7 +534,8 @@ describe('local baseline admin contracts',()=>{
   it('creates variants atomically, rejects duplicate SKU and concurrent cap overflow',async()=>{
     expect((await request('/api/admin/products/missing/variants',variant,headers)).status).toBe(404);
     const created=await (await request('/api/admin/products/p/variants',variant,headers)).json() as any;
-    expect(created.variant).toMatchObject({...variant,mode:'stock',productId:'p'});
+    const {stock:_stock,...fields}=variant;
+    expect(created.variant).toMatchObject({...fields,mode:'stock',productId:'p',onHand:3,reserved:0,version:0,active:true});
     const ledger=await (await request(`/api/admin/inventory?variantId=${created.variant.id}`,undefined,headers)).json() as any;
     expect(ledger.inventory).toEqual({variantId:created.variant.id,onHand:3,reserved:0,available:3});
     expect(ledger.movements[0]).toMatchObject({delta:3,reason:'initial stock',actor:'admin',orderId:null});
@@ -561,10 +566,10 @@ describe('local baseline admin contracts',()=>{
   it('uses immutable snapshots and projects payment metadata and sale ledger only',async()=>{
     const placed=await (await place()).json() as any;
     const order=placed.order;
-    await request('/api/admin/variants/a',{name:'Renamed',price:9999},headers,'PATCH');
+    await request('/api/admin/variants/a',{name:'Renamed',price:9999,version:0},headers,'PATCH');
     await notify(order.reference);
     const detail=await (await request(`/api/admin/orders/${order.id}`,undefined,headers)).json() as any;
-    expect(Object.keys(detail.order).sort()).toEqual(['id','reference','status','fulfillment','total','currency','createdAt','contact','address','shipping','items','timeline','hold','openReviewReasons'].sort());
+    expect(Object.keys(detail.order).sort()).toEqual(['id','reference','status','fulfillment','total','currency','createdAt','contact','address','shipping','tracking','items','timeline','hold','openReviewReasons'].sort());
     expect(detail.order.address).toEqual({line:'Street 1',destination:'42',label:'MENTENG, JAKARTA PUSAT, DKI JAKARTA, 10310',province:'DKI JAKARTA',city:'JAKARTA PUSAT',district:'MENTENG',subdistrict:'MENTENG',postalCode:'10310'});
     expect(detail.order.contact.phone).toBe('+62812345678');
     expect(detail.order.items[0]).toMatchObject({name:'A',price:1000,sku:'SKU-A'});
@@ -575,18 +580,18 @@ describe('local baseline admin contracts',()=>{
     expect((await (await request('/api/admin/orders?limit=1',undefined,headers)).json() as any).nextCursor).toBeNull();
   });
   it('lists every campaign and preserves historical shipping promises on edits',async()=>{
-    await request('/api/admin/variants/a',{mode:'preorder'},headers,'PATCH');
+    await request('/api/admin/variants/a',{mode:'preorder',version:0},headers,'PATCH');
     const now=Date.now();
     const input={variantId:'a',startsAt:now-10000,endsAt:now+100000,shipFrom:'2026-11-01',shipTo:'2026-11-10',quota:3};
     const campaign=(await (await request('/api/admin/campaigns',input,headers)).json() as any).campaign;
     const order=(await (await place()).json() as any).order;
     const route=`/api/admin/campaigns/${campaign.id}`;
-    expect((await request(route,{reserved:0},headers,'PATCH')).status).toBe(400);
-    expect((await request(route,{sold:0},headers,'PATCH')).status).toBe(400);
-    expect((await request(route,{quota:0},headers,'PATCH')).status).toBe(409);
-    expect((await request(route,{endsAt:input.startsAt},headers,'PATCH')).status).toBe(409);
+    expect((await request(route,{reserved:0,version:0},headers,'PATCH')).status).toBe(400);
+    expect((await request(route,{sold:0,version:0},headers,'PATCH')).status).toBe(400);
+    expect((await request(route,{quota:0,version:0},headers,'PATCH')).status).toBe(409);
+    expect((await request(route,{endsAt:input.startsAt,version:0},headers,'PATCH')).status).toBe(409);
     expect(await count('audit_logs')).toBe(2);
-    expect((await request(route,{shipFrom:'2026-12-01',shipTo:'2026-12-10',active:false},headers,'PATCH')).status).toBe(200);
+    expect((await request(route,{shipFrom:'2026-12-01',shipTo:'2026-12-10',active:false,version:0},headers,'PATCH')).status).toBe(200);
     const detail=await (await request(`/api/admin/orders/${order.id}`,undefined,headers)).json() as any;
     expect(detail.order.items[0].campaign).toEqual({id:campaign.id,shipFrom:input.shipFrom,shipTo:input.shipTo});
     for(const [id,start,active] of [['z',now+200000,0],['b',now+200000,0],['y',1,1]] as const) await sql('INSERT INTO preorder_campaigns(id,variant_id,starts_at,ends_at,ship_from,ship_to,quota,active) VALUES(?,?,?,?,?,?,?,?)',id,'a',start,start+100,'2026-11-01','2026-11-10',3,active).run();
@@ -596,18 +601,19 @@ describe('local baseline admin contracts',()=>{
     expect(last.campaigns.map((c:any)=>c.id)).toEqual([campaign.id,'y']);
     expect(last.nextCursor).toBeNull();
     expect(last.campaigns[0]).toMatchObject({sku:'SKU-A',productName:'Product',reserved:1,sold:0,active:false});
-    expect((await request(route,{active:true,startsAt:1},headers,'PATCH')).status).toBe(409);
+    expect((await request(route,{active:true,startsAt:1,version:1},headers,'PATCH')).status).toBe(409);
   });
   it('patches only supplied catalog fields, never creation defaults', async () => {
     await sql("UPDATE products SET description='Deskripsi yang harus tetap' WHERE id='p'").run();
     await sql("UPDATE product_variants SET mode='preorder' WHERE id='a'").run();
-    expect((await request('/api/admin/products/p', { name: 'Nama baru' }, headers, 'PATCH')).status).toBe(200);
-    expect((await request('/api/admin/variants/a', { price: 2700 }, headers, 'PATCH')).status).toBe(200);
+    expect((await request('/api/admin/products/p', { name: 'Nama baru', version: 0 }, headers, 'PATCH')).status).toBe(200);
+    expect((await request('/api/admin/variants/a', { price: 2700, version: 0 }, headers, 'PATCH')).status).toBe(200);
     const page = await (await request('/api/admin/products', undefined, headers)).json() as any;
     expect(page.products[0]).toMatchObject({ name: 'Nama baru', description: 'Deskripsi yang harus tetap' });
     expect(page.products[0].variants.find((v: any) => v.id === 'a')).toMatchObject({ price: 2700, mode: 'preorder' });
     for (const path of ['/api/admin/products/p', '/api/admin/variants/a']) {
       expect((await request(path, {}, headers, 'PATCH')).status).toBe(400);
+      expect((await request(path, { version: 1 }, headers, 'PATCH')).status).toBe(400);
     }
   });
   it('paginates admin orders sharing timestamps without skipping the boundary', async () => {
@@ -801,14 +807,14 @@ describe('payment expiry, cancellation and provider identity', () => {
     provider.lookup = { status: 'not_paid', amount: 1100, currency: 'IDR' };
     expect((await request(`/api/admin/orders/${dropped.id}/cancel`, {}, admin)).status).toBe(200);
     const route = `/api/admin/campaigns/${campaign.id}`;
-    expect((await request(route, { quota: 10 }, admin, 'PATCH')).status).toBe(200);
+    expect((await request(route, { quota: 10, version: 0 }, admin, 'PATCH')).status).toBe(200);
     expect(await sql("SELECT count(*) AS n FROM order_events WHERE kind='campaign_updated'").first('n')).toBe(0);
-    expect((await request(route, { shipTo: '2027-01-10' }, admin, 'PATCH')).status).toBe(200);
+    expect((await request(route, { shipTo: '2027-01-10', version: 1 }, admin, 'PATCH')).status).toBe(200);
     const history = await (await request(`/api/orders/${kept.reference}`, undefined, { 'X-Order-Token': kept.guestToken })).json() as any;
     expect(history.order.timeline.find((event: any) => event.kind === 'campaign_updated').details).toEqual({ campaignId: campaign.id, shipFrom: '2026-12-01', shipTo: '2027-01-10' });
     expect(history.order.items[0].campaign.shipTo).toBe('2026-12-15');
     expect(await sql("SELECT count(*) AS n FROM order_events WHERE kind='campaign_updated' AND order_id=?", dropped.id).first('n')).toBe(0);
-    expect((await request('/api/admin/campaigns/missing', { shipTo: '2027-01-10' }, admin, 'PATCH')).status).toBe(404);
+    expect((await request('/api/admin/campaigns/missing', { shipTo: '2027-01-10', version: 0 }, admin, 'PATCH')).status).toBe(404);
     expect(await sql("SELECT count(*) AS n FROM order_events WHERE kind='campaign_updated'").first('n')).toBe(1);
     expect(history.order.shipping.origin).toBe('1');
   });
@@ -881,7 +887,7 @@ describe('anti-fraud and abuse controls', () => {
 
   it('limits unpaid orders per email, phone or IP before Turnstile without breaking idempotent retries', async () => {
     await stock();
-    const strict = { ...e, MAX_PENDING_PER_IDENTITY: undefined } as unknown as Env, ip = { 'CF-Connecting-IP': '192.0.2.10' };
+    const strict = { ...e, MAX_PENDING_PER_IDENTITY: undefined, MAX_PENDING_PER_IP: undefined } as unknown as Env, ip = { 'CF-Connecting-IP': '192.0.2.10' };
     const first = await (await buy({ key: 'pending-1', env: strict, headers: ip })).json() as any;
     for (const key of ['pending-2', 'pending-3']) expect((await buy({ key, env: strict, headers: ip })).status).toBe(200);
     const calls = turnstileCalls();
@@ -892,10 +898,14 @@ describe('anti-fraud and abuse controls', () => {
     const retry = await buy({ key: 'pending-1', env: strict, headers: ip });
     expect(retry.status).toBe(200);
     expect((await retry.json() as any).order).toEqual(first.order);
-    // Any one shared identity counts: a new email and phone from the same IP is still refused.
-    expect((await buy({ key: 'pending-5', env: strict, headers: ip, contact: { email: 'other@example.com', phone: '0899999999' } })).status).toBe(429);
-    expect((await buy({ key: 'pending-6', env: strict, headers: { 'CF-Connecting-IP': '192.0.2.11' }, contact: { email: 'other@example.com', phone: '0899999999' } })).status).toBe(200);
-    expect(await sql("SELECT count(*) AS n FROM orders WHERE ip_hash IS NOT NULL AND email_hash IS NOT NULL AND phone_hash IS NOT NULL").first('n')).toBe(4);
+    // Either shared email or phone counts against the identity limit, from any IP.
+    expect((await buy({ key: 'pending-5', env: strict, headers: { 'CF-Connecting-IP': '192.0.2.11' }, contact: { email: 'other@example.com' } })).status).toBe(429);
+    // CGNAT: a new shopper behind the same carrier IP is admitted until the separate, higher MAX_PENDING_PER_IP (default 10).
+    expect((await buy({ key: 'pending-6', env: strict, headers: ip, contact: { email: 'other@example.com', phone: '0899999999' } })).status).toBe(200);
+    const ipLimited = { ...strict, MAX_PENDING_PER_IP: '4' } as Env;
+    expect((await buy({ key: 'pending-7', env: ipLimited, headers: ip, contact: { email: 'third@example.com', phone: '0855555555' } })).status).toBe(429);
+    expect((await buy({ key: 'pending-8', env: ipLimited, headers: { 'CF-Connecting-IP': '192.0.2.11' }, contact: { email: 'third@example.com', phone: '0855555555' } })).status).toBe(200);
+    expect(await sql("SELECT count(*) AS n FROM orders WHERE ip_hash IS NOT NULL AND email_hash IS NOT NULL AND phone_hash IS NOT NULL").first('n')).toBe(5);
     expect(JSON.stringify((await sql('SELECT email_hash,phone_hash,ip_hash FROM orders').all()).results)).not.toMatch(/192\.0\.2|example\.com|0812/);
     // Concurrent first orders can all pass the pre-check; the guarded order insert admits only the limit.
     const single = { ...e, MAX_PENDING_PER_IDENTITY: '1' } as Env;
@@ -911,6 +921,14 @@ describe('anti-fraud and abuse controls', () => {
     for (let i = 0; i < 3; i++) orders.push((await (await buy({ env: fast })).json() as any).order);
     expect(await reviews(orders[0].id)).toEqual([]);
     expect(await reviews(orders[2].id)).toEqual(['risk_velocity']);
+    // Velocity by IP alone uses its own, higher VELOCITY_LIMIT_IP so carrier CGNAT does not flag every shopper.
+    const shared = { ...e, VELOCITY_LIMIT_IP: '2' } as Env, carrier = { 'CF-Connecting-IP': '198.51.100.7' };
+    await stock(10);
+    const viaIp = [];
+    for (const [n, phone] of [[1, '0811111111'], [2, '0822222222'], [3, '0833333333']] as const) viaIp.push((await (await buy({ env: shared, headers: carrier, contact: { email: `cgnat${n}@example.com`, phone } })).json() as any).order);
+    expect(await reviews(viaIp[1].id)).toEqual([]);
+    expect(await reviews(viaIp[2].id)).toEqual(['risk_velocity']);
+    await sql("UPDATE inventory SET on_hand=reserved WHERE variant_id='a'").run();
     // A rolled-back checkout (no stock left) leaves no orphan review even though velocity would fire.
     const reviewCount = await count('manual_review');
     expect((await buy({ env: fast })).status).toBe(409);
@@ -966,9 +984,9 @@ describe('anti-fraud and abuse controls', () => {
 
   it('enforces per-order and per-customer purchase limits by SKU, with a trigger backstop', async () => {
     await stock();
-    expect((await request('/api/admin/variants/a', { maxPerOrder: 2, maxPerCustomer: 3 }, owner, 'PATCH')).status).toBe(200);
+    expect((await request('/api/admin/variants/a', { maxPerOrder: 2, maxPerCustomer: 3, version: 0 }, owner, 'PATCH')).status).toBe(200);
     expect(await sql("SELECT name,mode,price,max_per_order,max_per_customer FROM product_variants WHERE id='a'").first()).toEqual({ name: 'A', mode: 'stock', price: 1000, max_per_order: 2, max_per_customer: 3 });
-    for (const value of [0, -1, 1.5, '2']) expect((await request('/api/admin/variants/a', { maxPerOrder: value }, owner, 'PATCH')).status).toBe(400);
+    for (const value of [0, -1, 1.5, '2']) expect((await request('/api/admin/variants/a', { maxPerOrder: value, version: 1 }, owner, 'PATCH')).status).toBe(400);
     expect((await (await request('/api/catalog/product')).json() as any).product.variants.find((v: any) => v.id === 'a')).toMatchObject({ maxPerOrder: 2, maxPerCustomer: 3 });
     const tooMany = await buy({ quantity: 3 });
     expect(tooMany.status).toBe(409);
@@ -982,7 +1000,7 @@ describe('anti-fraud and abuse controls', () => {
     expect((await buy({ contact: { email: 'alias2@example.com' } })).status).toBe(409);
     expect((await buy({ contact: { email: 'stranger@example.com', phone: '0877777777' }, quantity: 2 })).status).toBe(200);
     await expect(sql("INSERT INTO order_items(id,order_id,variant_id,quantity,price,snapshot_json) VALUES('direct',?,'a',5,1000,'{}')", order.id).run()).rejects.toThrow('purchase_limit');
-    expect((await request('/api/admin/variants/a', { maxPerOrder: null, maxPerCustomer: null }, owner, 'PATCH')).status).toBe(200);
+    expect((await request('/api/admin/variants/a', { maxPerOrder: null, maxPerCustomer: null, version: 1 }, owner, 'PATCH')).status).toBe(200);
     expect((await buy({ quantity: 3 })).status).toBe(200);
     const created = await (await request('/api/admin/products/p/variants', { sku: 'SKU-L', name: 'Limited', price: 10, weight: 10, maxPerOrder: 1 }, owner)).json() as any;
     expect(await sql('SELECT max_per_order,max_per_customer FROM product_variants WHERE id=?', created.variant.id).first()).toEqual({ max_per_order: 1, max_per_customer: null });
@@ -1114,5 +1132,291 @@ describe('anti-fraud and abuse controls', () => {
     const product = await request('/api/admin/products', { slug: 'remote-image', name: 'Remote', imageUrl: 'https://evil.test/x.png', variants: [{ sku: 'R', name: 'R', price: 1, weight: 1 }] }, owner);
     expect(product.status).toBe(400);
     expect((await request('/api/admin/products/p', { imageUrl: 'https://evil.test/y.png' }, owner, 'PATCH')).status).toBe(400);
+  });
+});
+
+describe('ecommerce features', () => {
+  const owner = { 'X-Test-Admin': 'admin' }, catalogRole = { 'X-Test-Admin': 'catalog' }, ops = { 'X-Test-Admin': 'ops' };
+  const preview = (items: unknown, target = e) => worker.fetch(new Request('https://shop.test/api/cart/preview', { method: 'POST', headers: { Origin: e.PUBLIC_ORIGIN, 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) }), target);
+
+  it('filters the public catalog by category and bounded escaped name search with normalized cache keys', async () => {
+    const created = await request('/api/admin/categories', { slug: 'strategi', name: 'Strategi', position: 1 }, catalogRole);
+    expect(created.status).toBe(201);
+    const { category } = await created.json() as any;
+    expect(category).toMatchObject({ slug: 'strategi', name: 'Strategi', position: 1, active: true, version: 0 });
+    expect((await request('/api/admin/categories', { slug: 'party', name: 'Party', position: 2 }, ops)).status).toBe(403);
+    await request('/api/admin/products', { slug: 'catan', name: 'Catan 100%_Edition', categoryId: category.id, variants: [{ sku: 'CATAN', name: 'Base', price: 500000, weight: 1800 }] }, owner);
+    expect((await request('/api/admin/products', { slug: 'ghost', name: 'Ghost', categoryId: 'missing', variants: [{ sku: 'GHOST', name: 'Base', price: 1, weight: 1 }] }, owner)).status).toBe(409);
+    const slugs = async (query: string) => ((await (await request(`/api/catalog?${query}`)).json() as any).products as any[]).map(p => p.slug);
+    expect(await slugs('category=strategi')).toEqual(['catan']);
+    expect(await slugs('category=unknown')).toEqual([]);
+    expect(await slugs('q=CATAN')).toEqual(['catan']);
+    expect(await slugs('q=100%25_')).toEqual(['catan']);
+    expect(await slugs('q=0%25')).toEqual(['catan']);
+    expect(await slugs('q=_e')).toEqual(['catan']);
+    expect(await slugs('q=%25%25')).toEqual([]);
+    expect(await slugs('q=')).toEqual(['catan', 'product']);
+    for (const query of ['q=a', `q=${'x'.repeat(61)}`, 'category=Bad_Slug']) expect((await request(`/api/catalog?${query}`)).status).toBe(400);
+    const key = publicCacheKey(new URL('https://shop.test/api/catalog?q=%20%20Catan%20%20%20Base%20&category=strategi&utm_source=x'), catalogParams)!;
+    expect(key.url).toBe('https://shop.test/api/catalog?category=strategi&q=catan+base');
+    expect(publicCacheKey(new URL('https://shop.test/catalog?q=a'), catalogParams)).toBeNull();
+    expect(publicCacheKey(new URL('https://shop.test/catalog?q=&category='), catalogParams)!.url).toBe('https://shop.test/catalog');
+    const product = (await (await request('/api/catalog/catan')).json() as any).product;
+    expect(product.category).toEqual({ slug: 'strategi', name: 'Strategi' });
+    expect((await (await request('/api/categories')).json() as any).categories.map((c: any) => c.slug)).toEqual(['strategi']);
+    const stale = await request(`/api/admin/categories/${category.id}`, { name: 'Strategi Berat', version: 1 }, catalogRole, 'PATCH');
+    expect(stale.status).toBe(409);
+    expect((await stale.json() as any).details.current).toMatchObject({ name: 'Strategi', version: 0 });
+    expect((await (await request(`/api/admin/categories/${category.id}`, { name: 'Strategi Berat', version: 0 }, catalogRole, 'PATCH')).json() as any).category).toMatchObject({ name: 'Strategi Berat', version: 1 });
+    expect((await request(`/api/admin/categories/${category.id}`, undefined, catalogRole, 'DELETE')).status).toBe(409);
+    const catan = (await (await request('/api/admin/products?q=catan', undefined, owner)).json() as any).products[0];
+    expect((await (await request(`/api/admin/products/${catan.id}`, { categoryId: null, version: catan.version }, owner, 'PATCH')).json() as any).product).toMatchObject({ categoryId: null, version: 1 });
+    expect((await request(`/api/admin/categories/${category.id}`, undefined, catalogRole, 'DELETE')).status).toBe(200);
+    expect(await sql("SELECT count(*) AS n FROM audit_logs WHERE action LIKE 'category.%'").first('n')).toBe(3);
+  });
+
+  it('previews the cart authoritatively without caching or reserving', async () => {
+    await sql("UPDATE product_variants SET max_per_order=2 WHERE id='a'").run();
+    await db().batch([
+      sql("INSERT INTO products(id,slug,name) VALUES('po','preorder','PO Game')"),
+      sql("INSERT INTO product_variants(id,product_id,sku,name,price,weight,mode) VALUES('c','po','SKU-C','C',5000,300,'preorder'),('d','po','SKU-D','D',5000,300,'preorder')"),
+      sql("INSERT INTO preorder_campaigns(id,variant_id,starts_at,ends_at,ship_from,ship_to,quota) VALUES('camp','c',0,?,'2027-02-01','2027-02-20',null)", Date.now() + 100000),
+    ]);
+    const response = await preview([{ variantId: 'a', quantity: 3 }, { variantId: 'b', quantity: 1 }, { variantId: 'c', quantity: 2 }, { variantId: 'd', quantity: 1 }, { variantId: 'gone', quantity: 1 }]);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
+    const body = await response.json() as any;
+    expect(body.lines[0]).toMatchObject({ variantId: 'a', available: true, sku: 'SKU-A', productName: 'Product', price: 1000, lineTotal: 3000, mode: 'stock', enough: false, maxPerOrder: 2, campaign: null });
+    expect(body.lines[2]).toMatchObject({ variantId: 'c', enough: true, stockLevel: 'in_stock', campaign: { id: 'camp', shipFrom: '2027-02-01', shipTo: '2027-02-20' } });
+    expect(body.lines[4]).toEqual({ variantId: 'gone', quantity: 1, available: false });
+    expect(body.lines[0]).not.toHaveProperty('onHand');
+    expect(body.subtotal).toBe(3000 + 1000 + 10000 + 5000);
+    expect(body.shipPromise).toEqual({ shipFrom: '2027-02-01', shipTo: '2027-02-20', policy: 'single-shipment-latest-item' });
+    expect(body.problems.map((p: any) => [p.variantId, p.code])).toEqual([['a', 'insufficient'], ['a', 'max_per_order'], ['b', 'insufficient'], ['d', 'no_campaign'], ['gone', 'unavailable']]);
+    expect(await sql("SELECT reserved FROM inventory WHERE variant_id='a'").first('reserved')).toBe(0);
+    expect((await preview([{ variantId: 'a', quantity: 1 }, { variantId: 'a', quantity: 1 }])).status).toBe(400);
+    expect((await preview(Array.from({ length: 31 }, (_, i) => ({ variantId: `v${i}`, quantity: 1 })))).status).toBe(400);
+    expect((await preview([{ variantId: 'a', quantity: 1 }])).headers.get('X-Request-ID')).toBeTruthy();
+    expect(((await (await preview([{ variantId: 'a', quantity: 1 }])).json()) as any).problems).toEqual([]);
+  });
+
+  it('returns the authoritative total on a price change and keeps idempotent retries intact', async () => {
+    await sql("UPDATE product_variants SET price=1500 WHERE id='a'").run();
+    const changed = await place('price-key');
+    expect(changed.status).toBe(409);
+    expect(await changed.json()).toEqual({ error: 'Total changed; confirm authoritative total', details: { total: 1600 } });
+    expect(await count('orders')).toBe(0);
+    const confirmed = await request('/api/checkout', { ...payload('price-key-2'), expectedTotal: 1600 }, { Cookie: cookie(1) });
+    expect(confirmed.status).toBe(200);
+    const body = await confirmed.json() as any;
+    expect(body.order).toMatchObject({ total: 1600, shipPromise: { shipFrom: null, shipTo: null, policy: 'single-shipment-latest-item' }, shippingService: 'REG', shippingAmount: 100 });
+    expect(await sql("SELECT created_at FROM checkout_requests WHERE key='price-key-2'").first('created_at')).toBeGreaterThan(0);
+  });
+
+  it('bills volumetric weight and refuses carts over the weight limit', async () => {
+    expect(chargeableWeight({ weight: 100, length_cm: 30, width_cm: 30, height_cm: 10 }, 6000)).toBe(1500);
+    expect(chargeableWeight({ weight: 2000, length_cm: 30, width_cm: 30, height_cm: 10 }, 6000)).toBe(2000);
+    expect(chargeableWeight({ weight: 100, length_cm: 30, width_cm: null, height_cm: 10 }, 6000)).toBe(100);
+    expect(chargeableWeight({ weight: 100, length_cm: 30, width_cm: 30, height_cm: 10 }, 5000)).toBe(1800);
+    const variant = await (await request('/api/admin/products/p/variants', { sku: 'BOX', name: 'Box', price: 10, weight: 100, lengthCm: 30, widthCm: 30, heightCm: 10 }, owner)).json() as any;
+    expect(variant.variant).toMatchObject({ lengthCm: 30, widthCm: 30, heightCm: 10, lowStockThreshold: null });
+    for (const value of [0, 301, 1.5]) expect((await request(`/api/admin/variants/${variant.variant.id}`, { lengthCm: value, version: 0 }, owner, 'PATCH')).status).toBe(400);
+    const patched = await (await request(`/api/admin/variants/${variant.variant.id}`, { heightCm: 20, version: 0 }, owner, 'PATCH')).json() as any;
+    expect(patched.variant).toMatchObject({ lengthCm: 30, widthCm: 30, heightCm: 20, weight: 100, price: 10, version: 1 });
+    expect(((await (await preview([{ variantId: variant.variant.id, quantity: 1 }])).json()) as any).weight).toBe(3000);
+    await sql("UPDATE product_variants SET length_cm=30,width_cm=30,height_cm=10 WHERE id='a'").run();
+    // The quote was priced for 100 g; the billed 1500 g no longer matches it.
+    expect((await place('volumetric')).status).toBe(409);
+    const heavy = await (await preview([{ variantId: 'a', quantity: 1 }], { ...e, MAX_CART_WEIGHT_G: '1000' } as Env)).json() as any;
+    expect(heavy.problems).toEqual([{ variantId: null, code: 'weight_limit', message: 'Berat total melebihi batas 1 kg per pesanan' }]);
+    const refused = await worker.fetch(new Request('https://shop.test/api/checkout', { method: 'POST', headers: { Origin: e.PUBLIC_ORIGIN, 'Content-Type': 'application/json', Cookie: cookie(1) }, body: JSON.stringify(payload('heavy-cart')) }), { ...e, MAX_CART_WEIGHT_G: '1000' } as Env);
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual({ error: 'Berat total melebihi batas 1 kg per pesanan' });
+  });
+
+  it('compare-and-swaps catalog edits and returns the updated entity', async () => {
+    const first = await request('/api/admin/variants/a', { price: 1200, version: 0 }, owner, 'PATCH');
+    expect((await first.json() as any).variant).toMatchObject({ id: 'a', price: 1200, version: 1, onHand: 1 });
+    const stale = await request('/api/admin/variants/a', { price: 1300, version: 0 }, owner, 'PATCH');
+    expect(stale.status).toBe(409);
+    expect((await stale.json() as any).details.current).toMatchObject({ price: 1200, version: 1 });
+    expect((await request('/api/admin/variants/a', { price: 1300 }, owner, 'PATCH')).status).toBe(400);
+    expect((await request('/api/admin/variants/missing', { price: 1300, version: 0 }, owner, 'PATCH')).status).toBe(404);
+    expect((await (await request('/api/admin/products/p', { name: 'Baru', version: 0 }, owner, 'PATCH')).json() as any).product).toMatchObject({ name: 'Baru', version: 1, active: true });
+    expect((await request('/api/admin/products/p', { name: 'Lama', version: 0 }, owner, 'PATCH')).status).toBe(409);
+    expect(await sql("SELECT count(*) AS n FROM audit_logs WHERE action IN ('variants.update','products.update')").first('n')).toBe(2);
+    await sql("UPDATE product_variants SET mode='preorder' WHERE id='b'").run();
+    const { campaign } = await (await request('/api/admin/campaigns', { variantId: 'b', startsAt: 0, endsAt: Date.now() + 100000, shipFrom: '2027-01-01', shipTo: '2027-01-05', quota: 5 }, owner)).json() as any;
+    expect(campaign).toMatchObject({ version: 0, sku: 'SKU-B', quota: 5, active: true });
+    expect((await (await request(`/api/admin/campaigns/${campaign.id}`, { quota: 6, version: 0 }, owner, 'PATCH')).json() as any).campaign).toMatchObject({ quota: 6, version: 1 });
+    const lost = await request(`/api/admin/campaigns/${campaign.id}`, { quota: 7, version: 0 }, owner, 'PATCH');
+    expect(lost.status).toBe(409);
+    expect((await lost.json() as any).details.current).toMatchObject({ quota: 6, version: 1 });
+    const listed = (await (await request('/api/admin/products', undefined, owner)).json() as any).products[0];
+    expect(listed).toMatchObject({ version: 1, categoryId: null });
+    expect(listed.variants.find((v: any) => v.id === 'b').campaign.version).toBe(1);
+  });
+
+  it('searches variants for pickers and lists low stock against per-variant thresholds', async () => {
+    await db().batch([
+      sql("INSERT INTO product_variants(id,product_id,sku,name,price,weight,low_stock_threshold) VALUES('c','p','SKU-A2','Deluxe',1,1,0),('d','p','X-100%','Promo',1,1,null)"),
+      sql("INSERT INTO inventory(variant_id,on_hand) VALUES('c',3),('d',50)"),
+    ]);
+    const found = async (q: string, extra = '') => ((await (await request(`/api/admin/variants/search?q=${encodeURIComponent(q)}${extra}`, undefined, catalogRole)).json() as any).variants as any[]).map(v => v.sku);
+    expect(await found('sku-a2')).toEqual(['SKU-A2', ]);
+    expect(await found('sku-a')).toEqual(['SKU-A', 'SKU-A2']);
+    expect(await found('product')).toEqual(['SKU-A', 'SKU-A2', 'SKU-B', 'X-100%']);
+    expect(await found('0%')).toEqual(['X-100%']);
+    expect(await found('deluxe', '&mode=preorder')).toEqual([]);
+    for (const q of ['', ' ', 'x'.repeat(61)]) expect((await request(`/api/admin/variants/search?q=${q}`, undefined, catalogRole)).status).toBe(400);
+    const low = (await (await request('/api/admin/inventory?low=1', undefined, catalogRole)).json() as any).lowStock;
+    expect(low.map((v: any) => [v.sku, v.available, v.threshold])).toEqual([['SKU-B', 0, 5], ['SKU-A', 1, 5]]);
+    const lowered = (await (await request('/api/admin/inventory?low=1', undefined, catalogRole)).json() as any);
+    expect(lowered.lowStock.some((v: any) => v.sku === 'SKU-A2')).toBe(false);
+    expect((await request('/api/admin/inventory?low=1', undefined, ops)).status).toBe(403);
+  });
+
+  it('maps couriers to tracking pages and exposes tracking on the order API', async () => {
+    expect(tracking('JP123', 'jne:REG')).toEqual({ number: 'JP123', courier: 'jne', courierName: 'JNE', url: 'https://www.jne.co.id/tracking-package' });
+    expect(tracking('X1', 'SiCepat')).toMatchObject({ courierName: 'SiCepat', url: 'https://www.sicepat.com/checkAwb' });
+    expect(tracking('X1', 'paxel:SAMEDAY')).toEqual({ number: 'X1', courier: 'paxel', courierName: 'PAXEL', url: null });
+    expect(tracking(undefined, 'jne')).toBeNull();
+    for (const code of ['jne', 'jnt', 'sicepat', 'anteraja', 'pos', 'tiki', 'ninja', 'lion', 'ide', 'sap', 'wahana']) expect(tracking('R', code)!.url).toMatch(/^https:\/\//);
+    const { order } = await (await place()).json() as any;
+    await notify(order.reference);
+    const route = `/api/admin/orders/${order.id}/fulfillment`;
+    await request(route, { status: 'processing' }, owner, 'PATCH');
+    expect((await request(route, { status: 'shipped', tracking: 'AWB-1', courier: 'not valid!' }, owner, 'PATCH')).status).toBe(400);
+    expect((await request(route, { status: 'shipped', tracking: 'AWB-1', courier: 'AnterAja' }, owner, 'PATCH')).status).toBe(200);
+    const detail = await (await request(`/api/orders/${order.reference}`, undefined, { 'X-Order-Token': order.guestToken })).json() as any;
+    expect(detail.order.tracking).toEqual({ number: 'AWB-1', courier: 'anteraja', courierName: 'AnterAja', url: 'https://anteraja.id/tracking' });
+    expect((await (await request(`/api/admin/orders/${order.id}`, undefined, owner)).json() as any).order.tracking.number).toBe('AWB-1');
+  });
+
+  it('auto-completes long-shipped orders without open reviews, at most once', async () => {
+    const shipped = async (key: string, scope: number) => {
+      await stock();
+      const { order } = await (await place(`auto-${key}-key`, scope)).json() as any;
+      await notify(order.reference, 'succeeded', `paid-${key}`);
+      for (const status of ['processing', 'shipped']) await request(`/api/admin/orders/${order.id}/fulfillment`, { status, tracking: 'R' }, owner, 'PATCH');
+      return order;
+    };
+    const stock = () => sql("UPDATE inventory SET on_hand=on_hand+1 WHERE variant_id='a'").run();
+    const old = await shipped('old', 1), held = await shipped('held', 2), recent = await shipped('recent', 3);
+    await sql("UPDATE order_events SET created_at=? WHERE kind='shipped' AND order_id IN (?,?)", Date.now() - 15 * 86_400_000, old.id, held.id).run();
+    await sql("INSERT INTO manual_review(id,event_key,order_id,reason,created_at) VALUES('hold','hold',?,'risk_velocity',0)", held.id).run();
+    await scheduled();
+    const state = async (id: string) => sql('SELECT status,fulfillment FROM orders WHERE id=?', id).first();
+    expect(await state(old.id)).toEqual({ status: 'completed', fulfillment: 'delivered' });
+    expect(await state(held.id)).toEqual({ status: 'paid', fulfillment: 'shipped' });
+    expect(await state(recent.id)).toEqual({ status: 'paid', fulfillment: 'shipped' });
+    const timeline = (await (await request(`/api/orders/${old.reference}`, undefined, { 'X-Order-Token': old.guestToken })).json() as any).order.timeline.map((t: any) => t.kind);
+    expect(timeline.slice(-2).sort()).toEqual(['auto_completed', 'completed']);
+    await scheduled();
+    expect(await sql("SELECT count(*) AS n FROM order_events WHERE kind='auto_completed'").first('n')).toBe(1);
+    expect(await sql("SELECT details_json FROM order_events WHERE kind='auto_completed'").first('details_json')).toBe('{"afterDays":14}');
+  });
+
+  it('retains idempotency records for seven days and redacts PII only on finished orders when configured', async () => {
+    const old = Date.now() - 8 * 86_400_000;
+    const statements = [];
+    for (let i = 0; i < 205; i++) statements.push(sql("INSERT INTO orders(id,reference,guest_token_hash,total,contact_json,address_json,shipping_json,created_at,status) VALUES(?,?,'h',1,'{\"name\":\"x\"}','{\"line\":\"y\"}','{}',?,'cancelled')", `o${i}`, `R${i}`, old),
+      sql('INSERT INTO checkout_requests(scope,key,fingerprint,order_id,created_at) VALUES(?,?,?,?,?)', 's', `k${i}`, 'f', `o${i}`, old));
+    await db().batch(statements);
+    await db().batch([
+      sql("INSERT INTO orders(id,reference,guest_token_hash,total,contact_json,address_json,shipping_json,created_at) VALUES('pending','PENDING','h',1,'{\"name\":\"p\"}','{}','{}',?),('recent','RECENT','h',1,'{}','{}','{}',?)", old, Date.now()),
+      sql("INSERT INTO checkout_requests(scope,key,fingerprint,order_id,created_at) VALUES('s','pending','f','pending',?),('s','fresh','f','recent',?)", old, Date.now()),
+    ]);
+    await scheduled();
+    expect(await count('checkout_requests')).toBe(7);
+    await scheduled();
+    // The fresh record and the pending order's record survive.
+    expect((await sql('SELECT key FROM checkout_requests ORDER BY key').all()).results.map((r: any) => r.key)).toEqual(['fresh', 'pending']);
+    expect(await sql("SELECT count(*) AS n FROM orders WHERE pii_redacted_at IS NOT NULL").first('n')).toBe(0);
+    const redact = (id: string, contact = '{"redacted":true}', extra = '') => sql(`UPDATE orders SET contact_json=?,address_json='{"redacted":true}',pii_redacted_at=1${extra} WHERE id=?`, contact, id).run();
+    await expect(redact('pending')).rejects.toThrow('commercial_snapshot_immutable');
+    await expect(redact('o1', '{"name":"other"}')).rejects.toThrow('commercial_snapshot_immutable');
+    await expect(redact('o1', '{"redacted":true}', ',total=2')).rejects.toThrow('commercial_snapshot_immutable');
+    await expect(sql("UPDATE orders SET contact_json='{\"name\":\"z\"}' WHERE id='o1'").run()).rejects.toThrow('commercial_snapshot_immutable');
+    await redact('o1');
+    await expect(redact('o1')).rejects.toThrow('commercial_snapshot_immutable');
+    await expect(sql("UPDATE orders SET pii_redacted_at=NULL WHERE id='o1'").run()).rejects.toThrow('commercial_snapshot_immutable');
+    const configured = { ...e, ORDER_PII_RETENTION_DAYS: '7' } as Env;
+    await worker.scheduled({} as ScheduledController, configured);
+    expect(await sql("SELECT count(*) AS n FROM orders WHERE pii_redacted_at IS NOT NULL").first('n')).toBe(101);
+    expect(await sql("SELECT contact_json FROM orders WHERE id='pending'").first('contact_json')).toBe('{"name":"p"}');
+    await worker.scheduled({} as ScheduledController, configured);
+    await worker.scheduled({} as ScheduledController, configured);
+    expect(await sql("SELECT count(*) AS n FROM orders WHERE pii_redacted_at IS NULL").first('n')).toBe(2);
+  });
+
+  it('summarizes sales, filters and exports orders with CSV injection protection and audit', async () => {
+    const secret = e.RISK_HASH_SECRET!, now = Date.now();
+    const insert = (id: string, status: string, fulfillment: string, total: number, created: number, contact: Record<string, string>) =>
+      sql('INSERT INTO orders(id,reference,guest_token_hash,total,contact_json,address_json,shipping_json,created_at,status,fulfillment,email_hash,phone_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+        id, `FL-${id}`, 'h', total, JSON.stringify(contact), JSON.stringify({ line: 'Jl. 1', city: 'Bandung' }), JSON.stringify({ service: 'jne:REG', amount: 100 }), created, status, fulfillment, null, null);
+    await db().batch([
+      insert('paid1', 'paid', 'unfulfilled', 10000, now - 1000, { name: '=HYPERLINK("http://evil")', email: 'a@example.com', phone: '+62811' }),
+      insert('paid2', 'paid', 'shipped', 20000, now - 2000, { name: '@SUM(A1)', email: 'b@example.com', phone: '+62812' }),
+      insert('done', 'completed', 'delivered', 30000, now - 10 * 86_400_000, { name: '-1+1', email: 'c@example.com', phone: '+62813' }),
+      insert('wait', 'pending_payment', 'unfulfilled', 5000, now - 3000, { name: 'Plain "quoted"', email: 'd@example.com', phone: '+62814' }),
+      insert('void', 'cancelled', 'unfulfilled', 5000, now - 4000, { name: 'x', email: 'e@example.com', phone: '+62815' }),
+    ]);
+    await sql("INSERT INTO orders(id,reference,guest_token_hash,total,contact_json,address_json,shipping_json,created_at,status,email_hash,phone_hash) VALUES('hashed','FL-hashed','h',7000,'{}','{}','{}',?,'paid',?,?)",
+      now - 500, await riskHash(secret, 'email', 'find@example.com'), await riskHash(secret, 'phone', '+62812345678')).run();
+    await sql("INSERT INTO manual_review(id,event_key,order_id,reason,created_at) VALUES('r','r','hashed','risk_velocity',0)").run();
+    await sql("INSERT INTO inventory(variant_id,on_hand) VALUES('c',0)").run().catch(() => {});
+    const summary = async (range: string) => (await (await request(`/api/admin/summary?range=${range}`, undefined, ops)).json() as any);
+    expect(await summary('today')).toMatchObject({ paidOrders: 3, revenue: 37000, averageOrderValue: 12333, pendingPayment: 1, toFulfill: 1, openReviews: 1, lowStock: 2 });
+    expect(await summary('30d')).toMatchObject({ paidOrders: 4, revenue: 67000 });
+    expect((await request('/api/admin/summary?range=1y', undefined, ops)).status).toBe(400);
+    expect((await request('/api/admin/summary', undefined, catalogRole)).status).toBe(403);
+    const ids = async (query: string) => ((await (await request(`/api/admin/orders?${query}`, undefined, ops)).json() as any).orders as any[]).map(o => o.id);
+    expect(await ids('status=paid')).toEqual(['hashed', 'paid1', 'paid2']);
+    expect(await ids('status=to_fulfill')).toEqual(['paid1']);
+    expect(await ids('status=held')).toEqual(['hashed']);
+    expect(await ids('status=shipped')).toEqual(['paid2']);
+    expect(await ids('status=pending_payment')).toEqual(['wait']);
+    expect(await ids('q=FL-done')).toEqual(['done']);
+    expect(await ids('q=Find%40Example.com')).toEqual(['hashed']);
+    expect(await ids('q=0812-345-678')).toEqual(['hashed']);
+    expect(await ids('status=paid&limit=1&before=' + (now - 500) + '&beforeId=hashed')).toEqual(['paid1']);
+    const day = (offset: number) => new Date(now + 7 * 3_600_000 + offset * 86_400_000).toISOString().slice(0, 10);
+    expect(await ids(`from=${day(-11)}&to=${day(-9)}`)).toEqual(['done']);
+    for (const query of ['status=refunded', 'from=2026-02-30', 'to=yesterday']) expect((await request(`/api/admin/orders?${query}`, undefined, ops)).status).toBe(400);
+    const exported = await request('/api/admin/orders/export.csv?status=paid', undefined, ops);
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get('Content-Type')).toBe('text/csv; charset=utf-8');
+    expect(exported.headers.get('Cache-Control')).toBe('private, no-store');
+    const csv = await exported.text(), rows = csv.trim().split('\r\n');
+    expect(rows[0]).toBe('reference,created_at,status,fulfillment,hold,total,currency,name,email,phone,address,subdistrict,district,city,province,postal_code,shipping_service,shipping_amount');
+    expect(rows).toHaveLength(4);
+    expect(rows[1]).toMatch(/^"FL-hashed",.*"held"/);
+    expect(rows[2]).toContain(`"'=HYPERLINK(""http://evil"")"`);
+    expect(rows[3]).toContain(`"'@SUM(A1)"`);
+    expect(csvCell('-1+1')).toBe(`"'-1+1"`);
+    expect(csvCell('+62811')).toBe(`"'+62811"`);
+    expect(csvCell('Plain "quoted"')).toBe('"Plain ""quoted"""');
+    expect(csvCell(null)).toBe('""');
+    expect(await sql("SELECT actor,details_json FROM audit_logs WHERE action='orders.export'").first()).toEqual({ actor: 'ops', details_json: JSON.stringify({ filters: { status: 'paid', from: null, to: null, q: null }, cap: 5000 }) });
+    const capped = (await (await request('/api/admin/orders/export.csv?limit=2', undefined, ops)).text()).trim().split('\r\n');
+    expect(capped).toHaveLength(3);
+    expect((await request('/api/admin/orders/export.csv', undefined, catalogRole)).status).toBe(403);
+  });
+
+  it('serves a bounded cached sitemap and robots rules for public pages only', async () => {
+    await sql("INSERT INTO products(id,slug,name,active) VALUES('hidden','hidden-game','Hidden',0)").run();
+    await sql("INSERT INTO categories(id,slug,name) VALUES('cat','keluarga','Keluarga')").run();
+    const response = await request('/sitemap.xml');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('application/xml; charset=utf-8');
+    const xml = await response.text();
+    for (const path of ['/', '/catalog', '/privacy', '/terms', '/returns', '/about', '/policies', '/products/product', '/catalog?category=keluarga']) expect(xml).toContain(`<loc>https://shop.test${path}</loc>`);
+    expect(xml).not.toContain('hidden-game');
+    expect(xml).not.toMatch(/\/cart|\/order|\/admin/);
+    await sql("UPDATE products SET slug='renamed' WHERE id='p'").run();
+    expect(await (await request('/sitemap.xml')).text()).toBe(xml);
+    const robots = await (await request('/robots.txt')).text();
+    for (const rule of ['Disallow: /admin', 'Disallow: /cart', 'Disallow: /order', 'Disallow: /api', 'Sitemap: https://shop.test/sitemap.xml']) expect(robots).toContain(rule);
   });
 });

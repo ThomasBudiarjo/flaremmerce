@@ -19,7 +19,9 @@ Istilah **wajib** berarti invariant yang tidak boleh dilanggar. **Default** adal
 - Integrasi eksternal yang disepakati: **DOKU**, **RajaOngkir**, dan **Google OAuth**. Mereka bukan hosting/database aplikasi tambahan.
 - Guest checkout adalah kemampuan wajib, tidak boleh dikunci di belakang login atau paket Paid.
 - Customer-facing authentication hanya Google sign-in. Tidak ada login password, magic link, atau email OTP customer pada baseline.
-- Refund, retur, diskon, voucher, modul perhitungan pajak, multi-gudang, dan toko fisik belum disediakan. Penghapusan modul pajak bukan pernyataan bahwa kewajiban hukum/pajak bisnis tidak berlaku.
+- Refund, retur, diskon, voucher, modul perhitungan pajak, multi-gudang, dan toko fisik belum disediakan. Penghapusan modul pajak bukan pernyataan bahwa kewajiban hukum/pajak bisnis tidak berlaku. Komplain/retur/refund ditangani manual sesuai halaman `/returns`.
+- Scope storefront Fase 3 (migration 0012/0013): kategori (`categories`, `products.category_id`) dan pencarian nama bounded (`q` 2–60 karakter, LIKE ter-escape) sebagai filter katalog publik yang masuk cache key; preview cart authoritative `POST /api/cart/preview`; buku alamat customer login (maksimal 5); struk cetak dan unduhan konfirmasi guest di `/order`; link halaman pelacakan kurir dari peta statis; auto-complete order terkirim; SEO (meta, canonical, Open Graph, JSON-LD, `sitemap.xml`, `robots.txt`); halaman legal templat (`/privacy`, `/terms`, `/returns`, `/about`) yang wajib direview konsultan hukum.
+- Scope admin Fase 3 (API; UI menyusul Fase 4): ringkasan penjualan, filter status/tanggal/pencarian order (reference atau hash email/HP), ekspor CSV order teraudit, low-stock per varian, pencarian SKU server-side, CRUD kategori, dimensi varian dan compare-and-swap `version` untuk produk, varian, campaign dan kategori.
 
 ## D2 — Stack dan ownership
 
@@ -89,7 +91,7 @@ Kasus payment creation timeout dicatat sebagai **hasil belum diketahui** melalui
 
 ### Reservasi, expiry dan exception pembayaran
 
-Durasi reservasi mengikuti expiry metode pembayaran DOKU ditambah grace period yang terdokumentasi; **belum ada angka final**. Expiry worker tidak boleh melepas reservasi hanya berdasarkan clock lokal saat status provider ambigu. Lakukan reconciliation sesuai kontrak provider atau tandai manual review.
+Kebijakan expiry (Fase 1): DOKU Checkout `payment_due_date` 60 menit sejak attempt dibuat, ditambah `EXPIRY_GRACE_MIN` (default 30, maksimal 120). Setelah tenggat itu Cron melakukan lookup; hanya jawaban authoritative bukan-SUCCESS dengan nominal cocok yang membatalkan order dan melepas reservasi (event `expiry:<reference>`). Expiry worker tidak boleh melepas reservasi hanya berdasarkan clock lokal saat status provider ambigu: lookup gagal/ambigu menahan order dan setelah percobaan habis membuka manual review. Customer (token guest/pemilik) dan admin dapat membatalkan order pending setelah lookup yang sama. Order `paid` yang fulfillment-nya `shipped` lebih dari `AUTO_COMPLETE_DAYS` (default 14) tanpa review open diselesaikan Cron menjadi delivered/completed dengan event `auto_completed`.
 
 Pembayaran sukses setelah reservasi dilepas, pembayaran ganda, mismatch nominal atau order cancelled harus dicatat dan diangkat ke **manual review**; jangan otomatis mengirim tanpa stok atau menghapus bukti pembayaran. Tidak ada UI/API refund dan retur pada versi awal. Ini tidak menghilangkan kebutuhan penanganan operasional untuk uang yang sudah masuk, termasuk tindak lanjut di provider jika diperlukan.
 
@@ -108,7 +110,7 @@ Pembayaran sukses setelah reservasi dilepas, pembayaran ganda, mismatch nominal 
 
 ## D5 — Ongkir melalui RajaOngkir
 
-Customer harus memilih layanan pengiriman sebelum total final dibuat. Worker mengakses RajaOngkir menggunakan credential server; browser tidak mengirim tarif yang dipercaya begitu saja.
+Customer harus memilih layanan pengiriman sebelum total final dibuat. Berat yang ditagih per unit adalah maksimum berat aktual dan volumetrik `ceil(P×L×T cm × 1000 / VOLUMETRIC_DIVISOR)` gram (default pembagi 6000) bila ketiga dimensi varian diisi; quote dan checkout menghitung nilai yang sama dan cart di atas `MAX_CART_WEIGHT_G` (default 50 kg) ditolak 400. Worker mengakses RajaOngkir menggunakan credential server; browser tidak mengirim tarif yang dipercaya begitu saja.
 
 Quote dikaitkan dengan input authoritative: lokasi asal operasional yang dikonfigurasi, tujuan, berat total dari katalog, kurir/layanan dan parameter lain yang diwajibkan API. Lokasi asal bukan alasan menambahkan modul multi-gudang. Satuan berat/dimensi, pembulatan, cakupan wilayah dan bentuk identifier mengikuti dokumentasi paket RajaOngkir yang dipilih.
 
@@ -120,7 +122,7 @@ Cache quote memiliki TTL singkat; default usulan 5 menit, wajib ditinjau terhada
 
 Better Auth menyimpan primary session di D1. Cookie primary berisi opaque session token. Tidak ada JWT bearer token, refresh-token architecture atau token auth di localStorage sebagai dependency awal. Google OAuth memakai flow aman yang dikelola library, dengan validasi state/redirect dan verifikasi provider; detail adapter harus diuji di runtime Workers.
 
-Admin juga memakai Google sign-in sebagai default yang dipilih pada desain. Akun Google baru tidak otomatis mendapat role admin. Login, role, permission dan akses resource diverifikasi server; shell SPA bukan security boundary.
+Admin juga memakai Google sign-in sebagai default yang dipilih pada desain. Role admin: `owner` (semua), `ops` (pesanan, fulfillment, review, blocklist, customer, ringkasan, ekspor), `catalog` (produk, varian, media, inventori, campaign, kategori); path admin yang tidak terdaftar hanya owner. Buku alamat customer memakai session fresh, Origin check dan rate limit, dan setiap query dibatasi `user_id` pemilik. Akun Google baru tidak otomatis mendapat role admin. Login, role, permission dan akses resource diverifikasi server; shell SPA bukan security boundary.
 
 ### Bootstrap aman
 
@@ -185,7 +187,7 @@ Static Assets dilayani asset-first, bukan run_worker_first global. Header aset m
 - Turnstile lolos bukan authorization, validasi harga, rate limiting atau idempotency. Guest checkout tetap dibatasi input/abuse dan server-side correctness.
 - Webhook DOKU dikecualikan dari browser challenge/Turnstile/session login, tetapi bukan dari signature verification, batas payload dan pemeriksaan transaksi. Jangan mengekspos bypass challenge untuk semua /api hanya karena ada webhook.
 - Cached public HTML tidak menanam session atau Turnstile token. Token dibuat client-side sehingga tidak dibagi melalui SSR cache.
-- Lapisan abuse di Worker (migration 0010/0011): rate limit binding per route+IP dengan fallback fixed window D1, HMAC identitas (email/HP/IP) per order, batas order pending dan blocklist sebelum Turnstile, review velocity/email disposable dalam batch order yang sama, hold fulfillment selama ada review open, batas pembelian per order/pelanggan (aplikasi + trigger), alamat dari data wilayah server, katalog publik hanya `stockLevel` (`in_stock`/`low`/`out`). Event DOKU terverifikasi non-SALE/non-SUCCESS/FAILED disimpan sebagai evidence + review, bukan 422. Role admin `owner`/`ops`/`catalog` dienforce di routing; semua audit immutable. Rincian operasional di [operations.md](operations.md).
+- Lapisan abuse di Worker (migration 0010/0011): rate limit binding per route+IP dengan fallback fixed window D1 (preview cart memakai bucket quote, buku alamat bucket lookup), HMAC identitas (email/HP/IP) per order, batas order pending (email/HP `MAX_PENDING_PER_IDENTITY` default 3; IP terpisah `MAX_PENDING_PER_IP` default 10 karena CGNAT operator seluler) dan blocklist sebelum Turnstile, velocity email/HP `VELOCITY_LIMIT` default 5 dan IP `VELOCITY_LIMIT_IP` default 20, review velocity/email disposable dalam batch order yang sama, hold fulfillment selama ada review open, batas pembelian per order/pelanggan (aplikasi + trigger), alamat dari data wilayah server, katalog publik hanya `stockLevel` (`in_stock`/`low`/`out`). Event DOKU terverifikasi non-SALE/non-SUCCESS/FAILED disimpan sebagai evidence + review, bukan 422. Role admin `owner`/`ops`/`catalog` dienforce di routing; semua audit immutable. Rincian operasional di [operations.md](operations.md).
 
 ## D9 — Webhook, outbox dan recovery
 
@@ -231,7 +233,8 @@ Nama tabel berikut adalah rancangan domain, bukan DDL/migration yang sudah diuji
 - Index utama mengikuti slug/SKU, order reference/customer, payment merchant/provider reference, pending payment expiry, reservation expiry, outbox status/next_run dan event ownership. List menggunakan pagination, bukan SELECT * seluruh tabel.
 - Atomic batch/transaction D1 harus dibuktikan pada adapter/runtime yang dipakai. Tidak mengasumsikan transaksi interaktif Drizzle generik atau BEGIN manual bekerja pada D1. Konflik/zero affected rows harus menghasilkan rollback bisnis yang benar, bukan partial reserve.
 - Business uniqueness mencegah dua payment confirmation menyebabkan double fulfillment. Nomor tracking bukan payment identity. Jangan memakai stale read replica untuk memutuskan stock/payment write.
-- Data historis finansial/audit tidak hard-delete melalui aksi hapus produk. Retensi PII/log/email/guest token perlu policy eksplisit sebelum production; tidak berarti simpan semua data selamanya.
+- Data historis finansial/audit tidak hard-delete melalui aksi hapus produk. Retensi dijalankan Cron dalam batch kecil berindeks (tabel lengkap di [operations.md](operations.md#retensi-data-migration-00120013)): quote ongkir 1 jam setelah kedaluwarsa, `checkout_requests` 7 hari (retry setelahnya membuat order baru), session/verification kedaluwarsa, counter rate limit, inbound email setelah `INBOUND_RETENTION_DAYS` (default 180; objek R2 dulu, baru row). Redaksi PII order **default off** karena kewajiban simpan catatan transaksi; bila `ORDER_PII_RETENTION_DAYS` diset, kontak/alamat order completed/cancelled diganti marker `{"redacted":true}` dan `pii_redacted_at` diisi — satu-satunya perubahan yang diizinkan trigger `order_commercial_immutable`, sekali, tanpa mengubah kolom komersial lain.
+- Versi CAS: `products`, `product_variants`, `preorder_campaigns` dan `categories` memiliki `version`; PATCH admin wajib membawa `version` dan mismatch menghasilkan 409 dengan entity terkini di `details.current`.
 
 ## D12 — Free-first, kapasitas dan layanan opt-in
 

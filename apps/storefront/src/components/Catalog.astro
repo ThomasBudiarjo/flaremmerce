@@ -1,34 +1,60 @@
 ---
 import Layout from "../layouts/Layout.astro";
 import { catalog, money, type Product } from "../lib/catalog";
+import { catalogParams, searchTerm } from "../../../../src/shared";
+type Category = { id: string; slug: string; name: string };
 let products: Product[] = [];
+let categories: Category[] = [];
 let error = "";
+let invalid = "";
 let nextCursor: string | null = null;
+const rawQ = Astro.url.searchParams.get("q") ?? "";
+const q = searchTerm(rawQ);
+const rawCategory = Astro.url.searchParams.get("category") ?? "";
+const category = rawCategory && catalogParams.category(rawCategory) ? rawCategory : "";
+if (q === null) invalid = "Kata kunci pencarian harus 2–60 karakter.";
+else if (rawCategory && !category) invalid = "Kategori tidak dikenal.";
 try {
-  const query = new URLSearchParams();
-  for (const name of ["after", "limit"]) {
-    const value = Astro.url.searchParams.get(name);
-    if (value !== null) query.set(name, value);
+  categories = (await catalog(Astro.locals, "/api/categories")).categories;
+  if (!invalid) {
+    const query = new URLSearchParams();
+    for (const name of ["after", "limit"]) {
+      const value = Astro.url.searchParams.get(name);
+      if (value !== null) query.set(name, value);
+    }
+    if (category) query.set("category", category);
+    if (q) query.set("q", q);
+    const page = await catalog(Astro.locals, `/api/catalog?${query}`);
+    products = page.products;
+    nextCursor = page.nextCursor;
   }
-  const page = await catalog(Astro.locals, `/api/catalog?${query}`);
-  products = page.products;
-  nextCursor = page.nextCursor;
 } catch {
   error =
     "Katalog sementara tidak tersedia. Silakan muat ulang beberapa saat lagi.";
   Astro.response.status = 503;
 }
+if (invalid) Astro.response.status = 400;
 Astro.response.headers.set(
   "Cache-Control",
-  error ? "no-store" : "public, max-age=0, s-maxage=60",
+  error || invalid ? "no-store" : "public, max-age=0, s-maxage=60",
 );
+const current = categories.find((c) => c.slug === category);
+const link = (next: { category?: string; q?: string | null }) => {
+  const params = new URLSearchParams();
+  if (next.category) params.set("category", next.category);
+  if (next.q) params.set("q", next.q);
+  return `${Astro.url.pathname}${params.size ? `?${params}` : ""}`;
+};
 const nextQuery = new URLSearchParams();
 if (nextCursor) nextQuery.set("after", nextCursor);
 const limit = Astro.url.searchParams.get("limit");
 if (limit !== null) nextQuery.set("limit", limit);
+if (category) nextQuery.set("category", category);
+if (q) nextQuery.set("q", q);
+const heading = q ? `Hasil untuk “${q}”` : current ? current.name : "Semua produk";
 ---
 
-<Layout title="Board game untuk main bareng — Flaremmerce">
+<Layout title={current ? `${current.name} — Flaremmerce` : q ? `Cari “${q}” — Flaremmerce` : "Board game untuk main bareng — Flaremmerce"} canonical={category ? `/catalog?category=${encodeURIComponent(category)}` : Astro.url.pathname} noindex={!!q || !!invalid}>
   <section class="section catalog">
     <div class="catalog-intro">
       <div>
@@ -49,17 +75,37 @@ if (limit !== null) nextQuery.set("limit", limit);
         <p>Kumpulkan teman. Siapkan meja.<br />Satu ronde lagi? Selalu.</p>
       </div>
     </div>
+    <div class="catalog-filters">
+      <form class="catalog-search" method="get" action={Astro.url.pathname} role="search">
+        <label class="sr-only" for="catalog-q">Cari produk</label>
+        <input id="catalog-q" name="q" type="search" minlength="2" maxlength="60" placeholder="Cari nama produk" value={q ?? rawQ.slice(0, 60)} />
+        {category && <input type="hidden" name="category" value={category} />}
+        <button type="submit">Cari</button>
+      </form>
+      {categories.length > 0 && (
+        <nav class="chips" aria-label="Kategori">
+          <a class="chip" href={link({ q })} aria-current={!category ? "page" : undefined}>Semua</a>
+          {categories.map((c) => (
+            <a class="chip" href={link({ category: c.slug, q })} aria-current={c.slug === category ? "page" : undefined}>{c.name}</a>
+          ))}
+        </nav>
+      )}
+    </div>
     <div class="catalog-toolbar">
-      <h2>Semua produk</h2>
+      <h2>{heading}</h2>
       {!error && <span class="muted">{products.length} produk di halaman ini</span>}
     </div>
-    {error ? (
+    {invalid ? (
+      <div class="notice" role="alert">
+        {invalid} <a href={Astro.url.pathname}>Lihat semua produk</a>
+      </div>
+    ) : error ? (
       <div class="notice error" role="alert">
         {error} <a href={Astro.url.pathname + Astro.url.search}>Muat ulang</a>
       </div>
     ) : products.length === 0 ? (
       <div class="notice">
-        Koleksi baru sedang disiapkan. Kembali lagi nanti.
+        {q || category ? <>Tidak ada produk yang cocok. <a href={Astro.url.pathname}>Lihat semua produk</a></> : "Koleksi baru sedang disiapkan. Kembali lagi nanti."}
       </div>
     ) : (
       <div class="grid">

@@ -1,6 +1,6 @@
 import type { IntegrationEnv } from './index';
 import { demand, json, origin } from './security';
-import { HttpError, digest, MAX_CART_LINES } from '../shared';
+import { HttpError, cartWeightMessage, chargeableWeight, digest, MAX_CART_LINES, maxCartWeight, volumetricDivisor } from '../shared';
 
 type Destination = {id:string; label:string; province:string; city:string; district:string; subdistrict:string; postalCode:string};
 // Absent outside workerd (Node tests); search then simply goes to the provider.
@@ -68,15 +68,18 @@ export async function shipping(request: Request, env: IntegrationEnv) {
   demand(await env.DB.prepare('SELECT 1 AS known FROM shipping_destinations WHERE id=?').bind(destination).first('known'), 400, 'Pilih wilayah tujuan dari hasil pencarian');
   // At most 30 distinct IDs: one query stays below D1's 100-bind limit.
   const ids = [...items.keys()];
-  const {results} = await env.DB.prepare(`SELECT id,weight FROM product_variants WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all<{id:string;weight:number}>();
-  const weights = new Map(results.map(row => [row.id, row.weight]));
+  const {results} = await env.DB.prepare(`SELECT id,weight,length_cm,width_cm,height_cm FROM product_variants WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all<{id:string;weight:number;length_cm:number|null;width_cm:number|null;height_cm:number|null}>();
+  // Billed (volumetric-aware) grams; checkout recomputes the same value and compares it with the quote.
+  const divisor = volumetricDivisor(env);
+  const weights = new Map(results.map(row => [row.id, Number.isSafeInteger(row.weight) && row.weight > 0 ? chargeableWeight(row, divisor) : undefined]));
   let weight = 0;
   for (const [id,quantity] of items) {
     const grams = weights.get(id);
     demand(grams !== undefined && Number.isSafeInteger(grams) && grams > 0, 400, 'Invalid shipping item');
     weight += grams * quantity;
   }
-  demand(Number.isSafeInteger(weight) && weight > 0 && weight <= 1000000);
+  demand(Number.isSafeInteger(weight) && weight > 0);
+  demand(weight <= maxCartWeight(env), 400, cartWeightMessage(maxCartWeight(env)));
   const fingerprint = await digest(JSON.stringify({origin:env.RAJAONGKIR_ORIGIN,destination,weight,items:[...items].sort(([a],[b])=>a.localeCompare(b))}));
   // Reuse unexpired tariffs for the same cart and destination instead of calling the provider again.
   // Two minutes of remaining validity leaves time to complete checkout with a reused quote.

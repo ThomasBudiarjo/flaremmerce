@@ -84,6 +84,19 @@ export async function storageRequest(request: Request, env: StorageEnv): Promise
   }
 }
 
+/** Inbound mail older than INBOUND_RETENTION_DAYS (default 180): objects first, then rows, 50 per run. */
+export async function inboundRetention(env: StorageEnv & { INBOUND_RETENTION_DAYS?: string }) {
+  if (!env.PRIVATE_FILES) return 0;
+  const days = Number(env.INBOUND_RETENTION_DAYS ?? 180);
+  const cutoff = Date.now() - (Number.isSafeInteger(days) && days > 0 ? days : 180) * 86_400_000;
+  const { results } = await env.DB.prepare('SELECT id,object_key FROM support_messages WHERE created_at<? ORDER BY created_at,id LIMIT 50').bind(cutoff).all<{ id: string; object_key: string }>();
+  if (!results.length) return 0;
+  // A row is only removed after its object is gone; a failed R2 delete leaves both for the next run.
+  await env.PRIVATE_FILES.delete(results.map(r => r.object_key));
+  await env.DB.prepare(`DELETE FROM support_messages WHERE id IN (${results.map(() => '?').join(',')})`).bind(...results.map(r => r.id)).run();
+  return results.length;
+}
+
 /** Raw mail remains private/untrusted. No MIME/HTML rendering, forwarding or outbound API. */
 export async function receiveEmail(message: ForwardableEmailMessage, env: StorageEnv): Promise<void> {
   if (message.rawSize > LIMIT || message.from.length > 320 || message.to.length > 320 || /[\r\n\0]/.test(message.from + message.to)) {

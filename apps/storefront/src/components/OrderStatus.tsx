@@ -1,20 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../lib/cart";
+import { api, confirmationText, downloadText, type ApiError } from "../lib/cart";
+import { labels, paymentLabels } from "../lib/labels";
 import { money, date } from "../lib/catalog";
 import OrderHistory from "./OrderHistory";
-const labels: Record<string, string> = {
-  pending_payment: "Menunggu pembayaran",
-  paid: "Pembayaran terkonfirmasi",
-  completed: "Pesanan selesai",
-  cancelled: "Dibatalkan",
-  processing: "Sedang dipersiapkan",
-  shipped: "Sudah dikirim",
-  delivered: "Sudah diterima",
-  unfulfilled: "Belum diproses",
-  preparing: "Persiapan",
-  production: "Produksi",
-  ready_to_ship: "Siap kirim",
-};
 export default function OrderStatus() {
   const [reference, setReference] = useState("");
   const [token, setToken] = useState("");
@@ -74,7 +62,27 @@ export default function OrderStatus() {
       if (sequence === requestSequence.current) setBusy(false);
     }
   }
+  const [cancelState, setCancelState] = useState("");
+  async function cancel() {
+    if (!opened || !confirm("Batalkan pesanan ini? Stok akan dilepas dan pesanan tidak dapat dibayar lagi.")) return;
+    setBusy(true);
+    setCancelState("");
+    try {
+      await api("/api/orders/" + encodeURIComponent(opened.reference) + "/cancel", {}, { "X-Order-Token": opened.token });
+      setCancelState("Pesanan dibatalkan.");
+      await load(opened.reference, opened.token);
+    } catch (e) {
+      const status = (e as ApiError).status;
+      setCancelState(status === 409 ? "Pembayaran sudah tercatat berhasil, jadi pesanan tidak dapat dibatalkan. Status diperbarui."
+        : status === 503 ? "Status pembayaran belum dapat dipastikan. Pesanan belum dibatalkan; coba lagi beberapa saat lagi."
+        : (e as Error).message);
+      setBusy(false);
+      if (status === 409) void load(opened.reference, opened.token);
+    }
+  }
   const order = data?.order;
+  const receipt = order && (order.status === "paid" || order.status === "completed");
+  const itemsTotal = order?.items?.reduce((sum: number, i: any) => sum + i.price * i.quantity, 0) ?? 0;
   return (
     <>
       <OrderHistory labels={labels} onOwnerChange={(owner) => {
@@ -98,7 +106,7 @@ export default function OrderStatus() {
         void load(ref, "");
       }} />
       <form
-        className="panel"
+        className="panel no-print"
         onSubmit={(e) => {
           e.preventDefault();
           load();
@@ -128,7 +136,7 @@ export default function OrderStatus() {
         </button>
       </form>
       {error && (
-        <div role="alert" className="notice error">
+        <div role="alert" className="notice error no-print">
           {error}
         </div>
       )}
@@ -141,9 +149,7 @@ export default function OrderStatus() {
           <p className="price">{money(order.total)}</p>
           <p>
             Pembayaran:{" "}
-            {data.paymentState ||
-              order.paymentStatus ||
-              "Lihat status order di atas"}
+            {paymentLabels[data.paymentState] || data.paymentState || "Lihat status order di atas"}
           </p>
           <p>
             Pengiriman:{" "}
@@ -152,8 +158,13 @@ export default function OrderStatus() {
               data.fulfillment?.status ||
               "Belum ada pembaruan"}
           </p>
-          {(order.tracking || data.fulfillment?.tracking) && (
-            <p>Resi: {order.tracking || data.fulfillment.tracking}</p>
+          {order.tracking && (
+            <p>
+              Resi {order.tracking.courierName ? `${order.tracking.courierName} ` : ""}<strong>{order.tracking.number}</strong>
+              {order.tracking.url && /^https:\/\//.test(order.tracking.url) && (
+                <> · <a href={order.tracking.url} target="_blank" rel="noreferrer noopener">Lacak di situs kurir ↗</a> (tempel nomor resi di halaman tersebut)</>
+              )}
+            </p>
           )}
           {(order.items || data.items)?.map((i: any, n: number) => (
             <div className="line" key={i.id || n}>
@@ -171,7 +182,30 @@ export default function OrderStatus() {
             Status di atas berasal dari server. Jika hasil belum diketahui,
             jangan membayar ulang secara terpisah.
           </div>
-          <div className="row" style={{ flexWrap: "wrap", justifyContent: "flex-start", marginTop: 16 }}>
+          {receipt && (
+            <section className="receipt" aria-label="Struk pembelian">
+              <h3>Struk pembelian</h3>
+              <p>Referensi {order.reference} · {date(order.createdAt)}</p>
+              <table>
+                <thead><tr><th>Item</th><th>Jumlah</th><th>Harga</th><th>Subtotal</th></tr></thead>
+                <tbody>
+                  {order.items.map((i: any) => (
+                    <tr key={i.id}><td>{i.productName} — {i.name} ({i.sku})</td><td>{i.quantity}</td><td>{money(i.price)}</td><td>{money(i.price * i.quantity)}</td></tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr><td colSpan={3}>Subtotal</td><td>{money(itemsTotal)}</td></tr>
+                  <tr><td colSpan={3}>Ongkir {order.shipping?.service}</td><td>{money(order.shipping?.amount ?? order.total - itemsTotal)}</td></tr>
+                  <tr><th colSpan={3}>Total dibayar</th><th>{money(order.total)}</th></tr>
+                </tfoot>
+              </table>
+              {order.contact?.name && <p>Penerima: {order.contact.name} · {order.contact.phone}</p>}
+              {order.address?.line && <p>Alamat: {order.address.line}, {order.address.label}</p>}
+              {order.shipping?.shipTo && <p>Estimasi kirim: {date(order.shipping.shipFrom)} – {date(order.shipping.shipTo)} (satu pengiriman)</p>}
+            </section>
+          )}
+          {cancelState && <p role="status">{cancelState}</p>}
+          <div className="row no-print" style={{ flexWrap: "wrap", justifyContent: "flex-start", marginTop: 16 }}>
             {order.status === "pending_payment" && data.paymentState === "pending" &&
               typeof data.paymentUrl === "string" && /^https:\/\//.test(data.paymentUrl) && (
               <a className="button" href={data.paymentUrl} rel="noreferrer">
@@ -181,6 +215,13 @@ export default function OrderStatus() {
             <button onClick={() => opened && load(opened.reference, opened.token)} disabled={busy}>
               Perbarui status
             </button>
+            {receipt && <button onClick={() => window.print()}>Cetak struk</button>}
+            {data.access?.type === "guest" && opened?.token && (
+              <button onClick={() => downloadText(`pesanan-${order.reference}.txt`, confirmationText(order.reference, opened.token, location.origin))}>Simpan konfirmasi</button>
+            )}
+            {order.status === "pending_payment" && (
+              <button onClick={cancel} disabled={busy}>Batalkan pesanan</button>
+            )}
           </div>
         </section>
       )}

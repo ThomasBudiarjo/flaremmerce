@@ -40,11 +40,22 @@ export function envMinutes(value: string | undefined, fallback: number, max: num
   return Number.isInteger(parsed) && parsed >= 0 ? Math.min(parsed, max) : fallback;
 }
 
-type Normalizer = (value: string) => string | null;
+/** Normalized value, null for invalid (never cached, handler rejects), undefined for "same as absent". */
+type Normalizer = (value: string) => string | null | undefined;
+/** Name search: whitespace-collapsed lowercase, 2–60 characters; blank is no search (an empty GET form field). */
+export function searchTerm(value: string) {
+  const term = value.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (!term) return undefined;
+  return term.length >= 2 && term.length <= 60 ? term : null;
+}
 export const catalogParams: Record<string, Normalizer> = {
   after: value => validSlug(value) ? value : null,
   limit: value => /^\d{1,2}$/.test(value) && Number(value) >= 1 && Number(value) <= 90 ? String(Number(value)) : null,
+  category: value => value === '' ? undefined : validSlug(value) ? value : null,
+  q: searchTerm,
 };
+/** LIKE pattern matching `term` literally anywhere; pair with ESCAPE '\'. */
+export const likePattern = (term: string) => `%${term.replace(/[\\%_]/g, c => `\\${c}`)}%`;
 /** Shared-cache key from path plus normalized allowlisted params. Null means "do not cache": the handler rejects or serves uncached. */
 export function publicCacheKey(url: URL, allowed: Record<string, Normalizer> = {}): Request | null {
   const key = new URL(`${url.origin}${url.pathname}`);
@@ -53,9 +64,61 @@ export function publicCacheKey(url: URL, allowed: Record<string, Normalizer> = {
     if (value === null) continue;
     const normalized = normalize(value);
     if (normalized === null) return null;
-    key.searchParams.set(name, normalized);
+    if (normalized !== undefined) key.searchParams.set(name, normalized);
   }
   return new Request(key);
+}
+/** Allowlisted catalog query as the handler reads it (same normalizers as the cache key); null when invalid. */
+export function catalogQuery(params: URLSearchParams) {
+  const out: Record<string, string> = {};
+  for (const [name, normalize] of Object.entries(catalogParams)) {
+    const value = params.get(name);
+    if (value === null) continue;
+    const normalized = normalize(value);
+    if (normalized === null) return null;
+    if (normalized !== undefined) out[name] = normalized;
+  }
+  return out;
+}
+
+type Dimensions = { weight: number; length_cm?: number | null; width_cm?: number | null; height_cm?: number | null };
+/** Billed grams per unit: the larger of actual and volumetric weight (L×W×H cm / divisor, in kg) when all dimensions are known. */
+export function chargeableWeight(v: Dimensions, divisor: number) {
+  if (!v.length_cm || !v.width_cm || !v.height_cm) return v.weight;
+  return Math.max(v.weight, Math.ceil(v.length_cm * v.width_cm * v.height_cm * 1000 / divisor));
+}
+export const volumetricDivisor = (env: { VOLUMETRIC_DIVISOR?: string }) => envCount(env.VOLUMETRIC_DIVISOR, 6000);
+export const maxCartWeight = (env: { MAX_CART_WEIGHT_G?: string }) => envCount(env.MAX_CART_WEIGHT_G, 50_000);
+export const cartWeightMessage = (limit: number) => `Berat total melebihi batas ${new Intl.NumberFormat('id-ID').format(limit / 1000)} kg per pesanan`;
+
+// Official public tracking pages. None accepts a documented resi deep link, so the resi is shown for the shopper to paste.
+const couriers: Record<string, { name: string; url: string }> = {
+  jne: { name: 'JNE', url: 'https://www.jne.co.id/tracking-package' },
+  jnt: { name: 'J&T Express', url: 'https://jet.co.id/track' },
+  sicepat: { name: 'SiCepat', url: 'https://www.sicepat.com/checkAwb' },
+  anteraja: { name: 'AnterAja', url: 'https://anteraja.id/tracking' },
+  pos: { name: 'Pos Indonesia', url: 'https://www.posindonesia.co.id/id/tracking' },
+  tiki: { name: 'TIKI', url: 'https://www.tiki.id/id/track' },
+  ninja: { name: 'Ninja Xpress', url: 'https://www.ninjaxpress.co/id-id/tracking' },
+  lion: { name: 'Lion Parcel', url: 'https://lionparcel.com/track/stt' },
+  ide: { name: 'ID Express', url: 'https://idexpress.com/lacak-paket/' },
+  sap: { name: 'SAP Express', url: 'https://www.sap-express.id/layanan/tracking' },
+  wahana: { name: 'Wahana', url: 'https://www.wahana.com/lacak' },
+};
+/** Courier code from an explicit value or a quote service such as `jne:REG`; unknown couriers keep only their code. */
+export function tracking(resi: string | null | undefined, courier: string | null | undefined) {
+  if (!resi) return null;
+  const code = (courier ?? '').split(':')[0].trim().toLowerCase();
+  const known = couriers[code];
+  return { number: resi, courier: code || null, courierName: known?.name ?? (code ? code.toUpperCase() : null), url: known?.url ?? null };
+}
+export const COURIERS = Object.keys(couriers);
+/** Latest shipped event's resi with a courier link (explicit courier, else the quoted service's courier). */
+export function orderTracking(events: Record<string, unknown>[], shipping: { service?: string }) {
+  const shipped = events.filter(e => e.kind === 'shipped').at(-1);
+  if (!shipped) return null;
+  const details = JSON.parse(String(shipped.details_json ?? '{}'));
+  return tracking(details.tracking, details.courier ?? shipping.service);
 }
 
 /** Distinct cart lines accepted by the storefront cart, shipping quote and checkout. */
@@ -98,7 +161,7 @@ export const ADMIN_ROLES: readonly AdminRole[] = ['owner', 'ops', 'catalog'];
 type AdminArea = 'any' | 'ops' | 'catalog' | 'owner';
 const areas: [RegExp, AdminArea][] = [
   [/^\/api\/admin\/me$/, 'any'],
-  [/^\/api\/admin\/(?:operations|orders|review|blocklist|customers|users|files|exports)(?:\/|$)/, 'ops'],
+  [/^\/api\/admin\/(?:operations|orders|review|blocklist|customers|users|files|exports|summary)(?:\/|$)/, 'ops'],
   [/^\/api\/admin\/(?:products|variants|media|inventory|campaigns|categories)(?:\/|$)/, 'catalog'],
 ];
 /** Unlisted admin paths are owner-only, so a new route is never silently exposed to a narrower role. */

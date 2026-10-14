@@ -57,6 +57,19 @@ Backend-first, lokal, belum dipush/deploy. Migration baru `0010_risk.sql` (comme
 
 Pemeriksaan: `npm run check`, `npm test` (**145 tes**: 58 commerce + 87 integration/storage/checkout/operations/UI/recovery), `npm run build`, `npm run deploy:check` lulus. Belum diuji di browser: hidrasi island di bawah CSP (hash diverifikasi terhadap HTML hasil build, bukan console browser), widget Turnstile live. UI admin untuk blocklist/role/customer/hold menyusul di Fase 4 (API sudah tersedia).
 
+## Fase 3: fitur ecommerce — 14 Oktober 2026
+
+Lokal, belum dipush/deploy. Migration `0012_ecommerce.sql` (commerce) dan `0013_accounts.sql` (integrasi); rincian dan retensi di [operations.md](operations.md#fitur-ecommerce-fase-3-migration-00120013).
+
+- Perbaikan Fase 2: limit pending dan velocity IP dipisah (`MAX_PENDING_PER_IP` 10, `VELOCITY_LIMIT_IP` 20) dari email/HP (3 / 5) karena CGNAT seluler.
+- Kategori + pencarian nama bounded di API dan SSR katalog (chip kategori, form GET), cache key ternormalisasi; CRUD kategori admin.
+- `POST /api/cart/preview` menggantikan loop katalog di checkout. Checkout: konfirmasi ulang saat total berubah (409 `details.total`), idempotency key + payload dibekukan setelah hasil ambigu (network/5xx/408) dengan link "Periksa status pesanan" dan hanya diganti setelah penolakan 4xx pasti, quote kedaluwarsa dibuang, Total "Pilih ongkir" sebelum quote, edit alamat jalan tidak membatalkan quote, janji kirim snapshot di konfirmasi, buku alamat untuk customer login.
+- `/order`: tombol "Batalkan pesanan" (konfirmasi, pesan 409/503), struk cetak (`@media print`) untuk paid/completed, "Simpan konfirmasi" (.txt lokal; token tidak masuk URL), link halaman pelacakan kurir, label timeline baru.
+- Auto-complete Cron, retensi bounded, redaksi PII opsional dengan pengecualian trigger sempit, berat volumetrik + batas berat cart, SEO (meta/canonical/OG/JSON-LD, sitemap, robots), halaman legal templat + link footer.
+- API admin: ringkasan, filter/pencarian order, ekspor CSV teraudit dan aman formula, low-stock, pencarian SKU, `version` CAS + entity di respons. UI admin hanya diubah minimal (mengirim `version`); redesign di Fase 4.
+
+Pemeriksaan: `npm run check`, `npm test` (**168 tes**: 69 commerce + 99 integration/storage/checkout/operations/UI/recovery), `npm run build`, `npm run deploy:check` lulus. Belum diuji di browser nyata: halaman katalog dengan filter, print preview struk, link kurir, hidrasi island di bawah CSP. URL pelacakan kurir dan teks legal belum diverifikasi.
+
 ## Gate yang tidak boleh disamarkan
 
 1. Resource, secret dan hostname staging/production nyata + otorisasi provision/deploy/migration. Root Wrangler masih lokal/ID dummy.
@@ -65,6 +78,6 @@ Pemeriksaan: `npm run check`, `npm test` (**145 tes**: 58 commerce + 87 integrat
 4. Google OAuth redirect/cookie propagation/state pada HTTPS staging dan Turnstile token invalid/replay nyata. Tes provider lokal tidak menggantikan ini.
 5. WAF exception tepat path/method webhook, Free rule quota, public R2 custom domain dan private bucket nonpublic, DNS Email Routing.
 6. Load/CPU/rows/kuota cloud dengan dataset nyata; 100 request GET katalog lokal bukan bukti medium traffic/concurrency aman di Workers Free.
-7. Policy retensi PII/raw email/token, UX pemulihan guest lintas perangkat, RPO/RTO, jadwal backup cloud, alert destination dan keputusan/prosedur penanganan finansial eksternal. UI manual review sudah tersedia; tidak ada otomatis refund/retur.
+7. Periode simpan catatan transaksi dan nilai `ORDER_PII_RETENTION_DAYS` (mekanisme retensi sudah ada, default redaksi off), review hukum halaman legal templat, verifikasi URL pelacakan kurir, UX pemulihan guest lintas perangkat, RPO/RTO, jadwal backup cloud, alert destination dan keputusan/prosedur penanganan finansial eksternal. UI manual review sudah tersedia; tidak ada otomatis refund/retur.
 
 Fitur yang tidak masuk baseline tetap tidak dibuat: pajak, voucher/diskon, marketplace, multi-gudang, split shipment, refund/retur dan outbound customer email Paid. Port preview tidak mengotorisasi atau membuktikan deployment production.

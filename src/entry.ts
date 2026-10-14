@@ -7,7 +7,7 @@ export default {
   ...api,
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname.startsWith('/api/')) return api.fetch(request, env, ctx);
+    if (url.pathname.startsWith('/api/') || url.pathname === '/sitemap.xml' || url.pathname === '/robots.txt') return api.fetch(request, env, ctx);
     if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
       const asset = new URL(request.url);
       if (!url.pathname.includes('.') || url.pathname.endsWith('/')) asset.pathname = '/admin/';

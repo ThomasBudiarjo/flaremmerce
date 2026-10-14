@@ -190,6 +190,7 @@ function SaveForm({
   onSaved,
   editableDefaults,
   serverSnapshot = editableDefaults,
+  version: entityVersion,
 }: {
   api: API;
   path: string;
@@ -199,6 +200,8 @@ function SaveForm({
   onSaved: () => Promise<void>;
   editableDefaults?: Record<string, unknown>;
   serverSnapshot?: object;
+  /** Compare-and-swap version of the edited entity; PATCH sends it so a stale editor gets 409. */
+  version?: number;
 }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -260,7 +263,7 @@ function SaveForm({
             setSaved(true);
             return;
           }
-          await api(path, changes, method);
+          await api(path, method === "PATCH" && entityVersion !== undefined ? { ...changes, version: entityVersion } : changes, method);
           if (version === epoch.current) {
             const refreshed = snapshot.current !== latestServer.current.snapshot;
             form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input[name], textarea[name], select[name]").forEach((field) => {
@@ -410,6 +413,7 @@ export function CatalogEditor({
         key={product.id}
         api={api}
         editableDefaults={product}
+        version={product.version}
         path={`/api/admin/products/${encodeURIComponent(product.id)}`}
         build={(f) => textFields(f, ["name", "slug", "description"])}
         onSaved={onSaved}
@@ -443,6 +447,7 @@ export function CatalogEditor({
             key={v.id}
             api={api}
             editableDefaults={v}
+            version={v.version}
             path={`/api/admin/variants/${encodeURIComponent(v.id)}`}
             build={(f) => variantBody(f, false)}
             onSaved={onSaved}
@@ -676,6 +681,7 @@ export function CampaignList({
               api={api}
               editableDefaults={{ ...c, startsAt: localWib(c.startsAt), endsAt: localWib(c.endsAt) }}
               serverSnapshot={c}
+              version={c.version}
               path={`/api/admin/campaigns/${encodeURIComponent(c.id)}`}
               onSaved={onSaved ?? (() => load())}
               build={(f) => ({

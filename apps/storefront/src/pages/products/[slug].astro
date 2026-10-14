@@ -19,12 +19,41 @@ Astro.response.headers.set(
   "Cache-Control",
   product ? "public, max-age=0, s-maxage=60" : "no-store",
 );
+const canonical = product && `/products/${encodeURIComponent(product.slug)}`;
+const availability = (v: Product["variants"][number]) => v.mode === "preorder" ? "https://schema.org/PreOrder" : v.stockLevel === "out" ? "https://schema.org/OutOfStock" : v.stockLevel === "low" ? "https://schema.org/LimitedAvailability" : "https://schema.org/InStock";
+const jsonLd = product && {
+  "@context": "https://schema.org",
+  "@type": "Product",
+  name: product.name,
+  description: product.description.slice(0, 5000),
+  ...(product.imageUrl ? { image: [product.imageUrl] } : {}),
+  ...(product.category ? { category: product.category.name } : {}),
+  offers: product.variants.map((v) => ({
+    "@type": "Offer",
+    sku: v.sku,
+    name: v.name,
+    price: String(v.price),
+    priceCurrency: "IDR",
+    availability: availability(v),
+    url: new URL(canonical!, Astro.url.origin).href,
+  })),
+};
 ---
 
-<Layout title={(product?.name || "Produk tidak tersedia") + " — Flaremmerce"}>
+<Layout
+  title={(product?.name || "Produk tidak tersedia") + " — Flaremmerce"}
+  description={product?.description || undefined}
+  canonical={canonical || undefined}
+  image={product?.imageUrl}
+  type={product ? "product" : "website"}
+  jsonLd={jsonLd || undefined}
+  noindex={!product}
+>
   <section class="section">
     <p class="muted">
-      <a href="/catalog">Koleksi</a> / {product?.name || "Produk"}
+      <a href="/catalog">Koleksi</a> /{" "}
+      {product?.category && <><a href={`/catalog?category=${encodeURIComponent(product.category.slug)}`}>{product.category.name}</a> / </>}
+      {product?.name || "Produk"}
     </p>
     {product ? (
       <div class="detail">

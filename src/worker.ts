@@ -5,7 +5,10 @@ import { commerceRequest } from './commerce/index';
 import { consumeOutbox, reconcile, recoverOutbox } from './commerce/payments';
 import { json } from './commerce/types';
 import { catalogParams, HttpError, publicCacheKey } from './shared';
-import { storageRequest, receiveEmail, type StorageEnv } from './storage';
+import { inboundRetention, storageRequest, receiveEmail, type StorageEnv } from './storage';
+import { autoComplete, commerceRetention } from './commerce/lifecycle';
+import { integrationRetention } from './integrations/retention';
+import { robots, sitemap } from './seo';
 import { pruneRateCounters, rateLimit, type RateLimitEnv } from './ratelimit';
 
 export interface Env extends IntegrationEnv, StorageEnv, RateLimitEnv {
@@ -25,6 +28,17 @@ export default {
       const url = new URL(request.url);
       const limited = await rateLimit(request, env);
       if (limited) return limited;
+      if (request.method === 'GET' && (url.pathname === '/sitemap.xml' || url.pathname === '/robots.txt')) {
+        const origin = new URL(env.PUBLIC_ORIGIN).origin;
+        if (url.pathname === '/robots.txt') return robots(origin);
+        // Keyed on the canonical origin: the document lists only public URLs, never request data.
+        const key = new Request(`${origin}/sitemap.xml`), cached = await caches.default.match(key);
+        if (cached) return cached;
+        const response = await sitemap(env, origin);
+        const store = caches.default.put(key, response.clone()).catch(() => {});
+        if (context) context.waitUntil(store); else await store;
+        return response;
+      }
       if (request.method === 'GET' && url.pathname === '/api/config') return json({
         turnstileSiteKey: env.TURNSTILE_SITE_KEY ?? null,
         googleEnabled: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.BETTER_AUTH_SECRET),
@@ -32,7 +46,7 @@ export default {
       });
       // Explicit public allowlist. No session, cookie, token or PII enters these cache values.
       // Preserve supported pagination; discard tracking/unsupported query parameters.
-      if (request.method === 'GET' && (url.pathname === '/api/catalog' || /^\/api\/catalog\/[a-z0-9-]{1,100}$/.test(url.pathname))) {
+      if (request.method === 'GET' && (url.pathname === '/api/catalog' || url.pathname === '/api/categories' || /^\/api\/catalog\/[a-z0-9-]{1,100}$/.test(url.pathname))) {
         const key = publicCacheKey(url, url.pathname === '/api/catalog' ? catalogParams : {});
         const cached = key && await caches.default.match(key);
         if (cached) return cached;
@@ -74,8 +88,9 @@ export default {
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const results = await Promise.allSettled([reconcile(env), recoverOutbox(env)]);
-    // Housekeeping only: a failure here never masks or fails the recovery scanners.
-    await pruneRateCounters(env).catch(() => console.warn('cron_error', { category: 'rate_counter_prune', kind: 'background_error' }));
+    // Housekeeping only: a failure here never masks or fails the recovery scanners. Each task is a few bounded statements.
+    const housekeeping = { rate_counter_prune: pruneRateCounters, auto_complete: autoComplete, commerce_retention: commerceRetention, integration_retention: integrationRetention, inbound_retention: inboundRetention };
+    for (const [category, task] of Object.entries(housekeeping)) await task(env).catch(() => console.warn('cron_error', { category, kind: 'background_error' }));
     const failures = results.filter(result => result.status === 'rejected');
     results.forEach((result, index) => {
       if (result.status === 'rejected') console.error('cron_error', { category: index === 0 ? 'payment_recovery' : 'outbox_recovery', kind: 'background_error' });

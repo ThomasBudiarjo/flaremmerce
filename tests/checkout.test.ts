@@ -8,7 +8,7 @@ it('order history validates fresh real sessions and never claims same-email gues
   const mf = new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-08-06',d1Databases:['DB']}));
   try {
     const DB = await mf.getD1Database('DB');
-    for (const migration of ['0001_commerce','0002_integrations','0004_manual_review','0005_customer_orders','0008_lifecycle','0009_role_audit','0010_risk','0011_admin_access']) await DB.exec(readFileSync(new URL(`../migrations/${migration}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+    for (const migration of ['0001_commerce','0002_integrations','0004_manual_review','0005_customer_orders','0008_lifecycle','0009_role_audit','0010_risk','0011_admin_access','0012_ecommerce','0013_accounts']) await DB.exec(readFileSync(new URL(`../migrations/${migration}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
     const now = Date.now(), secret = 'history-test-auth-secret-at-least-32-characters';
     const env = {DB,PUBLIC_ORIGIN:'https://shop.example',BETTER_AUTH_SECRET:secret,GOOGLE_CLIENT_ID:'test-google',GOOGLE_CLIENT_SECRET:'test-google-secret'} as unknown as Env;
     await DB.batch([
@@ -40,7 +40,7 @@ it('guest checkout crosses real shipping, Turnstile, DOKU, D1 and private order 
   const mf = new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response("ok")}}',compatibilityDate:'2026-08-06',d1Databases:['DB']}));
   try {
     const DB = await mf.getD1Database('DB');
-    for (const migration of ['0001_commerce','0002_integrations','0004_manual_review','0008_lifecycle','0009_role_audit','0010_risk','0011_admin_access']) await DB.exec(readFileSync(new URL(`../migrations/${migration}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+    for (const migration of ['0001_commerce','0002_integrations','0004_manual_review','0008_lifecycle','0009_role_audit','0010_risk','0011_admin_access','0012_ecommerce','0013_accounts']) await DB.exec(readFileSync(new URL(`../migrations/${migration}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
     await DB.exec("INSERT INTO products(id,slug,name) VALUES('p','test-product','Product'); INSERT INTO product_variants(id,product_id,sku,name,price,weight) VALUES('v','p','TEST','Default',189000,350); INSERT INTO inventory(variant_id,on_hand) VALUES('v',2); INSERT INTO shipping_destinations VALUES('2','MENTENG, JAKARTA PUSAT, DKI JAKARTA, 10310','DKI JAKARTA','JAKARTA PUSAT','MENTENG','MENTENG','10310',0);");
     const env = {DB,PUBLIC_ORIGIN:'https://shop.example',TURNSTILE_SECRET_KEY:'fixture-key',DOKU_CLIENT_ID:'MCH-fixture',DOKU_SECRET_KEY:'test-merchant-secret',RAJAONGKIR_API_KEY:'fixture-key',RAJAONGKIR_ORIGIN:'1',RAJAONGKIR_COURIERS:'jne',RISK_HASH_SECRET:'checkout-test-risk-secret-at-least-32-chars'} as unknown as Env;
     let paymentCreates = 0;

@@ -2,6 +2,7 @@ import { auth, setup } from './auth';
 import { adminUserPaths, adminUsers } from './users';
 import { destinations, shipping } from './shipping';
 import { body, origin } from './security';
+import { addresses, addressPath } from './addresses';
 import { HttpError } from '../shared';
 export { requireAdmin, getCustomer } from './auth';
 export { verifyTurnstile } from './security';
@@ -30,13 +31,21 @@ export interface IntegrationEnv {
   EXPIRY_GRACE_MIN?: string;
   RISK_HASH_SECRET?: string;
   MAX_PENDING_PER_IDENTITY?: string;
+  MAX_PENDING_PER_IP?: string;
   VELOCITY_LIMIT?: string;
+  VELOCITY_LIMIT_IP?: string;
+  VOLUMETRIC_DIVISOR?: string;
+  MAX_CART_WEIGHT_G?: string;
+  AUTO_COMPLETE_DAYS?: string;
+  INBOUND_RETENTION_DAYS?: string;
+  ORDER_PII_RETENTION_DAYS?: string;
+  LOW_STOCK_DEFAULT?: string;
   LOW_STOCK_PUBLIC?: string;
   MEDIA_ORIGIN?: string;
 }
 export async function handleIntegrationRequest(request: Request, env: IntegrationEnv): Promise<Response|null> {
   const path = new URL(request.url).pathname;
-  if (!(path.startsWith('/api/auth/') || path === '/api/setup' || path === '/api/shipping/quote' || path === '/api/shipping/destinations' || adminUserPaths(path))) return null;
+  if (!(path.startsWith('/api/auth/') || path === '/api/setup' || path === '/api/shipping/quote' || path === '/api/shipping/destinations' || adminUserPaths(path) || addressPath(path))) return null;
   try {
     let response: Response;
     if (path.startsWith('/api/auth/')) {
@@ -50,7 +59,7 @@ export async function handleIntegrationRequest(request: Request, env: Integratio
       }
       response = await auth(env).handler(request);
     } else {
-      const result = path === '/api/setup' ? await setup(request,env) : adminUserPaths(path) ? await adminUsers(request,env) : path === '/api/shipping/destinations' ? await destinations(request,env) : await shipping(request,env);
+      const result = path === '/api/setup' ? await setup(request,env) : addressPath(path) ? await addresses(request,env) : adminUserPaths(path) ? await adminUsers(request,env) : path === '/api/shipping/destinations' ? await destinations(request,env) : await shipping(request,env);
       response = Response.json(result);
     }
     const headers = new Headers(response.headers); headers.set('Cache-Control','private, no-store');

@@ -3,6 +3,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
 import { handleIntegrationRequest, requireAdmin, getCustomer, verifyTurnstile, verifyPaymentWebhook, createPayment, lookupPayment, type IntegrationEnv } from '../src/integrations';
+import { integrationRetention } from '../src/integrations/retention';
 
 let mf: Miniflare, env: IntegrationEnv;
 const secret = 'test-secret-at-least-thirty-two-characters';
@@ -21,7 +22,7 @@ beforeEach(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({modules:true, script:'export default {fetch(){return new Response("ok")}}', compatibilityDate:'2026-08-06', d1Databases:{DB:'integrations'}}));
   const DB = await mf.getD1Database('DB');
   // D1 exec doesn't support embedded newlines in individual statements.
-  for (const name of ['0002_integrations','0011_admin_access']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+  for (const name of ['0002_integrations','0011_admin_access','0013_accounts']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
   await DB.exec("INSERT INTO shipping_destinations VALUES('2','MENTENG, JAKARTA PUSAT, DKI JAKARTA, 10310','DKI JAKARTA','JAKARTA PUSAT','MENTENG','MENTENG','10310',0)");
   env = {DB:DB as unknown as D1Database, PUBLIC_ORIGIN:'https://shop.example', BETTER_AUTH_SECRET:secret, GOOGLE_CLIENT_ID:'test-google', GOOGLE_CLIENT_SECRET:'test-google-secret', BOOTSTRAP_SECRET:secret, TURNSTILE_SECRET_KEY:'test-turnstile', DOKU_CLIENT_ID:'MCH-test', DOKU_SECRET_KEY:secret};
 });
@@ -251,7 +252,7 @@ describe('provider boundaries', () => {
     await expect(verifyTurnstile('token',env)).rejects.toMatchObject({status:503});
   });
   it('quotes authoritative catalog grams and persists only provider tariffs', async () => {
-    await env.DB.exec('CREATE TABLE product_variants (id TEXT PRIMARY KEY, weight INTEGER); INSERT INTO product_variants VALUES (\'sku\', 350);');
+    await env.DB.exec('CREATE TABLE product_variants (id TEXT PRIMARY KEY, weight INTEGER, length_cm INTEGER, width_cm INTEGER, height_cm INTEGER); INSERT INTO product_variants(id,weight) VALUES (\'sku\', 350);');
     Object.assign(env,{RAJAONGKIR_API_KEY:'test',RAJAONGKIR_ORIGIN:'1',RAJAONGKIR_COURIERS:'jne'});
     const fetcher = vi.fn(async (_url:unknown,init:any) => {expect(init.body.get('weight')).toBe('700'); return Response.json({meta:{code:200,status:'success'},data:[{code:'jne',service:'REG',cost:12000}]});});
     vi.stubGlobal('fetch',fetcher);
@@ -269,7 +270,7 @@ describe('integration runtime helpers', () => {
     expect(() => auth({...env, BETTER_AUTH_SECRET:'short'})).toThrow();
   });
   it('rejects quotes containing an unknown variant with a single lookup', async () => {
-    await env.DB.exec("CREATE TABLE product_variants (id TEXT PRIMARY KEY, weight INTEGER); INSERT INTO product_variants VALUES ('a', 100), ('b', 200);");
+    await env.DB.exec("CREATE TABLE product_variants (id TEXT PRIMARY KEY, weight INTEGER, length_cm INTEGER, width_cm INTEGER, height_cm INTEGER); INSERT INTO product_variants(id,weight) VALUES ('a', 100), ('b', 200);");
     Object.assign(env,{RAJAONGKIR_API_KEY:'test',RAJAONGKIR_ORIGIN:'1',RAJAONGKIR_COURIERS:'jne'});
     const fetcher = vi.fn(async (_url:unknown,init:any) => {expect(init.body.get('weight')).toBe('500'); return Response.json({meta:{code:200,status:'success'},data:[{code:'jne',service:'REG',cost:12000}]});});
     vi.stubGlobal('fetch',fetcher);
@@ -282,7 +283,7 @@ describe('integration runtime helpers', () => {
 describe('anti-abuse integration boundaries', () => {
   const tariffs = Array.from({length:14}, (_, i) => ({code:'jne', service:`S${i}`, cost:20000 - i * 1000}));
   it('reuses unexpired quotes per cart fingerprint, keeps the 10 cheapest services and refuses unknown destinations', async () => {
-    await env.DB.exec("CREATE TABLE product_variants (id TEXT PRIMARY KEY, weight INTEGER); INSERT INTO product_variants VALUES ('a', 100);");
+    await env.DB.exec("CREATE TABLE product_variants (id TEXT PRIMARY KEY, weight INTEGER, length_cm INTEGER, width_cm INTEGER, height_cm INTEGER); INSERT INTO product_variants(id,weight) VALUES ('a', 100);");
     Object.assign(env,{RAJAONGKIR_API_KEY:'test',RAJAONGKIR_ORIGIN:'1',RAJAONGKIR_COURIERS:'jne'});
     const fetcher = vi.fn(async () => Response.json({meta:{code:200,status:'success'},data:tariffs}));
     vi.stubGlobal('fetch',fetcher);
@@ -406,5 +407,63 @@ describe('anti-abuse integration boundaries', () => {
     expect(run({PUBLIC_ORIGIN:'https://shop.example', DEV_LOGIN_ENABLED:'true'})).toBe(1);
     expect(run({PUBLIC_ORIGIN:'https://shop.example'})).toBe(0);
     expect(run({PUBLIC_ORIGIN:'http://localhost:8787', DEV_LOGIN_ENABLED:'true'})).toBe(0);
+  });
+});
+
+describe('phase 3 integration features', () => {
+  const call = (path: string, cookie: string | undefined, method = 'GET', body?: unknown, originHeader = 'https://shop.example') => handleIntegrationRequest(new Request(`https://shop.example${path}`, {method, headers:{Origin:originHeader, 'Content-Type':'application/json', ...(cookie ? {Cookie:cookie} : {})}, ...(body === undefined ? {} : {body:JSON.stringify(body)})}), env);
+  const entry = (n: number) => ({label:`Alamat ${n}`, name:'Penerima', phone:'0812 3456 7890', line:`Jl. Mawar ${n}`, destination:'2'});
+  it('keeps an owner-scoped address book of at most five server-validated addresses', async () => {
+    const alice = await identity('alice'), bob = await identity('bob');
+    expect((await call('/api/account/addresses', undefined))?.status).toBe(401);
+    expect((await call('/api/account/addresses', alice, 'POST', entry(1), 'https://evil.example'))?.status).toBe(403);
+    const created = await call('/api/account/addresses', alice, 'POST', entry(1));
+    expect(created?.status).toBe(200);
+    expect(created?.headers.get('Cache-Control')).toBe('private, no-store');
+    const {address} = await created!.json() as any;
+    expect(address).toMatchObject({label:'Alamat 1', phone:'+6281234567890', line:'Jl. Mawar 1', destination:'2', destinationLabel:'MENTENG, JAKARTA PUSAT, DKI JAKARTA, 10310', postalCode:'10310', city:'JAKARTA PUSAT'});
+    for (const invalid of [{...entry(2), destination:'999'}, {...entry(2), phone:'12345'}, {...entry(2), label:''}, {...entry(2), extra:1}, {...entry(2), line:'x'.repeat(501)}]) expect((await call('/api/account/addresses', alice, 'POST', invalid))?.status).toBe(400);
+    for (let n = 2; n <= 5; n++) expect((await call('/api/account/addresses', alice, 'POST', entry(n)))?.status).toBe(200);
+    const full = await call('/api/account/addresses', alice, 'POST', entry(6));
+    expect(full?.status).toBe(409);
+    expect(await full!.json()).toEqual({error:'Maksimal 5 alamat tersimpan'});
+    await expect(env.DB.prepare("INSERT INTO customer_addresses(id,user_id,label,name,phone,line,destination,created_at,updated_at) VALUES('x','alice','l','n','p','l','2',0,0)").run()).rejects.toThrow('address_limit');
+    expect(((await (await call('/api/account/addresses', bob))!.json()) as any).addresses).toEqual([]);
+    const path = `/api/account/addresses/${address.id}`;
+    expect((await call(path, bob, 'PATCH', {line:'Jl. Curian'}))?.status).toBe(404);
+    expect((await call(path, bob, 'DELETE'))?.status).toBe(404);
+    const patched = await (await call(path, alice, 'PATCH', {line:'Jl. Melati 9'}))!.json() as any;
+    expect(patched.address).toMatchObject({line:'Jl. Melati 9', label:'Alamat 1', phone:'+6281234567890'});
+    expect((await call(path, alice, 'PATCH', {}))?.status).toBe(400);
+    expect((await call(path, alice, 'DELETE'))?.status).toBe(200);
+    expect(((await (await call('/api/account/addresses', alice))!.json()) as any).addresses).toHaveLength(4);
+    expect((await call('/api/account/addresses/not-a-uuid', alice, 'DELETE'))?.status).toBe(404);
+    await env.DB.prepare('DELETE FROM session WHERE user_id=?').bind('alice').run();
+    expect((await call('/api/account/addresses', alice))?.status).toBe(401);
+  });
+  it('deletes expired quotes, sessions and verifications in bounded batches', async () => {
+    const now = Date.now(), old = now - 2 * 3_600_000;
+    await env.DB.exec(`INSERT INTO shipping_quotes VALUES ('old','f','2','REG',1,1,${old},'{}'),('soon','f','2','REG',1,1,${now - 60000},'{}'),('live','f','2','REG',1,1,${now + 60000},'{}')`);
+    await env.DB.exec(`INSERT INTO user (id,name,email,email_verified,created_at,updated_at) VALUES ('u','u','u@example.com',1,${now},${now})`);
+    const sessions = Array.from({length:205}, (_, i) => env.DB.prepare('INSERT INTO session (id,token,user_id,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?)').bind(`s${i}`, `t${i}`, 'u', now - 1000, now, now));
+    await env.DB.batch([...sessions, env.DB.prepare('INSERT INTO session (id,token,user_id,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?)').bind('live', 'tl', 'u', now + 3600000, now, now)]);
+    await env.DB.exec(`INSERT INTO verification (id,identifier,value,expires_at,created_at,updated_at) VALUES ('v1','i','x',${now - 1},${now},${now}),('v2','i','x',${now + 60000},${now},${now})`);
+    await integrationRetention(env);
+    expect((await env.DB.prepare('SELECT id FROM shipping_quotes ORDER BY id').all()).results.map((r: any) => r.id)).toEqual(['live', 'soon']);
+    expect(await env.DB.prepare('SELECT count(*) n FROM session').first('n')).toBe(6);
+    expect((await env.DB.prepare('SELECT id FROM verification').all()).results).toEqual([{id:'v2'}]);
+    await integrationRetention(env);
+    expect((await env.DB.prepare('SELECT id FROM session').all()).results).toEqual([{id:'live'}]);
+  });
+  it('bills volumetric weight in quotes and refuses carts over MAX_CART_WEIGHT_G', async () => {
+    await env.DB.exec("CREATE TABLE product_variants (id TEXT PRIMARY KEY, weight INTEGER, length_cm INTEGER, width_cm INTEGER, height_cm INTEGER); INSERT INTO product_variants VALUES ('box', 200, 30, 30, 10), ('flat', 200, 30, 30, NULL);");
+    Object.assign(env,{RAJAONGKIR_API_KEY:'test',RAJAONGKIR_ORIGIN:'1',RAJAONGKIR_COURIERS:'jne'});
+    const weights: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init: any) => { weights.push(init.body.get('weight')); return Response.json({meta:{code:200,status:'success'},data:[{code:'jne',service:'REG',cost:12000}]}); }));
+    expect((await handleIntegrationRequest(request('/api/shipping/quote',{destination:'2',items:[{variantId:'box',quantity:2},{variantId:'flat',quantity:1}]}),env))?.status).toBe(200);
+    expect(weights).toEqual(['3200']);
+    const refused = await handleIntegrationRequest(request('/api/shipping/quote',{destination:'2',items:[{variantId:'box',quantity:2}]}),{...env, MAX_CART_WEIGHT_G:'2999'});
+    expect(refused?.status).toBe(400);
+    expect(await refused!.json()).toEqual({error:'Berat total melebihi batas 2,999 kg per pesanan'});
   });
 });

@@ -1,11 +1,12 @@
 import { getCustomer, requireAdmin } from '../integrations/index';
 import { origin } from '../integrations/security';
 import { admin } from './admin';
-import { catalog } from './catalog';
+import { catalog, publicCategories } from './catalog';
+import { preview } from './cart';
 import { checkout } from './checkout';
 import { webhook } from './payments';
 import { cancelOrder } from './cancel';
-import { adminPermits, readBounded } from '../shared';
+import { adminPermits, orderTracking, readBounded } from '../shared';
 import { type CommerceEnv, hash, HttpError, json, statement as s } from './types';
 
 async function body(request: Request) {
@@ -55,8 +56,9 @@ async function order(request: Request, env: CommerceEnv, reference: string) {
   const items = await s(env, 'SELECT id,variant_id AS variantId,campaign_id AS campaignId,quantity,price,snapshot_json FROM order_items WHERE order_id=?', String(row.id)).all();
   const events = await s(env, 'SELECT kind,details_json,created_at AS createdAt FROM order_events WHERE order_id=? ORDER BY created_at,id LIMIT 100', String(row.id)).all();
   const payment = await s(env, 'SELECT status,url FROM payment_attempts WHERE order_id=?', String(row.id)).first<{ status: string; url: string | null }>();
+  const shipping = JSON.parse(String(row.shipping_json));
   return json({ order: { id: row.id, reference: row.reference, status: row.status, fulfillment: row.fulfillment, total: row.total, currency: row.currency, createdAt: row.created_at,
-    contact: JSON.parse(String(row.contact_json)), address: JSON.parse(String(row.address_json)), shipping: JSON.parse(String(row.shipping_json)),
+    contact: JSON.parse(String(row.contact_json)), address: JSON.parse(String(row.address_json)), shipping, tracking: orderTracking(events.results, shipping),
     items: items.results.map(({ snapshot_json, ...item }) => ({ ...item, ...JSON.parse(String(snapshot_json)) })),
     timeline: events.results.map(({ details_json, ...event }) => ({ ...event, details: JSON.parse(String(details_json)) })) },
     access: guestAuthorized ? { type: 'guest' } : { type: 'account', ownerId: row.customer_id },
@@ -71,6 +73,8 @@ export async function commerceRequest(request: Request, env: CommerceEnv): Promi
     origin(request, env);
   }
   if (request.method === 'GET' && path === '/api/catalog') return catalog(env, undefined, url.searchParams);
+  if (request.method === 'GET' && path === '/api/categories') return publicCategories(env);
+  if (path === '/api/cart/preview' && request.method === 'POST') return preview(env, await body(request));
   if (request.method === 'GET' && path.startsWith('/api/catalog/')) return catalog(env, decodeURIComponent(path.slice('/api/catalog/'.length)));
   if (path === '/api/checkout' && request.method === 'POST') return checkout(request, env, await body(request));
   if (path === '/api/orders' && request.method === 'GET') return orders(request, env, url);

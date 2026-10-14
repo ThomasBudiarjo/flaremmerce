@@ -1,10 +1,30 @@
 ---
 import "../styles/site.css";
+interface Props {
+  title?: string;
+  description?: string;
+  /** Path plus allowlisted query of the canonical URL; defaults to the bare path. */
+  canonical?: string;
+  image?: string | null;
+  type?: "website" | "product";
+  jsonLd?: Record<string, unknown>;
+  noindex?: boolean;
+}
 const {
   title = "Flaremmerce — Toko board game",
   description = "Temukan board game untuk sesi main berikutnya di Flaremmerce. Ready stock dan pre-order dengan estimasi pengiriman yang jelas.",
+  canonical,
+  image,
+  type = "website",
+  jsonLd,
+  noindex = false,
 } = Astro.props;
 const pathname = Astro.url.pathname.replace(/\/$/, "") || "/";
+// Prerendered pages are built without the real host, so their canonical stays path-relative.
+const canonicalUrl = Astro.isPrerendered ? (canonical ?? pathname) : new URL(canonical ?? pathname, Astro.url.origin).href;
+const summary = description.length > 160 ? `${description.slice(0, 157).trimEnd()}…` : description;
+// JSON-LD is data, not script: `<` is escaped so product text can never close the element.
+const structured = jsonLd && JSON.stringify(jsonLd).replace(/</g, "\\u003c");
 ---
 
 <!doctype html>
@@ -12,8 +32,18 @@ const pathname = Astro.url.pathname.replace(/\/$/, "") || "/";
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width" />
-    <meta name="description" content={description} />
+    <meta name="description" content={summary} />
     <meta name="referrer" content="no-referrer" />
+    {noindex && <meta name="robots" content="noindex" />}
+    <link rel="canonical" href={canonicalUrl} />
+    <meta property="og:site_name" content="Flaremmerce" />
+    <meta property="og:type" content={type} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={summary} />
+    <meta property="og:url" content={canonicalUrl} />
+    {image && <meta property="og:image" content={image} />}
+    <meta name="twitter:card" content={image ? "summary_large_image" : "summary"} />
+    {structured && <script type="application/ld+json" is:inline set:html={structured} />}
     <title>{title}</title>
   </head>
   <body>
@@ -54,6 +84,13 @@ const pathname = Astro.url.pathname.replace(/\/$/, "") || "/";
           <h2>Informasi</h2>
           <a href="/policies">Pengiriman & pembayaran</a>
           <a href="/order">Status pesanan</a>
+          <a href="/returns">Komplain & retur</a>
+        </div>
+        <div class="footer-links">
+          <h2>Legal</h2>
+          <a href="/about">Tentang & kontak</a>
+          <a href="/privacy">Kebijakan privasi</a>
+          <a href="/terms">Syarat & ketentuan</a>
         </div>
       </div>
       <div class="footer-bottom">

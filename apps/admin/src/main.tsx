@@ -295,7 +295,7 @@ function PrimaryPhoto({
         try {
           await api(
             `/api/admin/products/${encodeURIComponent(product.id)}`,
-            { imageUrl: image },
+            { imageUrl: image, version: product.version },
             "PATCH",
           );
           if (version === lifetime.current) {
@@ -1712,7 +1712,7 @@ function App() {
                                       mutate(
                                         e,
                                         `/api/admin/products/${p.id}`,
-                                        () => ({ active: !p.active }),
+                                        () => ({ active: !p.active, version: p.version }),
                                         "PATCH",
                                       )
                                     }

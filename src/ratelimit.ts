@@ -21,7 +21,8 @@ type Bucket = keyof typeof RATE_LIMITS;
 
 function bucket(method: string, path: string): { bucket: Bucket; route: string } | null {
   if (method === 'POST' && path === '/api/checkout') return { bucket: 'checkout', route: path };
-  if (method === 'POST' && (path === '/api/shipping/quote' || path === '/api/shipping/destinations')) return { bucket: 'quote', route: path };
+  if (method === 'POST' && (path === '/api/shipping/quote' || path === '/api/shipping/destinations' || path === '/api/cart/preview')) return { bucket: 'quote', route: path };
+  if (path === '/api/account/addresses' || path.startsWith('/api/account/addresses/')) return { bucket: 'lookup', route: 'account:addresses' };
   // Per-reference paths share one counter so enumerating references cannot multiply the budget.
   if ((method === 'GET' || method === 'POST') && path.startsWith('/api/orders/')) return { bucket: 'lookup', route: path.endsWith('/cancel') ? 'orders:cancel' : 'orders:read' };
   if (method === 'POST' && (path.startsWith('/api/auth/') || path === '/api/setup')) return { bucket: 'auth', route: 'auth' };

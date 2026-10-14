@@ -9,7 +9,7 @@ const secret = 'test-secret-at-least-thirty-two-characters';
 beforeEach(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-06', d1Databases: { DB: 'operations' } }));
   const DB = await mf.getD1Database('DB');
-  for (const name of ['0001_commerce', '0002_integrations', '0004_manual_review', '0005_customer_orders', '0006_admin_pages', '0007_operations', '0008_lifecycle', '0009_role_audit', '0010_risk', '0011_admin_access']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`, import.meta.url), 'utf8').replace(/--[^\n]*/g, '').replace(/\s+/g, ' '));
+  for (const name of ['0001_commerce', '0002_integrations', '0004_manual_review', '0005_customer_orders', '0006_admin_pages', '0007_operations', '0008_lifecycle', '0009_role_audit', '0010_risk', '0011_admin_access', '0012_ecommerce', '0013_accounts']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`, import.meta.url), 'utf8').replace(/--[^\n]*/g, '').replace(/\s+/g, ' '));
   env = { DB, PUBLIC_ORIGIN: 'https://shop.example', BETTER_AUTH_SECRET: secret, GOOGLE_CLIENT_ID: 'test', GOOGLE_CLIENT_SECRET: 'test', ASSETS: { fetch: async () => new Response('asset') } } as unknown as Env;
   const now = Date.now();
   await DB.batch([

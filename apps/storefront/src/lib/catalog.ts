@@ -22,6 +22,7 @@ export type Product = {
   name: string;
   description: string;
   imageUrl?: string;
+  category?: { slug: string; name: string } | null;
   variants: Variant[];
 };
 export const money = (value: number) =>

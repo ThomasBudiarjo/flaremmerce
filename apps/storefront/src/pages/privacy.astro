@@ -1,0 +1,70 @@
+---
+// TEMPLAT HUKUM: wajib direview konsultan hukum sebelum dipublikasikan. Ganti semua placeholder [..].
+import Layout from "../layouts/Layout.astro";
+export const prerender = true;
+---
+
+<Layout title="Kebijakan privasi — Flaremmerce" description="Bagaimana Flaremmerce mengumpulkan, memakai, menyimpan dan melindungi data pribadi sesuai UU Pelindungan Data Pribadi.">
+  <section class="section policy legal">
+    <!-- TEMPLAT HUKUM — wajib direview konsultan hukum (UU 27/2022 tentang Pelindungan Data Pribadi) sebelum dipublikasikan. -->
+    <p class="eyebrow">Legal</p>
+    <h1>Kebijakan privasi.</h1>
+    <p class="notice">Templat ini belum final dan wajib ditinjau konsultan hukum sebelum digunakan. Berlaku sejak [TANGGAL BERLAKU].</p>
+    <h2>Pengendali data</h2>
+    <p>
+      Pengendali data pribadi adalah [NAMA USAHA] ([BENTUK USAHA], NIB [NIB]), beralamat di [ALAMAT].
+      Kontak pelindungan data: [EMAIL] · [TELEPON]. Pejabat/petugas pelindungan data: [NAMA PPDP ATAU "tidak ditunjuk"].
+    </p>
+    <h2>Data yang kami kumpulkan</h2>
+    <ul>
+      <li>Kontak pesanan: nama penerima, email, nomor HP.</li>
+      <li>Alamat pengiriman: alamat jalan dan wilayah tujuan (kelurahan, kecamatan, kota, provinsi, kode pos).</li>
+      <li>Rincian pesanan dan pembayaran: item, harga, ongkir, status pembayaran dan pengiriman, nomor resi. Data kartu atau rekening tidak kami terima; pembayaran diproses penyedia pembayaran.</li>
+      <li>Akun (opsional, login Google): nama, email, foto profil dari Google, session login, dan buku alamat yang kamu simpan (maksimal 5 alamat).</li>
+      <li>Pengenal risiko: email, nomor HP dan alamat IP disimpan hanya sebagai hash berkunci (HMAC), bukan dalam bentuk asli, untuk membatasi penyalahgunaan dan penipuan. Hitungan batas permintaan per IP juga memakai hash.</li>
+      <li>Email yang kamu kirim ke alamat dukungan kami.</li>
+      <li>Tas belanja disimpan di browser kamu (localStorage), bukan di server kami.</li>
+    </ul>
+    <h2>Tujuan dan dasar pemrosesan</h2>
+    <ul>
+      <li>Memproses, mengirim dan melayani pesanan — pelaksanaan perjanjian.</li>
+      <li>Pencatatan transaksi, pembukuan dan perpajakan — kewajiban hukum.</li>
+      <li>Pencegahan penipuan, penyalahgunaan dan bot (rate limit, verifikasi Turnstile, daftar blokir, review risiko) — kepentingan yang sah.</li>
+      <li>Login dan buku alamat — persetujuan kamu, yang dapat ditarik dengan menghapus alamat atau berhenti memakai akun.</li>
+    </ul>
+    <p>Kami tidak menjual data pribadi dan tidak memakai data untuk iklan pihak ketiga.</p>
+    <h2>Pemroses data (pihak ketiga)</h2>
+    <ul>
+      <li>Cloudflare — hosting, database, penyimpanan berkas, verifikasi Turnstile dan penerimaan email.</li>
+      <li>DOKU — pemrosesan pembayaran (referensi dan nominal pesanan).</li>
+      <li>Komerce (RajaOngkir) — perhitungan ongkir (wilayah tujuan dan berat saja, tanpa nama atau kontak).</li>
+      <li>Google — login opsional.</li>
+      <li>[KURIR/EKSPEDISI] — nama, nomor HP dan alamat penerima untuk pengiriman.</li>
+    </ul>
+    <p>Sebagian pemroses dapat memproses data di luar Indonesia; kami memastikan pelindungan yang setara sesuai UU 27/2022. [KONSULTAN: lengkapi dasar transfer lintas negara.]</p>
+    <h2>Retensi</h2>
+    <ul>
+      <li>Catatan pesanan (termasuk kontak dan alamat): [PERIODE, mis. 10 tahun] sesuai kewajiban penyimpanan dokumen. Kontak dan alamat dapat disamarkan otomatis setelah periode yang dikonfigurasi.</li>
+      <li>Hash pengenal risiko: selama catatan pesanan terkait disimpan; entri daftar blokir sampai dicabut.</li>
+      <li>Kunci idempotensi checkout: 7 hari. Penawaran ongkir: 1 jam setelah kedaluwarsa.</li>
+      <li>Session login dan token verifikasi: dihapus setelah kedaluwarsa.</li>
+      <li>Hitungan batas permintaan: beberapa menit.</li>
+      <li>Email dukungan: 180 hari.</li>
+      <li>Buku alamat: sampai kamu menghapusnya atau akun dihapus.</li>
+    </ul>
+    <h2>Hak kamu</h2>
+    <p>
+      Sesuai UU 27/2022 kamu berhak memperoleh informasi, mengakses dan memperoleh salinan, memperbaiki, menghapus atau memusnahkan data
+      (dengan pengecualian data yang wajib kami simpan menurut hukum), menarik persetujuan, membatasi atau menunda pemrosesan, mengajukan
+      keberatan atas keputusan otomatis, serta mengajukan gugatan ganti rugi. Kirim permintaan ke [EMAIL] dengan referensi pesanan;
+      kami menanggapi dalam jangka waktu yang ditentukan peraturan [KONSULTAN: pastikan tenggat].
+    </p>
+    <h2>Keamanan dan insiden</h2>
+    <p>
+      Akses admin dibatasi per peran dan dicatat dalam log audit. Jika terjadi kegagalan pelindungan data pribadi, kami memberi tahu
+      kamu dan otoritas terkait sesuai tenggat UU 27/2022.
+    </p>
+    <h2>Perubahan</h2>
+    <p>Perubahan kebijakan diumumkan di halaman ini dengan tanggal berlaku baru.</p>
+  </section>
+</Layout>

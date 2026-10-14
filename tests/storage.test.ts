@@ -2,7 +2,7 @@ import { beforeEach, afterEach, expect, it } from 'vitest';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
-import { storageRequest, receiveEmail, type StorageEnv } from '../src/storage';
+import { inboundRetention, storageRequest, receiveEmail, type StorageEnv } from '../src/storage';
 import type { IntegrationEnv } from '../src/integrations';
 import { admin } from '../src/commerce/admin';
 let mf: Miniflare, env: StorageEnv & IntegrationEnv, cookie: string;
@@ -11,7 +11,7 @@ const png = new Uint8Array([137,80,78,71,13,10,26,10,0]);
 beforeEach(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({ modules:true, script:'export default {fetch(){return new Response("ok")}}', compatibilityDate:'2026-08-06', d1Databases:{DB:'storage'}, r2Buckets:['MEDIA','PRIVATE_FILES'] }));
   const DB = await mf.getD1Database('DB');
-  for (const name of ['0001_commerce','0002_integrations','0003_storage','0004_manual_review','0010_risk','0011_admin_access']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+  for (const name of ['0001_commerce','0002_integrations','0003_storage','0004_manual_review','0010_risk','0011_admin_access','0012_ecommerce','0013_accounts']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
   env = { DB:DB as unknown as D1Database, PUBLIC_ORIGIN:'https://shop.example', MEDIA_ORIGIN:'https://media.example', MEDIA:await mf.getR2Bucket('MEDIA') as unknown as R2Bucket, PRIVATE_FILES:await mf.getR2Bucket('PRIVATE_FILES') as unknown as R2Bucket, BETTER_AUTH_SECRET:secret, GOOGLE_CLIENT_ID:'test', GOOGLE_CLIENT_SECRET:'test' };
   const now = Date.now();
   await DB.batch([
@@ -51,7 +51,7 @@ it('atomically associates detached creation uploads and persists existing primar
   const result = await (await admin(request,env,'owner',input)).json() as any;
   expect(await env.DB.prepare('SELECT product_id FROM product_media WHERE id=?').bind(media.id).first('product_id')).toBe(result.product.id);
   const next = await (await upload('/api/admin/media?productId=product'))!.json() as any;
-  await admin(new Request('https://shop.example/api/admin/products/product',{method:'PATCH'}),env,'owner',{imageUrl:next.url});
+  await admin(new Request('https://shop.example/api/admin/products/product',{method:'PATCH'}),env,'owner',{imageUrl:next.url,version:0});
   expect(await env.DB.prepare("SELECT image_url FROM products WHERE id='product'").first('image_url')).toBe(next.url);
   expect((await env.MEDIA!.list()).objects).toHaveLength(2);
   await admin(request,env,'owner',{...input,slug:'other',variants:[{...input.variants[0],sku:'other'}]});
@@ -104,4 +104,21 @@ it('cleans up an object after a definite D1 insert failure', async () => {
   expect((await upload('/api/admin/files','private'))!.status).toBe(503);
   expect((await env.PRIVATE_FILES!.list()).objects).toHaveLength(0);
   expect(await storageRequest(new Request('https://shop.example/api/catalog'),env)).toBeNull();
+});
+
+it('deletes inbound mail objects then rows after INBOUND_RETENTION_DAYS, bounded per run', async () => {
+  const now = Date.now(), old = now - 181 * 86_400_000;
+  for (let i = 0; i < 55; i++) {
+    await env.PRIVATE_FILES!.put(`inbound/old-${i}.eml`, 'mail');
+    await env.DB.prepare('INSERT INTO support_messages (id,object_key,sender,recipient,size,created_at) VALUES (?,?,?,?,?,?)').bind(`old-${i}`, `inbound/old-${i}.eml`, 'a@example.com', 'b@example.com', 4, old + i).run();
+  }
+  await env.PRIVATE_FILES!.put('inbound/new.eml', 'mail');
+  await env.DB.prepare('INSERT INTO support_messages (id,object_key,sender,recipient,size,created_at) VALUES (?,?,?,?,?,?)').bind('new', 'inbound/new.eml', 'a@example.com', 'b@example.com', 4, now).run();
+  expect(await inboundRetention(env)).toBe(50);
+  expect(await env.PRIVATE_FILES!.get('inbound/old-0.eml')).toBeNull();
+  expect(await env.PRIVATE_FILES!.get('inbound/old-54.eml')).not.toBeNull();
+  expect(await inboundRetention(env)).toBe(5);
+  expect((await env.DB.prepare('SELECT id FROM support_messages').all()).results).toEqual([{ id: 'new' }]);
+  expect(await env.PRIVATE_FILES!.get('inbound/new.eml')).not.toBeNull();
+  expect(await inboundRetention({ ...env, INBOUND_RETENTION_DAYS: '0' } as any)).toBe(0);
 });

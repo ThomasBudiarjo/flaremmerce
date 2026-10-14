@@ -22,9 +22,13 @@ export function readCart(): CartItem[] {
 export function writeCart(items: CartItem[]) {
   localStorage.setItem(key, JSON.stringify(items));
 }
-export async function api(path: string, body?: unknown, headers?: HeadersInit) {
+/** Error from api(): `status` is absent for network failures; `details` carries server data such as the authoritative total. */
+export type ApiError = Error & { status?: number; details?: any };
+const failure = (data: any, status: number, fallback: string): ApiError =>
+  Object.assign(new Error(data.error?.message || data.message || (typeof data.error === "string" ? data.error : fallback)), { status, details: data.details });
+export async function api(path: string, body?: unknown, headers?: HeadersInit, method?: string) {
   const response = await fetch(path, {
-    method: body ? "POST" : "GET",
+    method: method ?? (body ? "POST" : "GET"),
     credentials: "same-origin",
     cache: "no-store",
     headers: {
@@ -41,18 +45,38 @@ export async function api(path: string, body?: unknown, headers?: HeadersInit) {
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     const result = await retry.json().catch(() => ({}));
-    if (!retry.ok) throw Object.assign(new Error(typeof result.error === "string" ? result.error : "Checkout gagal."), { status: retry.status });
+    if (!retry.ok) throw failure(result, retry.status, "Checkout gagal.");
     return result;
   }
-  if (!response.ok)
-    throw Object.assign(new Error(
-      data.error?.message ||
-        data.message ||
-        (typeof data.error === "string"
-          ? data.error
-          : "Permintaan gagal. Silakan coba lagi."),
-    ), { status: response.status });
+  if (!response.ok) throw failure(data, response.status, "Permintaan gagal. Silakan coba lagi.");
   return data;
+}
+/** A response that proves the server did not act (validation, limits, conflicts); 408 and 5xx/network stay ambiguous. */
+export const definiteRefusal = (error: unknown) => {
+  const status = (error as ApiError).status;
+  return status !== undefined && status >= 400 && status < 500 && status !== 408;
+};
+/** Small private text file; the token never enters a URL or history. */
+export function downloadText(filename: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+  const link = Object.assign(document.createElement("a"), { href: url, download: filename });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+export function confirmationText(reference: string, token: string, origin: string) {
+  return [
+    "Konfirmasi pesanan Flaremmerce",
+    "",
+    `Referensi: ${reference}`,
+    `Token akses privat: ${token}`,
+    "",
+    `Cek status di ${origin}/order: masukkan referensi dan token di atas.`,
+    "Simpan file ini secara privat. Siapa pun yang memegang token dapat melihat pesanan dan alamat pengiriman.",
+    "Token tidak dapat dipulihkan dan tidak dikirim lewat email.",
+    "",
+  ].join("\r\n");
 }
 export async function google(callbackURL: string) {
   const data = await api("/api/auth/sign-in/social", {
