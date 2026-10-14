@@ -57,3 +57,52 @@ export function publicCacheKey(url: URL, allowed: Record<string, Normalizer> = {
   }
   return new Request(key);
 }
+
+/** Distinct cart lines accepted by the storefront cart, shipping quote and checkout. */
+export const MAX_CART_LINES = 30;
+
+/** Positive integer from an optional env var; anything unparsable falls back. */
+export function envCount(value: string | undefined, fallback: number) {
+  const parsed = value === undefined || value.trim() === '' ? NaN : Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export async function hmac(secret: string, value: string) {
+  const key = await crypto.subtle.importKey('raw', encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return Array.from(new Uint8Array(await crypto.subtle.sign('HMAC', key, encode(value))), b => b.toString(16).padStart(2, '0')).join('');
+}
+/** Keyed hash secret for risk identities. Development has a fixed fallback; elsewhere it fails closed. */
+export function optionalRiskSecret(env: { RISK_HASH_SECRET?: string; APP_ENV?: string }): string | null {
+  if (env.RISK_HASH_SECRET && env.RISK_HASH_SECRET.length >= 32) return env.RISK_HASH_SECRET;
+  return env.APP_ENV === 'development' ? 'flaremmerce-development-risk-hash-secret' : null;
+}
+export function riskSecret(env: { RISK_HASH_SECRET?: string; APP_ENV?: string }): string {
+  const secret = optionalRiskSecret(env);
+  if (!secret) throw new HttpError(503, 'Checkout unavailable');
+  return secret;
+}
+export type RiskKind = 'email' | 'phone' | 'ip';
+// Domain-separated so an email can never collide with a phone or IP of the same text.
+export const riskHash = (secret: string, kind: RiskKind, value: string) => hmac(secret, `${kind}:${value}`);
+export const normalizeEmail = (value: string) => value.trim().toLowerCase();
+/** Indonesian mobile number as +628…; accepts 08…, 628… and +628… with common separators. */
+export function normalizePhone(value: string): string | null {
+  const compact = value.trim().replace(/[\s().-]/g, '');
+  const match = /^(?:\+62|62|0)(8[1-9]\d{6,10})$/.exec(compact);
+  return match ? `+62${match[1]}` : null;
+}
+export const clientIp = (request: Request) => request.headers.get('CF-Connecting-IP')?.slice(0, 64) || 'unknown';
+
+export type AdminRole = 'owner' | 'ops' | 'catalog';
+export const ADMIN_ROLES: readonly AdminRole[] = ['owner', 'ops', 'catalog'];
+type AdminArea = 'any' | 'ops' | 'catalog' | 'owner';
+const areas: [RegExp, AdminArea][] = [
+  [/^\/api\/admin\/me$/, 'any'],
+  [/^\/api\/admin\/(?:operations|orders|review|blocklist|customers|users|files|exports)(?:\/|$)/, 'ops'],
+  [/^\/api\/admin\/(?:products|variants|media|inventory|campaigns|categories)(?:\/|$)/, 'catalog'],
+];
+/** Unlisted admin paths are owner-only, so a new route is never silently exposed to a narrower role. */
+export function adminPermits(role: AdminRole, path: string) {
+  const area = areas.find(([pattern]) => pattern.test(path))?.[1] ?? 'owner';
+  return role === 'owner' || area === 'any' || area === role;
+}

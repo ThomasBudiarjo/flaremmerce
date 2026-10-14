@@ -5,12 +5,12 @@
   "workspaces": ["apps/storefront", "apps/admin"],
   "scripts": {
     "dev": "node scripts/dev-setup.mjs && wrangler dev --config apps/storefront/dist/server/wrangler.json --env-file \"$(pwd)/.dev.vars\" --local --persist-to .wrangler/state --ip 0.0.0.0 --port 8787",
-    "build": "npm run build -w @flaremmerce/storefront && npm run build -w @flaremmerce/admin && node scripts/assets.mjs",
+    "build": "npm run build -w @flaremmerce/storefront && npm run build -w @flaremmerce/admin && node scripts/assets.mjs && node scripts/deploy-guard.mjs",
     "check": "tsc --noEmit && npm run check -w @flaremmerce/storefront && tsc --noEmit -p apps/admin/tsconfig.json",
     "test": "vitest run --config vitest.config.ts && vitest run --config vitest.integrations.config.ts",
     "db:migrate": "wrangler d1 migrations apply DB --local",
     "db:seed": "wrangler d1 execute DB --local --file fixtures/catalog.sql",
-    "deploy:check": "wrangler deploy --config apps/storefront/dist/server/wrangler.json --dry-run"
+    "deploy:check": "node scripts/deploy-guard.mjs && wrangler deploy --config apps/storefront/dist/server/wrangler.json --dry-run"
   },
   "dependencies": {
     "better-auth": "1.7.7",

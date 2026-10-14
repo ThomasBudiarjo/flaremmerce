@@ -5,12 +5,9 @@ import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import { drizzle } from 'drizzle-orm/d1';
 import * as schema from './schema';
 import type { IntegrationEnv } from './index';
-import { demand, equal, json, origin } from './security';
-import { HttpError } from '../shared';
-
-export function devLoginEnabled(env: IntegrationEnv) {
-  return env.APP_ENV === 'development' && env.DEV_LOGIN_ENABLED === 'true';
-}
+import { demand, devLoginEnabled, equal, json, origin } from './security';
+import { ADMIN_ROLES, type AdminRole, HttpError } from '../shared';
+export { devLoginEnabled };
 // One Better Auth instance per isolate and env binding object; construction is not free per request.
 const instances = new WeakMap<IntegrationEnv, ReturnType<typeof createAuth>>();
 export function auth(env: IntegrationEnv) {
@@ -50,22 +47,25 @@ function createAuth(env: IntegrationEnv) {
     advanced:{useSecureCookies:!development || new URL(env.PUBLIC_ORIGIN).protocol === 'https:'},
   });
 }
-export async function getCustomer(request: Request, env: IntegrationEnv): Promise<{id:string}|null> {
+/** A banned customer is signed out for commerce unless the caller asks to see the ban (checkout refuses it). */
+export async function getCustomer(request: Request, env: IntegrationEnv, options: {includeBanned?:boolean} = {}): Promise<{id:string; banned?:true}|null> {
   if (!/(?:^|;\s*)(?:__Secure-)?better-auth\.session_token=/.test(request.headers.get('Cookie') ?? '')) return null;
   // Commerce uses this identity for checkout and private order/PII authorization.
   const session = await auth(env).api.getSession({headers:request.headers, query:{disableCookieCache:true}});
-  if (session?.user.id === 'flaremmerce-dev-admin' && !devLoginEnabled(env)) return null;
-  return session ? {id:session.user.id} : null;
+  if (!session || (session.user.id === 'flaremmerce-dev-admin' && !devLoginEnabled(env))) return null;
+  const banned = await env.DB.prepare('SELECT 1 AS banned FROM customer_bans WHERE user_id=?').bind(session.user.id).first('banned');
+  if (banned) return options.includeBanned ? {id:session.user.id, banned:true} : null;
+  return {id:session.user.id};
 }
 async function fresh(request: Request, env: IntegrationEnv) {
   // The official option is disableCookieCache, not bypassCookieCache.
   const session = await auth(env).api.getSession({headers:request.headers, query:{disableCookieCache:true}});
   demand(session && (session.user.id !== 'flaremmerce-dev-admin' || devLoginEnabled(env)), 401, 'Authentication required'); return session;
 }
-export async function requireAdmin(request: Request, env: IntegrationEnv): Promise<{id:string}> {
+export async function requireAdmin(request: Request, env: IntegrationEnv): Promise<{id:string; role:AdminRole}> {
   const session = await fresh(request, env);
-  const role = await env.DB.prepare('SELECT user_id FROM admin_roles WHERE user_id = ?').bind(session.user.id).first();
-  demand(role, 403, 'Administrator required'); return {id:session.user.id};
+  const role = await env.DB.prepare('SELECT role FROM admin_roles WHERE user_id = ?').bind(session.user.id).first<AdminRole>('role');
+  demand(role && ADMIN_ROLES.includes(role), 403, 'Administrator required'); return {id:session.user.id, role};
 }
 export async function setup(request: Request, env: IntegrationEnv) {
   const installed = await env.DB.prepare('SELECT owner_id FROM installation WHERE id = 1').first();
@@ -89,19 +89,4 @@ export async function setup(request: Request, env: IntegrationEnv) {
     throw error;
   }
   return {initialized:true};
-}
-export async function roles(request: Request, env: IntegrationEnv) {
-  demand(request.method === 'POST', 405, 'Method not allowed'); origin(request, env);
-  const actor = await requireAdmin(request, env), input = await json(request);
-  demand(typeof input.userId === 'string' && input.userId.length <= 128 && typeof input.admin === 'boolean');
-  demand(input.userId !== actor.id, 409, 'Cannot change own role');
-  const target = await env.DB.prepare("SELECT u.id FROM user u JOIN account a ON a.user_id=u.id WHERE u.id=? AND u.email_verified=1 AND a.provider_id='google'").bind(input.userId).first();
-  demand(target, 400, 'Verified Google identity required');
-  const now = Date.now();
-  // Only an effective change is audited; changes() is the role statement's own row count.
-  const [, audited] = await env.DB.batch([
-    input.admin ? env.DB.prepare('INSERT INTO admin_roles (user_id, granted_by, created_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO NOTHING').bind(input.userId, actor.id, now) : env.DB.prepare('DELETE FROM admin_roles WHERE user_id=? AND user_id NOT IN (SELECT owner_id FROM installation)').bind(input.userId),
-    env.DB.prepare('INSERT INTO audit_logs (id, actor, action, target, details_json, created_at) SELECT ?, ?, ?, ?, ?, ? WHERE changes()=1').bind(crypto.randomUUID(), actor.id, input.admin ? 'role.grant' : 'role.revoke', input.userId, JSON.stringify({admin:input.admin}), now),
-  ]);
-  return {ok:true, changed:audited.meta.changes === 1};
 }

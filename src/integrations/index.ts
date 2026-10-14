@@ -1,4 +1,5 @@
-import { auth, setup, roles } from './auth';
+import { auth, setup } from './auth';
+import { adminUserPaths, adminUsers } from './users';
 import { destinations, shipping } from './shipping';
 import { body, origin } from './security';
 import { HttpError } from '../shared';
@@ -11,6 +12,7 @@ export interface IntegrationEnv {
   PUBLIC_ORIGIN: string;
   APP_ENV?: string;
   DEV_LOGIN_ENABLED?: string;
+  DEV_LOGIN_ALLOW_REMOTE?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   BETTER_AUTH_SECRET?: string;
@@ -26,10 +28,15 @@ export interface IntegrationEnv {
   RAJAONGKIR_COURIERS?: string;
   WEBHOOK_MAX_SKEW_MIN?: string;
   EXPIRY_GRACE_MIN?: string;
+  RISK_HASH_SECRET?: string;
+  MAX_PENDING_PER_IDENTITY?: string;
+  VELOCITY_LIMIT?: string;
+  LOW_STOCK_PUBLIC?: string;
+  MEDIA_ORIGIN?: string;
 }
 export async function handleIntegrationRequest(request: Request, env: IntegrationEnv): Promise<Response|null> {
   const path = new URL(request.url).pathname;
-  if (!(path.startsWith('/api/auth/') || path === '/api/setup' || path === '/api/shipping/quote' || path === '/api/shipping/destinations' || path === '/api/admin/roles')) return null;
+  if (!(path.startsWith('/api/auth/') || path === '/api/setup' || path === '/api/shipping/quote' || path === '/api/shipping/destinations' || adminUserPaths(path))) return null;
   try {
     let response: Response;
     if (path.startsWith('/api/auth/')) {
@@ -43,7 +50,7 @@ export async function handleIntegrationRequest(request: Request, env: Integratio
       }
       response = await auth(env).handler(request);
     } else {
-      const result = path === '/api/setup' ? await setup(request,env) : path === '/api/admin/roles' ? await roles(request,env) : path === '/api/shipping/destinations' ? await destinations(request,env) : await shipping(request,env);
+      const result = path === '/api/setup' ? await setup(request,env) : adminUserPaths(path) ? await adminUsers(request,env) : path === '/api/shipping/destinations' ? await destinations(request,env) : await shipping(request,env);
       response = Response.json(result);
     }
     const headers = new Headers(response.headers); headers.set('Cache-Control','private, no-store');

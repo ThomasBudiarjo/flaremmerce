@@ -9,13 +9,13 @@ const secret = 'test-secret-at-least-thirty-two-characters';
 beforeEach(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-06', d1Databases: { DB: 'operations' } }));
   const DB = await mf.getD1Database('DB');
-  for (const name of ['0001_commerce', '0002_integrations', '0004_manual_review', '0005_customer_orders', '0006_admin_pages', '0007_operations', '0008_lifecycle', '0009_role_audit']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`, import.meta.url), 'utf8').replace(/--[^\n]*/g, '').replace(/\s+/g, ' '));
+  for (const name of ['0001_commerce', '0002_integrations', '0004_manual_review', '0005_customer_orders', '0006_admin_pages', '0007_operations', '0008_lifecycle', '0009_role_audit', '0010_risk', '0011_admin_access']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`, import.meta.url), 'utf8').replace(/--[^\n]*/g, '').replace(/\s+/g, ' '));
   env = { DB, PUBLIC_ORIGIN: 'https://shop.example', BETTER_AUTH_SECRET: secret, GOOGLE_CLIENT_ID: 'test', GOOGLE_CLIENT_SECRET: 'test', ASSETS: { fetch: async () => new Response('asset') } } as unknown as Env;
   const now = Date.now();
   await DB.batch([
     DB.prepare('INSERT INTO user (id,name,email,email_verified,created_at,updated_at) VALUES (?,?,?,?,?,?)').bind('owner','owner','private@example.com',1,now,now),
     DB.prepare('INSERT INTO session (id,token,user_id,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?)').bind('session','token-owner','owner',now+3600000,now,now),
-    DB.prepare('INSERT INTO admin_roles VALUES (?,?,?)').bind('owner','owner',now),
+    DB.prepare('INSERT INTO admin_roles(user_id,granted_by,created_at) VALUES (?,?,?)').bind('owner','owner',now),
   ]);
   cookie = `__Secure-better-auth.session_token=${encodeURIComponent(`token-owner.${createHmac('sha256',secret).update('token-owner').digest('base64')}`)}`;
 });
@@ -100,12 +100,13 @@ it('audits effective role changes in audit_logs and migrates legacy role history
     env.DB.prepare('INSERT INTO user (id,name,email,email_verified,created_at,updated_at) VALUES (?,?,?,?,?,?)').bind('staff','staff','staff@example.com',1,now,now),
     env.DB.prepare("INSERT INTO account (id,account_id,provider_id,user_id,created_at,updated_at) VALUES ('staff','staff','google','staff',?,?)").bind(now,now),
   ]);
-  const roles = (admin: boolean) => worker.fetch(new Request('https://shop.example/api/admin/roles', { method: 'POST', headers: { Cookie: cookie, Origin: 'https://shop.example', 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: 'staff', admin }) }), env);
-  expect(await (await roles(true)).json()).toEqual({ ok: true, changed: true });
-  expect(await (await roles(true)).json()).toEqual({ ok: true, changed: false });
-  expect(await (await roles(false)).json()).toEqual({ ok: true, changed: true });
-  const { results } = await env.DB.prepare("SELECT actor,action,target,details_json FROM audit_logs WHERE action LIKE 'role.%' ORDER BY created_at,action").all();
-  expect(results).toEqual([{ actor: 'owner', action: 'role.grant', target: 'staff', details_json: '{"admin":true}' }, { actor: 'owner', action: 'role.revoke', target: 'staff', details_json: '{"admin":false}' }]);
+  const call = (method: string, path: string, body?: unknown) => worker.fetch(new Request(`https://shop.example${path}`, { method, headers: { Cookie: cookie, Origin: 'https://shop.example', 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }), env);
+  expect(await (await call('POST', '/api/admin/roles', { userId: 'staff', role: 'ops' })).json()).toEqual({ ok: true, changed: true });
+  expect(await (await call('POST', '/api/admin/roles', { userId: 'staff', role: 'ops' })).json()).toEqual({ ok: true, changed: false });
+  expect(await (await call('POST', '/api/admin/roles', { userId: 'staff', role: 'catalog' })).json()).toEqual({ ok: true, changed: true });
+  expect(await (await call('DELETE', '/api/admin/roles/staff')).json()).toEqual({ ok: true, changed: true });
+  const { results } = await env.DB.prepare("SELECT actor,action,target,details_json FROM audit_logs WHERE action LIKE 'role.%' ORDER BY rowid").all();
+  expect(results).toEqual([{ actor: 'owner', action: 'role.grant', target: 'staff', details_json: '{"role":"ops"}' }, { actor: 'owner', action: 'role.change', target: 'staff', details_json: '{"fromRole":"ops","role":"catalog"}' }, { actor: 'owner', action: 'role.revoke', target: 'staff', details_json: '{"fromRole":"catalog"}' }]);
   expect(await env.DB.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name='integration_role_audit'").first('n')).toBe(0);
 
   const legacy = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-06', d1Databases: { DB: 'legacy-roles' } }));

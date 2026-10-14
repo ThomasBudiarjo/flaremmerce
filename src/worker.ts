@@ -6,8 +6,9 @@ import { consumeOutbox, reconcile, recoverOutbox } from './commerce/payments';
 import { json } from './commerce/types';
 import { catalogParams, HttpError, publicCacheKey } from './shared';
 import { storageRequest, receiveEmail, type StorageEnv } from './storage';
+import { pruneRateCounters, rateLimit, type RateLimitEnv } from './ratelimit';
 
-export interface Env extends IntegrationEnv, StorageEnv {
+export interface Env extends IntegrationEnv, StorageEnv, RateLimitEnv {
   DB: D1Database;
   ASSETS: Fetcher;
   JOBS?: Queue;
@@ -22,6 +23,8 @@ export default {
     const execute = async (): Promise<Response> => {
     try {
       const url = new URL(request.url);
+      const limited = await rateLimit(request, env);
+      if (limited) return limited;
       if (request.method === 'GET' && url.pathname === '/api/config') return json({
         turnstileSiteKey: env.TURNSTILE_SITE_KEY ?? null,
         googleEnabled: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.BETTER_AUTH_SECRET),
@@ -71,6 +74,8 @@ export default {
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const results = await Promise.allSettled([reconcile(env), recoverOutbox(env)]);
+    // Housekeeping only: a failure here never masks or fails the recovery scanners.
+    await pruneRateCounters(env).catch(() => console.warn('cron_error', { category: 'rate_counter_prune', kind: 'background_error' }));
     const failures = results.filter(result => result.status === 'rejected');
     results.forEach((result, index) => {
       if (result.status === 'rejected') console.error('cron_error', { category: index === 0 ? 'payment_recovery' : 'outbox_recovery', kind: 'background_error' });

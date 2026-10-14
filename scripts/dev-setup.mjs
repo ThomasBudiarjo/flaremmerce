@@ -36,12 +36,17 @@ function set(key, value) {
   existing[key] = value;
 }
 
-for (const key of ['BETTER_AUTH_SECRET', 'BOOTSTRAP_SECRET']) {
+for (const key of ['BETTER_AUTH_SECRET', 'BOOTSTRAP_SECRET', 'RISK_HASH_SECRET']) {
   if (!existing[key]) set(key, randomBytes(32).toString('hex'));
 }
 set('DEV_LOGIN_ENABLED', 'true');
 set('APP_ENV', 'development');
 set('PUBLIC_ORIGIN', origin ?? existing.PUBLIC_ORIGIN ?? 'http://localhost:8787');
+// An HTTPS dev portal (--origin) is a non-local origin; the runtime only allows dev login there on explicit opt-in.
+if (origin) {
+  const url = new URL(origin);
+  if (url.protocol === 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) set('DEV_LOGIN_ALLOW_REMOTE', 'true');
+}
 await writeFile(path, source, { mode: 0o600 });
 await chmod(path, 0o600);
 console.log('Local development variables prepared in .dev.vars (secrets hidden).');

@@ -11,13 +11,13 @@ const png = new Uint8Array([137,80,78,71,13,10,26,10,0]);
 beforeEach(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({ modules:true, script:'export default {fetch(){return new Response("ok")}}', compatibilityDate:'2026-08-06', d1Databases:{DB:'storage'}, r2Buckets:['MEDIA','PRIVATE_FILES'] }));
   const DB = await mf.getD1Database('DB');
-  for (const name of ['0001_commerce','0002_integrations','0003_storage']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+  for (const name of ['0001_commerce','0002_integrations','0003_storage','0004_manual_review','0010_risk','0011_admin_access']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
   env = { DB:DB as unknown as D1Database, PUBLIC_ORIGIN:'https://shop.example', MEDIA_ORIGIN:'https://media.example', MEDIA:await mf.getR2Bucket('MEDIA') as unknown as R2Bucket, PRIVATE_FILES:await mf.getR2Bucket('PRIVATE_FILES') as unknown as R2Bucket, BETTER_AUTH_SECRET:secret, GOOGLE_CLIENT_ID:'test', GOOGLE_CLIENT_SECRET:'test' };
   const now = Date.now();
   await DB.batch([
     DB.prepare('INSERT INTO user (id,name,email,email_verified,created_at,updated_at) VALUES (?,?,?,?,?,?)').bind('owner','owner','owner@example.com',1,now,now),
     DB.prepare('INSERT INTO session (id,token,user_id,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?)').bind('session','token-owner','owner',now+3600000,now,now),
-    DB.prepare('INSERT INTO admin_roles VALUES (?,?,?)').bind('owner','owner',now),
+    DB.prepare('INSERT INTO admin_roles(user_id,granted_by,created_at) VALUES (?,?,?)').bind('owner','owner',now),
     DB.prepare('INSERT INTO products (id,slug,name) VALUES (?,?,?)').bind('product','product','Product'),
   ]);
   cookie = `__Secure-better-auth.session_token=${encodeURIComponent(`token-owner.${createHmac('sha256',secret).update('token-owner').digest('base64')}`)}`;
@@ -80,6 +80,12 @@ it('downloads private HTML only as no-store nosniff attachment with fresh author
   expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
   expect(await response.text()).toBe('<script>alert(1)</script>');
   expect((await env.MEDIA!.list()).objects).toHaveLength(0);
+  expect(await env.DB.prepare("SELECT actor,target FROM audit_logs WHERE action='file.download'").all().then(r => r.results)).toEqual([{ actor:'owner', target:data.id }]);
+  // Private files are an ops area; a catalog-only admin can neither download nor upload them.
+  await env.DB.prepare("UPDATE admin_roles SET role='catalog' WHERE user_id='owner'").run();
+  expect((await get(cookie))!.status).toBe(403);
+  expect((await upload('/api/admin/files','x','text/plain'))!.status).toBe(403);
+  expect((await upload())!.status).toBe(201);
   await env.DB.prepare('DELETE FROM session').run(); expect((await get(cookie))!.status).toBe(401);
 });
 it('stores bounded raw inbound mail privately and rejects oversize streams without parsing HTML', async () => {

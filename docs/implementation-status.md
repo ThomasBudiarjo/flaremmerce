@@ -43,6 +43,20 @@ Lima jam nyata (18000.091 detik): 60 suite penuh, 6000 GET load + 240 smoke, nol
 
 RSS workerd meningkat pada soak dan bounded controls; bahkan Worker minimal tanpa aplikasi/D1/auth menunjukkan pertumbuhan. Root cause/native allocation policy dan kapasitas cloud tetap belum terbukti. Jangan menyebut leak-free/production-ready. Semua perubahan committed lokal; belum push/deploy. Rincian dan evidence scope ada di [local-verification.md](local-verification.md).
 
+## Fase 2: anti-fraud dan abuse — 14 Oktober 2026
+
+Backend-first, lokal, belum dipush/deploy. Migration baru `0010_risk.sql` (commerce: hash identitas order + index, `blocklist`, `rate_counters`, batas pembelian varian + trigger, `payment_events.kind`, index review open, audit immutable untuk semua row) dan `0011_admin_access.sql` (integrasi: `admin_roles.role`, `customer_bans`, `shipping_destinations`, index reuse quote, index halaman user).
+
+- Rate limit binding per route+IP dengan fallback D1 hashed; 429 + `Retry-After`. Webhook/admin tidak dibatasi. Smoke `wrangler dev`: 60×404 lalu 429 pada lookup order memakai binding (tanpa row D1).
+- Reuse quote per fingerprint (≥2 menit sisa), maksimal 10 layanan termurah, cache pencarian wilayah ternormalisasi 1 hari, quote/checkout hanya untuk wilayah yang dikenal server; alamat order disnapshot dari server.
+- `RISK_HASH_SECRET`, HP Indonesia `+628…` (400 "Nomor HP tidak valid"), limit pending per email/HP/IP (cek sebelum Turnstile dan ulang di dalam batch), review velocity dan email disposable dalam batch yang sama, hold fulfillment, blocklist ter-hash dengan CRUD teraudit dan block-from-order, batas `maxPerOrder`/`maxPerCustomer`.
+- Event DOKU terverifikasi non-SALE/status lain → `payment_events` ignored + review `provider_event`, 200.
+- Role `owner`/`ops`/`catalog`, API role (owner-only, owner terakhir terlindungi), `/api/admin/me`, daftar customer, revoke session, ban; audit `order.view`/`file.download`; force-cancel owner untuk attempt exhausted.
+- CSP ketat + `frame-ancestors 'none'` + `X-Frame-Options` + Permissions-Policy untuk admin dan storefront; script inline Astro di-hash (runtime dan build); hash di header cocok dengan script di HTML hasil build. `imageUrl` dibatasi ke `MEDIA_ORIGIN`. Katalog publik memakai `stockLevel`.
+- Guard login dev: runtime (HTTPS non-localhost perlu `DEV_LOGIN_ALLOW_REMOTE`) dan `scripts/deploy-guard.mjs` di build/`deploy:check`.
+
+Pemeriksaan: `npm run check`, `npm test` (**145 tes**: 58 commerce + 87 integration/storage/checkout/operations/UI/recovery), `npm run build`, `npm run deploy:check` lulus. Belum diuji di browser: hidrasi island di bawah CSP (hash diverifikasi terhadap HTML hasil build, bukan console browser), widget Turnstile live. UI admin untuk blocklist/role/customer/hold menyusul di Fase 4 (API sudah tersedia).
+
 ## Gate yang tidak boleh disamarkan
 
 1. Resource, secret dan hostname staging/production nyata + otorisasi provision/deploy/migration. Root Wrangler masih lokal/ID dummy.

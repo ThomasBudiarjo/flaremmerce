@@ -1,3 +1,5 @@
+import { MAX_CART_LINES } from "../../../../src/shared";
+export { MAX_CART_LINES };
 export type CartItem = { variantId: string; quantity: number };
 const key = "flaremmerce-cart";
 export function readCart(): CartItem[] {
@@ -11,7 +13,7 @@ export function readCart(): CartItem[] {
               Number.isInteger(v.quantity) &&
               v.quantity > 0,
           )
-          .slice(0, 100)
+          .slice(0, MAX_CART_LINES)
       : [];
   } catch {
     return [];
@@ -39,17 +41,17 @@ export async function api(path: string, body?: unknown, headers?: HeadersInit) {
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     const result = await retry.json().catch(() => ({}));
-    if (!retry.ok) throw new Error(typeof result.error === "string" ? result.error : "Checkout gagal.");
+    if (!retry.ok) throw Object.assign(new Error(typeof result.error === "string" ? result.error : "Checkout gagal."), { status: retry.status });
     return result;
   }
   if (!response.ok)
-    throw new Error(
+    throw Object.assign(new Error(
       data.error?.message ||
         data.message ||
         (typeof data.error === "string"
           ? data.error
           : "Permintaan gagal. Silakan coba lagi."),
-    );
+    ), { status: response.status });
   return data;
 }
 export async function google(callbackURL: string) {

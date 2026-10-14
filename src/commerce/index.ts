@@ -5,7 +5,7 @@ import { catalog } from './catalog';
 import { checkout } from './checkout';
 import { webhook } from './payments';
 import { cancelOrder } from './cancel';
-import { readBounded } from '../shared';
+import { adminPermits, readBounded } from '../shared';
 import { type CommerceEnv, hash, HttpError, json, statement as s } from './types';
 
 async function body(request: Request) {
@@ -84,7 +84,8 @@ export async function commerceRequest(request: Request, env: CommerceEnv): Promi
   if (path.startsWith('/api/orders/') && request.method === 'GET') return order(request, env, decodeURIComponent(path.slice('/api/orders/'.length)));
   if (path.startsWith('/api/admin/')) {
     const actor = await requireAdmin(request, env);
-    return admin(request, env, actor.id, request.method === 'GET' ? null : await body(request));
+    if (!adminPermits(actor.role, path)) throw new HttpError(403, 'Role not permitted');
+    return admin(request, env, actor.id, request.method === 'GET' || request.method === 'DELETE' ? null : await body(request), actor.role);
   }
   throw new HttpError(404, 'Endpoint not found');
 }

@@ -185,6 +185,7 @@ Static Assets dilayani asset-first, bukan run_worker_first global. Header aset m
 - Turnstile lolos bukan authorization, validasi harga, rate limiting atau idempotency. Guest checkout tetap dibatasi input/abuse dan server-side correctness.
 - Webhook DOKU dikecualikan dari browser challenge/Turnstile/session login, tetapi bukan dari signature verification, batas payload dan pemeriksaan transaksi. Jangan mengekspos bypass challenge untuk semua /api hanya karena ada webhook.
 - Cached public HTML tidak menanam session atau Turnstile token. Token dibuat client-side sehingga tidak dibagi melalui SSR cache.
+- Lapisan abuse di Worker (migration 0010/0011): rate limit binding per route+IP dengan fallback fixed window D1, HMAC identitas (email/HP/IP) per order, batas order pending dan blocklist sebelum Turnstile, review velocity/email disposable dalam batch order yang sama, hold fulfillment selama ada review open, batas pembelian per order/pelanggan (aplikasi + trigger), alamat dari data wilayah server, katalog publik hanya `stockLevel` (`in_stock`/`low`/`out`). Event DOKU terverifikasi non-SALE/non-SUCCESS/FAILED disimpan sebagai evidence + review, bukan 422. Role admin `owner`/`ops`/`catalog` dienforce di routing; semua audit immutable. Rincian operasional di [operations.md](operations.md).
 
 ## D9 — Webhook, outbox dan recovery
 

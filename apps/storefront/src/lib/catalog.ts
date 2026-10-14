@@ -4,7 +4,9 @@ export type Variant = {
   name: string;
   price: number;
   weight: number;
-  available: number | null;
+  /** Public catalog never exposes exact counts. */
+  stockLevel: "in_stock" | "low" | "out";
+  maxPerOrder?: number | null;
   mode: "stock" | "preorder";
   campaign?: {
     id: string;
@@ -12,8 +14,6 @@ export type Variant = {
     endsAt: string | number;
     shipFrom: string | number;
     shipTo: string | number;
-    quota: number | null;
-    available: number | null;
   };
 };
 export type Product = {

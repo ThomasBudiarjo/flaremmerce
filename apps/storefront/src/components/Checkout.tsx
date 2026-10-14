@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, google, readCart, writeCart, type CartItem } from "../lib/cart";
 import { type Product, money, date } from "../lib/catalog";
 import Turnstile from "./Turnstile";
+import { normalizePhone } from "../../../../src/shared";
 type Destination = { id: string; label: string; city: string; postalCode: string };
 type Quote = {
   id: string;
@@ -31,12 +32,8 @@ export default function Checkout() {
   const [reset, setReset] = useState(0);
   const [accepted, setAccepted] = useState(false);
   const [contact, setContact] = useState({ name: "", email: "", phone: "" });
-  const [address, setAddress] = useState({
-    line: "",
-    city: "",
-    postalCode: "",
-    destination: "",
-  });
+  // City and postal code come from the server-side destination record, never from this form.
+  const [address, setAddress] = useState({ line: "", destination: "" });
   const [result, setResult] = useState<any>();
   const key = useRef("");
   const locked = useRef(false);
@@ -74,10 +71,12 @@ export default function Checkout() {
     0,
   );
   const quote = quotes.find((q) => q.id === quoteId);
+  const selectedDestination = destinations.find((d) => d.id === address.destination);
   const invalid = lines.some(
     (l) =>
       !l.variant ||
-      (l.variant.available !== null && l.variant.available < l.quantity),
+      l.variant.stockLevel === "out" ||
+      (l.variant.maxPerOrder != null && l.quantity > l.variant.maxPerOrder),
   );
   const preorders = lines.filter((l) => l.variant?.mode === "preorder");
   const campaignMissing = preorders.some((l) => !l.variant?.campaign);
@@ -153,6 +152,10 @@ export default function Checkout() {
       setQuoteId("");
       return;
     }
+    if (!normalizePhone(contact.phone)) {
+      setError("Nomor HP tidak valid. Gunakan nomor seluler Indonesia, misalnya 0812… atau +62812….");
+      return;
+    }
     locked.current = true;
     setBusy(true);
     setError("");
@@ -194,9 +197,12 @@ export default function Checkout() {
         /* Confirmed order must remain visible. */
       }
     } catch (e) {
+      const status = (e as Error & { status?: number }).status;
+      // A definite refusal (validation, limits, blocklist) never created a payment; only unclear failures need the warning.
       setError(
-        (e as Error).message +
-          " Jika hasil pembayaran belum diketahui, jangan membuat pembayaran baru secara terpisah.",
+        status && status >= 400 && status < 500
+          ? (e as Error).message
+          : (e as Error).message + " Jika hasil pembayaran belum diketahui, jangan membuat pembayaran baru secara terpisah.",
       );
     } finally {
       setToken("");
@@ -280,7 +286,7 @@ export default function Checkout() {
                     aria-label={"Jumlah " + (l.product?.name || l.variantId)}
                     type="number"
                     min="1"
-                    max="99"
+                    max={l.variant?.maxPerOrder ?? 99}
                     value={l.quantity}
                     disabled={busy}
                     onChange={(e) =>
@@ -351,31 +357,17 @@ export default function Checkout() {
                 />
               </div>
             ))}
-            {(["line", "city", "postalCode"] as const).map(
-              (f, index) => (
-                <div key={f}>
-                  <label htmlFor={f}>
-                    {
-                      [
-                        "Alamat lengkap",
-                        "Kota / kabupaten",
-                        "Kode pos",
-                      ][index]
-                    }
-                  </label>
-                  <input
-                    id={f}
-                    required
-                    disabled={busy}
-                    value={address[f]}
-                    onChange={(e) => {
-                      setAddress({ ...address, [f]: e.target.value });
-                      invalidateQuotes();
-                    }}
-                  />
-                </div>
-              ),
-            )}
+            <label htmlFor="line">Alamat lengkap (jalan, nomor, RT/RW)</label>
+            <input
+              id="line"
+              required
+              disabled={busy}
+              value={address.line}
+              onChange={(e) => {
+                setAddress({ ...address, line: e.target.value });
+                invalidateQuotes();
+              }}
+            />
             <label htmlFor="destination-search">Cari wilayah pengiriman</label>
             <input
               id="destination-search"
@@ -404,13 +396,13 @@ export default function Checkout() {
             <label htmlFor="destination">Wilayah tujuan pengiriman</label>
             <select id="destination" required disabled={busy || searching || !destinations.length} value={address.destination} onChange={(e) => {
               const selected = destinations.find((d) => d.id === e.target.value);
-              setAddress({ ...address, destination: selected?.id || "", ...(selected ? { city: selected.city, postalCode: selected.postalCode } : {}) });
+              setAddress({ ...address, destination: selected?.id || "" });
               invalidateQuotes();
             }}>
               <option value="">Pilih wilayah sesuai alamat</option>
               {destinations.map((d) => <option key={d.id} value={d.id}>{d.label} — {d.postalCode}</option>)}
             </select>
-            {address.destination && <p className="muted" aria-live="polite">Tujuan: {destinations.find((d) => d.id === address.destination)?.label} · {address.postalCode}</p>}
+            {selectedDestination && <p className="muted" aria-live="polite">Tujuan: {selectedDestination.label} · {selectedDestination.postalCode}</p>}
             <button
               type="button"
               disabled={busy || invalid || !address.destination}
@@ -504,7 +496,7 @@ export default function Checkout() {
             )}
             {invalid && (
               <p role="alert">
-                Ada varian tidak tersedia atau jumlah melebihi ketersediaan.
+                Ada varian yang habis atau jumlah melebihi batas per pesanan.
               </p>
             )}
             {error && (

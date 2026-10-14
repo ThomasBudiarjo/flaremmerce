@@ -21,14 +21,15 @@ beforeEach(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({modules:true, script:'export default {fetch(){return new Response("ok")}}', compatibilityDate:'2026-08-06', d1Databases:{DB:'integrations'}}));
   const DB = await mf.getD1Database('DB');
   // D1 exec doesn't support embedded newlines in individual statements.
-  await DB.exec(readFileSync(new URL('../migrations/0002_integrations.sql',import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+  for (const name of ['0002_integrations','0011_admin_access']) await DB.exec(readFileSync(new URL(`../migrations/${name}.sql`,import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+  await DB.exec("INSERT INTO shipping_destinations VALUES('2','MENTENG, JAKARTA PUSAT, DKI JAKARTA, 10310','DKI JAKARTA','JAKARTA PUSAT','MENTENG','MENTENG','10310',0)");
   env = {DB:DB as unknown as D1Database, PUBLIC_ORIGIN:'https://shop.example', BETTER_AUTH_SECRET:secret, GOOGLE_CLIENT_ID:'test-google', GOOGLE_CLIENT_SECRET:'test-google-secret', BOOTSTRAP_SECRET:secret, TURNSTILE_SECRET_KEY:'test-turnstile', DOKU_CLIENT_ID:'MCH-test', DOKU_SECRET_KEY:secret};
 });
 afterEach(async () => { vi.unstubAllGlobals(); await mf.dispose(); });
 
 describe('public authentication and installation', () => {
   it('logs in without providers only in explicit development and keeps sessions server-validated', async () => {
-    const dev = {...env, APP_ENV:'development', DEV_LOGIN_ENABLED:'true', GOOGLE_CLIENT_ID:undefined, GOOGLE_CLIENT_SECRET:undefined};
+    const dev = {...env, APP_ENV:'development', DEV_LOGIN_ENABLED:'true', DEV_LOGIN_ALLOW_REMOTE:'true', GOOGLE_CLIENT_ID:undefined, GOOGLE_CLIENT_SECRET:undefined};
     const path = '/api/auth/development-login';
     for (const flags of [{}, {APP_ENV:'production', DEV_LOGIN_ENABLED:'true'}, {APP_ENV:'development'}]) {
       expect((await handleIntegrationRequest(request(path,{}), {...env,...flags}))?.status).not.toBe(200);
@@ -42,7 +43,7 @@ describe('public authentication and installation', () => {
     const response = await handleIntegrationRequest(request(path,{}),dev);
     expect(response?.status).toBe(200);
     const cookie = response!.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
-    expect(await requireAdmin(request('/admin',undefined,cookie),dev)).toEqual({id:'flaremmerce-dev-admin'});
+    expect(await requireAdmin(request('/admin',undefined,cookie),dev)).toEqual({id:'flaremmerce-dev-admin',role:'owner'});
     expect((await handleIntegrationRequest(request('/api/setup'),dev))?.status).toBe(200);
     expect(await env.DB.prepare('SELECT owner_id FROM installation').first('owner_id')).toBe('flaremmerce-dev-admin');
     await expect(requireAdmin(request('/admin',undefined,cookie),env)).rejects.toMatchObject({status:401});
@@ -55,22 +56,22 @@ describe('public authentication and installation', () => {
   it('does not let dev login take over an existing Google installation', async () => {
     const cookie = await identity('owner');
     expect((await handleIntegrationRequest(request('/api/setup',{secret},cookie),env))?.status).toBe(200);
-    expect((await handleIntegrationRequest(request('/api/auth/development-login',{}),{...env,APP_ENV:'development',DEV_LOGIN_ENABLED:'true'}))?.status).not.toBe(200);
+    expect((await handleIntegrationRequest(request('/api/auth/development-login',{}),{...env,APP_ENV:'development',DEV_LOGIN_ENABLED:'true',DEV_LOGIN_ALLOW_REMOTE:'true'}))?.status).not.toBe(200);
     expect(await env.DB.prepare('SELECT owner_id FROM installation').first('owner_id')).toBe('owner');
     expect(await env.DB.prepare('SELECT count(*) n FROM admin_roles').first('n')).toBe(1);
   });
   it('rejects tampered sessions and observes immediate revocation on admin checks', async () => {
     const cookie = await identity('owner');
     expect(await getCustomer(request('/api/auth/get-session',undefined,cookie),env)).toEqual({id:'owner'});
-    await env.DB.prepare('INSERT INTO admin_roles VALUES (?,?,?)').bind('owner','owner',Date.now()).run();
-    expect(await requireAdmin(request('/admin',undefined,cookie),env)).toEqual({id:'owner'});
+    await env.DB.prepare('INSERT INTO admin_roles(user_id,granted_by,created_at) VALUES (?,?,?)').bind('owner','owner',Date.now()).run();
+    expect(await requireAdmin(request('/admin',undefined,cookie),env)).toEqual({id:'owner',role:'owner'});
     await env.DB.prepare('DELETE FROM session WHERE user_id=?').bind('owner').run();
     await expect(requireAdmin(request('/admin',undefined,cookie),env)).rejects.toMatchObject({status:401});
     expect(await getCustomer(request('/api/auth/get-session',undefined,`${cookie}tampered`),env)).toBeNull();
   });
   it('bypasses a valid compact cache and reads fresh roles for sensitive access', async () => {
     const cookie = await identity('cached');
-    await env.DB.prepare('INSERT INTO admin_roles VALUES (?,?,?)').bind('cached','cached',Date.now()).run();
+    await env.DB.prepare('INSERT INTO admin_roles(user_id,granted_by,created_at) VALUES (?,?,?)').bind('cached','cached',Date.now()).run();
     const response = await handleIntegrationRequest(request('/api/auth/get-session',undefined,cookie),env);
     const cache = response!.headers.getSetCookie().find(c=>c.startsWith('__Secure-better-auth.session_data='));
     expect(cache).toBeTruthy();
@@ -95,7 +96,7 @@ describe('public authentication and installation', () => {
     expect((await handleIntegrationRequest(request('/api/setup',{secret},cookie),env))?.status).toBe(403);
     const cross = new Request('https://shop.example/api/setup',{method:'POST',headers:{Origin:'https://evil.example'},body:'{}'});
     expect((await handleIntegrationRequest(cross,env))?.status).toBe(403);
-    expect((await handleIntegrationRequest(request('/api/admin/roles',{userId:'unverified',admin:true},cookie),env))?.status).toBe(403);
+    expect((await handleIntegrationRequest(request('/api/admin/roles',{userId:'unverified',role:'owner'},cookie),env))?.status).toBe(403);
     expect((await handleIntegrationRequest(request('/api/auth/sign-up/email',{email:'a@example.com',password:'password'}),env))?.status).not.toBe(200);
     expect((await handleIntegrationRequest(request('/api/setup'),env))?.headers.get('Cache-Control')).toContain('no-store');
   });
@@ -188,7 +189,10 @@ describe('provider boundaries', () => {
   it('validates raw signatures, stable identity, and ignores Checkout FAILED/unknown statuses', async () => {
     expect(await verifyPaymentWebhook(await notification('SUCCESS'),env)).toEqual({eventKey:'doku:MCH-test:documented-notification-id',reference:'ref1',amount:10000,currency:'IDR',status:'succeeded'});
     expect((await verifyPaymentWebhook(await notification('FAILED'),env)).status).toBe('ignored');
-    for (const status of ['EXPIRED','AUTHORIZED','paid']) await expect(verifyPaymentWebhook(await notification(status),env)).rejects.toMatchObject({status:422});
+    // Verified but non-sale or undocumented statuses become operator evidence instead of a 422 retry loop.
+    for (const status of ['EXPIRED','AUTHORIZED','paid']) expect(await verifyPaymentWebhook(await notification(status),env)).toMatchObject({status:'provider_event',reference:'ref1',kind:`SALE:${status.toUpperCase()}`});
+    expect(await verifyPaymentWebhook(await notification('SUCCESS','ref1',undefined,{transaction:{status:'SUCCESS',type:'REFUND'}}),env)).toMatchObject({status:'provider_event',kind:'REFUND:SUCCESS'});
+    expect(await verifyPaymentWebhook(await notification('SUCCESS','ref1',undefined,{transaction:{status:'CHARGE BACK\n',type:'CHARGEBACK'}}),env)).toMatchObject({status:'provider_event',kind:'CHARGEBACK:UNKNOWN'});
     await expect(verifyPaymentWebhook(await notification('SUCCESS','different'),env)).rejects.toMatchObject({status:422});
     const valid = await notification('SUCCESS');
     const tampered = new Request(valid,{body:(await valid.text()).replace('10000','20000')});
@@ -272,5 +276,135 @@ describe('integration runtime helpers', () => {
     expect((await handleIntegrationRequest(request('/api/shipping/quote',{destination:'2',items:[{variantId:'a',quantity:1},{variantId:'b',quantity:1},{variantId:'a',quantity:2}]}),env))?.status).toBe(200);
     expect((await handleIntegrationRequest(request('/api/shipping/quote',{destination:'2',items:[{variantId:'a',quantity:1},{variantId:'missing',quantity:1}]}),env))?.status).toBe(400);
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('anti-abuse integration boundaries', () => {
+  const tariffs = Array.from({length:14}, (_, i) => ({code:'jne', service:`S${i}`, cost:20000 - i * 1000}));
+  it('reuses unexpired quotes per cart fingerprint, keeps the 10 cheapest services and refuses unknown destinations', async () => {
+    await env.DB.exec("CREATE TABLE product_variants (id TEXT PRIMARY KEY, weight INTEGER); INSERT INTO product_variants VALUES ('a', 100);");
+    Object.assign(env,{RAJAONGKIR_API_KEY:'test',RAJAONGKIR_ORIGIN:'1',RAJAONGKIR_COURIERS:'jne'});
+    const fetcher = vi.fn(async () => Response.json({meta:{code:200,status:'success'},data:tariffs}));
+    vi.stubGlobal('fetch',fetcher);
+    const quote = async (body: unknown) => (await handleIntegrationRequest(request('/api/shipping/quote',body),env))!;
+    const first = await (await quote({destination:'2',items:[{variantId:'a',quantity:1}]})).json() as any;
+    expect(first.quotes).toHaveLength(10);
+    expect(first.quotes.map((q:any)=>q.amount)).toEqual([...first.quotes.map((q:any)=>q.amount)].sort((a:number,b:number)=>a-b));
+    expect(first.quotes[0].amount).toBe(7000);
+    expect(await env.DB.prepare('SELECT count(*) n FROM shipping_quotes').first('n')).toBe(10);
+    const second = await (await quote({destination:'2',items:[{variantId:'a',quantity:1}]})).json() as any;
+    expect(second.quotes.map((q:any)=>q.id).sort()).toEqual(first.quotes.map((q:any)=>q.id).sort());
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    // A changed cart or nearly expired quotes go back to the provider.
+    expect((await quote({destination:'2',items:[{variantId:'a',quantity:2}]})).status).toBe(200);
+    await env.DB.prepare('UPDATE shipping_quotes SET expires_at=?').bind(Date.now() + 60000).run();
+    expect((await quote({destination:'2',items:[{variantId:'a',quantity:1}]})).status).toBe(200);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const unknown = await quote({destination:'999',items:[{variantId:'a',quantity:1}]});
+    expect(unknown.status).toBe(400);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect((await quote({destination:'2',items:Array.from({length:31},()=>({variantId:'a',quantity:1}))})).status).toBe(400);
+  });
+  it('caches destination searches under a normalized internal key and remembers the destinations server-side', async () => {
+    const store = new Map<string, Response>();
+    vi.stubGlobal('caches', {default:{match:async (key: Request) => store.get(key.url)?.clone(), put:async (key: Request, response: Response) => { store.set(key.url, response.clone()); }}});
+    const entry = {id:68513,label:'BALERAKSA, KARANGMONCOL, PURBALINGGA, JAWA TENGAH, 53355',province_name:'JAWA TENGAH',city_name:'PURBALINGGA',district_name:'KARANGMONCOL',subdistrict_name:'BALERAKSA',zip_code:'53355'};
+    const fetcher = vi.fn(async (url: unknown) => { expect(new URL(String(url)).searchParams.get('search')).toBe('karang moncol'); return Response.json({meta:{code:200,status:'success'},data:[entry]}); });
+    vi.stubGlobal('fetch',fetcher);
+    const configured = {...env,RAJAONGKIR_API_KEY:'server-only-key'};
+    const search = (term: string) => handleIntegrationRequest(request('/api/shipping/destinations',{search:term}),configured);
+    const first = await search('  Karang   MONCOL ');
+    expect(first?.headers.get('Cache-Control')).toBe('private, no-store');
+    const result = await first!.json() as any;
+    expect(await (await search('karang moncol'))!.json()).toEqual(result);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect([...store.keys()]).toEqual(['https://shop.example/__internal/shipping-destinations?q=karang%20moncol']);
+    expect(store.values().next().value!.headers.get('Cache-Control')).toBe('public, max-age=86400');
+    expect(await env.DB.prepare("SELECT label,city,district,postal_code FROM shipping_destinations WHERE id='68513'").first()).toEqual({label:entry.label,city:'PURBALINGGA',district:'KARANGMONCOL',postal_code:'53355'});
+    // A cache hit still restores the server-side copy if D1 lost it.
+    await env.DB.exec("DELETE FROM shipping_destinations WHERE id='68513'");
+    await search('KARANG MONCOL');
+    expect(await env.DB.prepare("SELECT count(*) n FROM shipping_destinations WHERE id='68513'").first('n')).toBe(1);
+  });
+  it('lets only owners manage roles and never leaves the installation without an owner', async () => {
+    await env.DB.exec(readFileSync(new URL('../migrations/0001_commerce.sql',import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+    const owner = await identity('owner'), staff = await identity('staff'), other = await identity('other');
+    expect((await handleIntegrationRequest(request('/api/setup',{secret},owner),env))?.status).toBe(200);
+    const call = (method: string, path: string, cookie: string, body?: unknown) => handleIntegrationRequest(new Request(`https://shop.example${path}`,{method,headers:{Origin:'https://shop.example','Content-Type':'application/json',Cookie:cookie},...(body ? {body:JSON.stringify(body)} : {})}),env);
+    expect(await (await call('GET','/api/admin/me',owner))!.json()).toEqual({user:{id:'owner',name:'owner',email:'owner@example.com'},role:'owner',areas:['owner','ops','catalog']});
+    expect((await call('POST','/api/admin/roles',owner,{userId:'staff',role:'ops'}))?.status).toBe(200);
+    expect((await call('POST','/api/admin/roles',owner,{userId:'staff',role:'superuser'}))?.status).toBe(400);
+    expect(await (await call('GET','/api/admin/me',staff))!.json()).toMatchObject({role:'ops',areas:['ops']});
+    expect((await call('GET','/api/admin/roles',staff))?.status).toBe(403);
+    expect((await call('POST','/api/admin/roles',staff,{userId:'other',role:'owner'}))?.status).toBe(403);
+    expect((await call('POST','/api/admin/roles',staff,{userId:'staff',role:'owner'}))?.status).toBe(403);
+    // The only owner cannot demote themselves or be revoked.
+    expect((await call('POST','/api/admin/roles',owner,{userId:'owner',role:'ops'}))?.status).toBe(409);
+    expect((await call('DELETE','/api/admin/roles/owner',owner))?.status).toBe(409);
+    expect((await call('POST','/api/admin/roles',owner,{userId:'other',role:'owner'}))?.status).toBe(200);
+    expect((await call('POST','/api/admin/roles',other,{userId:'other',role:'catalog'}))?.status).toBe(200);
+    expect((await call('POST','/api/admin/roles',other,{userId:'staff',role:'owner'}))?.status).toBe(403);
+    expect((await call('DELETE','/api/admin/roles/owner',owner))?.status).toBe(409);
+    expect((await call('DELETE','/api/admin/roles/other',owner))?.status).toBe(200);
+    const list = await (await call('GET','/api/admin/roles',owner))!.json() as any;
+    expect(list.admins.map((a:any)=>[a.userId,a.role,a.installationOwner])).toEqual([['owner','owner',true],['staff','ops',false]]);
+    expect((await env.DB.prepare("SELECT action FROM audit_logs WHERE action LIKE 'role.%' ORDER BY rowid").all()).results.map(r=>r.action)).toEqual(['role.grant','role.grant','role.change','role.revoke']);
+  });
+  it('lists customers, revokes sessions immediately and bans customers but never administrators', async () => {
+    await env.DB.exec(readFileSync(new URL('../migrations/0001_commerce.sql',import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+    const owner = await identity('owner'), shopper = await identity('shopper'), staff = await identity('staff');
+    await env.DB.prepare("INSERT INTO admin_roles(user_id,granted_by,created_at,role) VALUES('owner','owner',1,'owner'),('staff','owner',1,'ops')").run();
+    await env.DB.exec("INSERT INTO orders(id,reference,customer_id,total,contact_json,address_json,shipping_json,created_at) VALUES('o1','r1','shopper',1,'{}','{}','{}',1),('o2','r2','shopper',1,'{}','{}','{}',2)");
+    const call = (path: string, cookie: string, body?: unknown) => handleIntegrationRequest(new Request(`https://shop.example${path}`,{method:body ? 'POST' : 'GET',headers:{Origin:'https://shop.example','Content-Type':'application/json',Cookie:cookie},...(body ? {body:JSON.stringify(body)} : {})}),env);
+    const customers = await (await call('/api/admin/customers?limit=2',staff))!.json() as any;
+    expect(customers.customers).toHaveLength(2); expect(customers.nextCursor).not.toBeNull();
+    const all = await (await call('/api/admin/customers',staff))!.json() as any;
+    expect(all.customers.find((c:any)=>c.id==='shopper')).toEqual({id:'shopper',name:'shopper',email:'shopper@example.com',createdAt:expect.any(Number),orders:2,banned:false,admin:false});
+    expect(all.customers.find((c:any)=>c.id==='staff')).toMatchObject({admin:true});
+    expect(await getCustomer(request('/x',undefined,shopper),env)).toEqual({id:'shopper'});
+    expect(await (await call('/api/admin/users/shopper/revoke-sessions',staff,{}))!.json()).toEqual({ok:true,revoked:1});
+    expect(await getCustomer(request('/x',undefined,shopper),env)).toBeNull();
+    // Ops may not sign out an administrator; owners may.
+    expect((await call('/api/admin/users/owner/revoke-sessions',staff,{}))?.status).toBe(403);
+    expect((await call('/api/admin/users/missing/revoke-sessions',staff,{}))?.status).toBe(404);
+    const again = await identity('shopper2');
+    await env.DB.prepare("UPDATE session SET user_id='shopper' WHERE user_id='shopper2'").run();
+    expect(await (await call('/api/admin/users/shopper/ban',staff,{banned:true}))!.json()).toEqual({ok:true,banned:true,changed:true});
+    expect(await env.DB.prepare("SELECT count(*) n FROM session WHERE user_id='shopper'").first('n')).toBe(0);
+    await env.DB.prepare("INSERT INTO session (id,token,user_id,expires_at,created_at,updated_at) VALUES ('fresh','token-shopper2','shopper',?,?,?)").bind(Date.now()+3600000,Date.now(),Date.now()).run();
+    expect(await getCustomer(request('/x',undefined,again),env)).toBeNull();
+    expect(await getCustomer(request('/x',undefined,again),env,{includeBanned:true})).toEqual({id:'shopper',banned:true});
+    expect((await call('/api/admin/users/staff/ban',owner,{banned:true}))?.status).toBe(409);
+    expect((await call('/api/admin/users/shopper/ban',staff,{banned:'yes'}))?.status).toBe(400);
+    expect(await (await call('/api/admin/users/shopper/ban',staff,{banned:false}))!.json()).toEqual({ok:true,banned:false,changed:true});
+    expect(await getCustomer(request('/x',undefined,again),env)).toEqual({id:'shopper'});
+    expect((await env.DB.prepare("SELECT actor,action,target FROM audit_logs ORDER BY rowid").all()).results).toEqual([
+      {actor:'staff',action:'user.revoke_sessions',target:'shopper'},{actor:'staff',action:'user.ban',target:'shopper'},{actor:'staff',action:'user.unban',target:'shopper'}]);
+    await env.DB.prepare("UPDATE admin_roles SET role='catalog' WHERE user_id='staff'").run();
+    expect((await call('/api/admin/customers',staff))?.status).toBe(403);
+  });
+  it('refuses development login on a non-local HTTPS origin without the remote opt-in', async () => {
+    const dev = {...env, APP_ENV:'development', DEV_LOGIN_ENABLED:'true', GOOGLE_CLIENT_ID:undefined, GOOGLE_CLIENT_SECRET:undefined};
+    const { devLoginEnabled } = await import('../src/integrations/auth');
+    expect(devLoginEnabled(dev)).toBe(false);
+    expect(devLoginEnabled({...dev, DEV_LOGIN_ALLOW_REMOTE:'true'})).toBe(true);
+    for (const origin of ['http://localhost:8787','https://localhost:8787','https://127.0.0.1','http://192.168.1.5:8787']) expect(devLoginEnabled({...dev, PUBLIC_ORIGIN:origin})).toBe(true);
+    expect(devLoginEnabled({...dev, APP_ENV:'production', DEV_LOGIN_ALLOW_REMOTE:'true'})).toBe(false);
+    expect((await handleIntegrationRequest(request('/api/auth/development-login',{}),dev))?.status).not.toBe(200);
+  });
+  it('fails the deploy guard for dev login on a public HTTPS origin', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = mkdtempSync(join(tmpdir(), 'deploy-guard-'));
+    const run = (vars: Record<string, string>) => {
+      const file = join(dir, `${Object.values(vars).join('-').replace(/\W/g,'')}.json`);
+      writeFileSync(file, JSON.stringify({vars}));
+      try { execFileSync(process.execPath, ['scripts/deploy-guard.mjs', file], {stdio:'pipe'}); return 0; } catch (error: any) { return error.status as number; }
+    };
+    expect(run({PUBLIC_ORIGIN:'https://shop.example', DEV_LOGIN_ENABLED:'true'})).toBe(1);
+    expect(run({PUBLIC_ORIGIN:'https://shop.example'})).toBe(0);
+    expect(run({PUBLIC_ORIGIN:'http://localhost:8787', DEV_LOGIN_ENABLED:'true'})).toBe(0);
   });
 });

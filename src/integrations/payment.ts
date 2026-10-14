@@ -40,7 +40,8 @@ export async function createPayment(input: {reference:string; amount:number; ret
   demand(url.protocol === 'https:', 502, 'Invalid payment URL');
   return {url:url.href, ...(typeof result.response.uuid === 'string' ? {providerId:result.response.uuid}: {})};
 }
-export async function verifyPaymentWebhook(request: Request, env: IntegrationEnv): Promise<{eventKey:string; reference:string; amount:number; currency:string; status:'succeeded'|'ignored'; providerTx?:string}> {
+export type WebhookEvent = {eventKey:string; reference:string; amount:number; currency:string; status:'succeeded'|'ignored'|'provider_event'; providerTx?:string; kind?:string};
+export async function verifyPaymentWebhook(request: Request, env: IntegrationEnv): Promise<WebhookEvent> {
   const {client,secret} = credentials(env);
   demand(request.method === 'POST', 405, 'Method not allowed');
   const id = request.headers.get('Request-Id'), timestamp = request.headers.get('Request-Timestamp'), supplied = request.headers.get('Signature');
@@ -52,18 +53,24 @@ export async function verifyPaymentWebhook(request: Request, env: IntegrationEnv
   demand(await equal(supplied,expected), 401, 'Invalid payment signature');
   let event: any; try { event = JSON.parse(raw); } catch { demand(false); }
   demand(event && typeof event === 'object');
+  const reference = event.order?.invoice_number, eventKey = `doku:${client}:${id}`;
+  demand(typeof reference === 'string' && /^[A-Za-z0-9-]{1,30}$/.test(reference));
+  const type = event.transaction?.type, status = event.transaction?.status;
+  // Authenticated refund/chargeback/void/capture or undocumented statuses are evidence for an operator, never a
+  // state change: acknowledged so DOKU stops retrying. Only a sanitized type:status label is kept, no payload.
+  if ((type && type !== 'SALE') || (status !== 'SUCCESS' && status !== 'FAILED')) {
+    const label = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9_]{1,32}$/.test(value) ? value.toUpperCase() : 'UNKNOWN';
+    const amount = Number(event.order?.amount);
+    return {eventKey, reference, amount:Number.isSafeInteger(amount) && amount > 0 ? amount : 0, currency:'IDR', status:'provider_event', kind:`${label(type ?? 'SALE')}:${label(status)}`};
+  }
   demand(typeof event.order?.amount === 'number' || (typeof event.order?.amount === 'string' && /^\d+(\.0+)?$/.test(event.order.amount)));
-  const reference = event.order?.invoice_number, amount = Number(event.order?.amount);
-  demand(typeof reference === 'string' && /^[A-Za-z0-9-]{1,30}$/.test(reference) && Number.isSafeInteger(amount) && amount > 0);
+  const amount = Number(event.order?.amount);
+  demand(Number.isSafeInteger(amount) && amount > 0);
   demand(!event.order.currency || event.order.currency === 'IDR');
-  // Reject authorization, capture, refund, void and undocumented expiry payloads.
-  demand(!event.transaction?.type || event.transaction.type === 'SALE', 422, 'Unsupported payment event');
-  const status = event.transaction?.status;
   // DOKU explicitly says Checkout merchants must ignore FAILED: another method can succeed.
-  demand(status === 'SUCCESS' || status === 'FAILED', 422, 'Unsupported payment status');
   if (event.transaction.original_request_id) demand(event.transaction.original_request_id === reference, 422, 'Payment identity mismatch');
   const providerTx = transactionIdentity(event);
-  return {eventKey:`doku:${client}:${id}`, reference, amount, currency:'IDR', status:status === 'SUCCESS' ? 'succeeded' : 'ignored', ...(providerTx ? {providerTx} : {})};
+  return {eventKey, reference, amount, currency:'IDR', status:status === 'SUCCESS' ? 'succeeded' : 'ignored', ...(providerTx ? {providerTx} : {})};
 }
 export type LookupResult = {status:'succeeded'|'not_paid'; amount:number; currency:string; providerTx?:string} | {status:'unknown'};
 export async function lookupPayment(reference: string, env: IntegrationEnv): Promise<LookupResult> {

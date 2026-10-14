@@ -4,12 +4,19 @@ import { HttpError, encode, readBounded } from '../shared';
 export function demand(ok: unknown, status = 400, message = 'Invalid request'): asserts ok {
   if (!ok) throw new HttpError(status, message);
 }
+/** Dev login never runs outside development, and an HTTPS non-local origin also needs an explicit opt-in (dev portals). */
+export function devLoginEnabled(env: IntegrationEnv) {
+  if (env.APP_ENV !== 'development' || env.DEV_LOGIN_ENABLED !== 'true') return false;
+  let url: URL;
+  try { url = new URL(env.PUBLIC_ORIGIN); } catch { return false; }
+  return url.protocol !== 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || env.DEV_LOGIN_ALLOW_REMOTE === 'true';
+}
 export function origin(request: Request, env: IntegrationEnv) {
   const expected = new URL(env.PUBLIC_ORIGIN);
   const received = request.headers.get('Origin');
   // Local portal/Wrangler terminates TLS and rewrites Origin to HTTP.
   // Accept only the exact canonical host/port, only in explicit development.
-  const localPortal = env.APP_ENV === 'development' && env.DEV_LOGIN_ENABLED === 'true'
+  const localPortal = devLoginEnabled(env)
     && expected.protocol === 'https:' && received === `http://${expected.host}`
     && new URL(request.url).origin === received;
   demand(received === expected.origin || localPortal, 403, 'Origin rejected');

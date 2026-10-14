@@ -12,6 +12,13 @@
   "d1_databases": [{"binding":"DB", "database_name":"flaremmerce-local", "database_id":"00000000-0000-0000-0000-000000000001", "migrations_dir":"migrations"}],
   "r2_buckets": [{"binding":"MEDIA","bucket_name":"flaremmerce-local-media"},{"binding":"PRIVATE_FILES","bucket_name":"flaremmerce-local-private"}],
   "queues": {"producers":[{"binding":"JOBS","queue":"flaremmerce-local-jobs"}],"consumers":[{"queue":"flaremmerce-local-jobs","max_batch_size":10,"max_batch_timeout":5,"max_retries":3}]},
+  // Limits are per Cloudflare location and must mirror RATE_LIMITS in src/ratelimit.ts (the D1 fallback).
+  "ratelimits": [
+    {"name":"RL_CHECKOUT", "namespace_id":"1001", "simple":{"limit":10, "period":60}},
+    {"name":"RL_QUOTE", "namespace_id":"1002", "simple":{"limit":30, "period":60}},
+    {"name":"RL_LOOKUP", "namespace_id":"1003", "simple":{"limit":60, "period":60}},
+    {"name":"RL_AUTH", "namespace_id":"1004", "simple":{"limit":10, "period":60}}
+  ],
   "vars": {"PUBLIC_ORIGIN":"http://localhost:8787", "DOKU_MODE":"sandbox"},
   "triggers": {"crons":["*/5 * * * *"]},
   "observability": {"enabled":true}

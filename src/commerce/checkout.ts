@@ -1,18 +1,21 @@
 import { z } from 'zod';
 import { createPayment, getCustomer, verifyTurnstile } from '../integrations/index';
-import { digest } from '../shared';
+import { clientIp, digest, envCount, MAX_CART_LINES, normalizeEmail, normalizePhone, riskHash, riskSecret } from '../shared';
+import { disposableEmail } from './risk';
 import { type CommerceEnv, hash, HttpError, id, json, statement as s } from './types';
 
 export const checkoutInput = z.object({
-  items: z.array(z.object({ variantId: z.string().min(1).max(100), quantity: z.number().int().min(1).max(100) }).strict()).min(1).max(30),
+  items: z.array(z.object({ variantId: z.string().min(1).max(100), quantity: z.number().int().min(1).max(100) }).strict()).min(1).max(MAX_CART_LINES),
   shippingQuoteId: z.string().min(1).max(100),
   contact: z.object({ name: z.string().trim().min(1).max(200), email: z.string().email().max(254), phone: z.string().trim().min(3).max(40) }).strict(),
-  address: z.object({ line: z.string().trim().min(1).max(500), city: z.string().trim().min(1).max(100), postalCode: z.string().trim().min(1).max(20), destination: z.string().min(1).max(100) }).strict(),
+  // City/postal code are accepted for older clients but never trusted: the server destination row is snapshotted.
+  address: z.object({ line: z.string().trim().min(1).max(500), city: z.string().trim().max(100).optional(), postalCode: z.string().trim().max(20).optional(), destination: z.string().min(1).max(100) }).strict(),
   expectedTotal: z.number().int().min(0).max(1_000_000_000), idempotencyKey: z.string().min(8).max(128), turnstileToken: z.string().min(1).max(4096),
 }).strict();
 type OrderRow = { id: string; reference: string; status: string; total: number; customer_id: string | null };
 type AttemptRow = { status: string; url: string | null };
-type VariantRow = { id: string; sku: string; name: string; product_name: string; price: number; weight: number; mode: string; campaign_id: string | null; ship_from: string | null; ship_to: string | null };
+type VariantRow = { id: string; sku: string; name: string; product_name: string; price: number; weight: number; mode: string; max_per_order: number | null; max_per_customer: number | null; campaign_id: string | null; ship_from: string | null; ship_to: string | null };
+type DestinationRow = { id: string; label: string; province: string; city: string; district: string; subdistrict: string; postal_code: string };
 type QuoteRow = { id: string; fingerprint: string; destination: string; weight: number; amount: number; service: string; expires_at: number; details_json: string };
 
 async function retry(env: CommerceEnv, scope: string, key: string, fingerprint: string, guestSecret: string | null) {
@@ -36,7 +39,10 @@ export async function checkout(request: Request, env: CommerceEnv, body: unknown
   const input = parsed.data;
   if (new Set(input.items.map(i => i.variantId)).size !== input.items.length) throw new HttpError(400, 'Duplicate variants');
   input.items.sort((a, b) => a.variantId.localeCompare(b.variantId));
-  const customer = await getCustomer(request, env);
+  const phone = normalizePhone(input.contact.phone);
+  if (!phone) throw new HttpError(400, 'Nomor HP tidak valid');
+  const customer = await getCustomer(request, env, { includeBanned: true });
+  if (customer?.banned) throw new HttpError(403, 'Pesanan tidak dapat diproses');
   const cookie = request.headers.get('Cookie')?.match(/(?:^|;\s*)__Host-checkout_scope=([a-f0-9]{64})(?:;|$)/)?.[1] ?? null;
   // Establish scope before doing any work: two first requests without cookies cannot share a key or expose tokens.
   // Caller retries unchanged payload after accepting this HttpOnly cookie. Turnstile is not consumed yet.
@@ -51,6 +57,14 @@ export async function checkout(request: Request, env: CommerceEnv, body: unknown
   const fingerprint = await hash(JSON.stringify(payload));
   const existing = await retry(env, scope, input.idempotencyKey, fingerprint, cookie);
   if (existing) return existing;
+  // Risk checks come after idempotency (a retry always returns its order) and before Turnstile is consumed.
+  const secret = riskSecret(env), ip = clientIp(request), email = normalizeEmail(input.contact.email);
+  // A missing client IP (local tooling) is no identity at all rather than one shared by every such request.
+  const [emailHash, phoneHash, ipHash] = await Promise.all([riskHash(secret, 'email', email), riskHash(secret, 'phone', phone), ip === 'unknown' ? null : riskHash(secret, 'ip', ip)]);
+  if (await s(env, "SELECT 1 AS blocked FROM blocklist WHERE (kind='email' AND value_hash=?) OR (kind='phone' AND value_hash=?) OR (kind='ip' AND value_hash=?) LIMIT 1", emailHash, phoneHash, ipHash).first('blocked')) throw new HttpError(403, 'Pesanan tidak dapat diproses');
+  const maxPending = envCount(env.MAX_PENDING_PER_IDENTITY, 3);
+  const pendingCount = async () => (await s(env, "SELECT count(*) AS n FROM orders WHERE status='pending_payment' AND (email_hash=? OR phone_hash=? OR ip_hash=?)", emailHash, phoneHash, ipHash).first<number>('n')) ?? 0;
+  if (await pendingCount() >= maxPending) throw new HttpError(429, 'Terlalu banyak pesanan belum dibayar');
   await verifyTurnstile(input.turnstileToken, env);
   const now = Date.now();
   // At most 30 distinct variants plus two timestamps: one query stays below D1's 100-bind limit.
@@ -61,9 +75,20 @@ export async function checkout(request: Request, env: CommerceEnv, body: unknown
   for (const item of input.items) {
     const v = variants.get(item.variantId);
     if (!v || (v.mode === 'preorder' && !v.campaign_id)) throw new HttpError(409, 'Variant unavailable');
+    if (v.max_per_order !== null && item.quantity > v.max_per_order) throw new HttpError(409, `Maksimal ${v.max_per_order} per pesanan untuk ${v.sku}`);
     subtotal += v.price * item.quantity; weight += v.weight * item.quantity;
     vv.push({ variant: v, quantity: item.quantity });
   }
+  const limited = vv.filter(i => i.variant.max_per_customer !== null);
+  if (limited.length) {
+    const { results: bought } = await s(env, `SELECT i.variant_id AS variantId,sum(i.quantity) AS n FROM orders o JOIN order_items i ON i.order_id=o.id WHERE o.status<>'cancelled' AND (o.email_hash=? OR o.phone_hash=? OR o.customer_id=?) AND i.variant_id IN (${limited.map(() => '?').join(',')}) GROUP BY i.variant_id`,
+      emailHash, phoneHash, customer?.id ?? null, ...limited.map(i => i.variant.id)).all<{ variantId: string; n: number }>();
+    for (const { variant: v, quantity } of limited) {
+      if ((bought.find(row => row.variantId === v.id)?.n ?? 0) + quantity > v.max_per_customer!) throw new HttpError(409, `Batas pembelian ${v.sku} adalah ${v.max_per_customer} per pelanggan`);
+    }
+  }
+  const destination = await s(env, 'SELECT id,label,province,city,district,subdistrict,postal_code FROM shipping_destinations WHERE id=?', input.address.destination).first<DestinationRow>();
+  if (!destination) throw new HttpError(409, 'Wilayah tujuan tidak dikenal; cari ulang wilayah');
   const quote = await s(env, 'SELECT * FROM shipping_quotes WHERE id=?', input.shippingQuoteId).first<QuoteRow>();
   if (!quote || quote.expires_at <= now || quote.destination !== input.address.destination || quote.weight !== weight || !Number.isSafeInteger(quote.amount) || quote.amount < 0) throw new HttpError(409, 'Shipping quote expired or does not match cart and destination');
   const quoteFingerprint = await digest(JSON.stringify({origin:env.RAJAONGKIR_ORIGIN,destination:input.address.destination,weight,items:input.items.map(i => [i.variantId,i.quantity])}));
@@ -77,7 +102,13 @@ export async function checkout(request: Request, env: CommerceEnv, body: unknown
   const shipping = { quoteId: quote.id, service: quote.service, amount: quote.amount, origin: env.RAJAONGKIR_ORIGIN ?? null, destination: quote.destination, weight, expiresAt: quote.expires_at, details: JSON.parse(quote.details_json),
     shipFrom: vv.reduce<string | null>((date, i) => i.variant.mode === 'preorder' && i.variant.ship_from && (!date || i.variant.ship_from > date) ? i.variant.ship_from : date, null),
     shipTo: vv.reduce<string | null>((date, i) => i.variant.mode === 'preorder' && i.variant.ship_to && (!date || i.variant.ship_to > date) ? i.variant.ship_to : date, null), policy: 'single-shipment-latest-item' };
-  const batch = [s(env, `INSERT INTO orders(id,reference,customer_id,guest_token_hash,total,contact_json,address_json,shipping_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, orderId, reference, customer?.id ?? null, guestToken ? await hash(guestToken) : null, total, JSON.stringify(input.contact), JSON.stringify(input.address), JSON.stringify(shipping), now),
+  const contact = { name: input.contact.name, email: input.contact.email.trim(), phone };
+  const address = { line: input.address.line, destination: destination.id, label: destination.label, province: destination.province, city: destination.city, district: destination.district, subdistrict: destination.subdistrict, postalCode: destination.postal_code };
+  // The pending limit is re-checked inside the batch: a losing concurrent insert leaves no order row, so the
+  // dependent inserts below fail and the whole batch rolls back.
+  const batch = [s(env, `INSERT INTO orders(id,reference,customer_id,guest_token_hash,total,contact_json,address_json,shipping_json,created_at,email_hash,phone_hash,ip_hash)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM orders WHERE status='pending_payment' AND (email_hash=? OR phone_hash=? OR ip_hash=?))<?`,
+      orderId, reference, customer?.id ?? null, guestToken ? await hash(guestToken) : null, total, JSON.stringify(contact), JSON.stringify(address), JSON.stringify(shipping), now, emailHash, phoneHash, ipHash, emailHash, phoneHash, ipHash, maxPending),
     s(env, 'INSERT INTO checkout_requests(scope,key,fingerprint,order_id) VALUES(?,?,?,?)', scope, input.idempotencyKey, fingerprint, orderId)];
   for (const { variant: v, quantity } of vv) {
     const itemId = id(), campaignId = v.mode === 'preorder' ? v.campaign_id : null;
@@ -86,10 +117,19 @@ export async function checkout(request: Request, env: CommerceEnv, body: unknown
       s(env, 'INSERT INTO stock_reservations(item_id,order_id,variant_id,campaign_id,quantity) VALUES(?,?,?,?,?)', itemId, orderId, v.id, campaignId, quantity));
   }
   batch.push(s(env, 'INSERT INTO payment_attempts(id,order_id,reference,next_check,created_at) VALUES(?,?,?,?,?)', attemptId, orderId, reference, now + 60_000, now));
+  // Soft signals: the order is accepted, but an open review holds fulfillment until an operator resolves it.
+  // Velocity counts include this order and are evaluated inside the same serialized batch.
+  const since = now - 86_400_000;
+  batch.push(s(env, `INSERT OR IGNORE INTO manual_review(id,event_key,order_id,reason,created_at) SELECT ?,?,?,'risk_velocity',?
+    WHERE max((SELECT count(*) FROM orders WHERE email_hash=? AND created_at>?),(SELECT count(*) FROM orders WHERE phone_hash=? AND created_at>?),(SELECT count(*) FROM orders WHERE ip_hash=? AND created_at>?))>?`,
+    id(), `risk_velocity:${orderId}`, orderId, now, emailHash, since, phoneHash, since, ipHash, since, envCount(env.VELOCITY_LIMIT, 5)));
+  if (disposableEmail(email)) batch.push(s(env, "INSERT INTO manual_review(id,event_key,order_id,reason,created_at) VALUES(?,?,?,'risk_disposable_email',?)", id(), `risk_disposable_email:${orderId}`, orderId, now));
   try { await env.DB.batch(batch); }
   catch (error) {
     const concurrent = await retry(env, scope, input.idempotencyKey, fingerprint, cookie);
     if (concurrent) return concurrent;
+    if (await pendingCount() >= maxPending) throw new HttpError(429, 'Terlalu banyak pesanan belum dibayar');
+    if (/purchase_limit/.test(String(error))) throw new HttpError(409, 'Batas pembelian per pelanggan terlampaui');
     if (/stock_unavailable|quota_unavailable|order_not_pending/.test(String(error))) throw new HttpError(409, 'Insufficient stock or preorder capacity');
     throw error;
   }

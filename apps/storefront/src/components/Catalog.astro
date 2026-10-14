@@ -70,9 +70,10 @@ if (limit !== null) nextQuery.set("limit", limit);
                 <img src={p.imageUrl} alt={p.name} loading="lazy" />
               )}
               <div class="availability">
-                {p.variants.some((v) => v.mode === "stock" && (v.available === null || v.available > 0)) && <span class="badge stock">Ready stock</span>}
+                {p.variants.some((v) => v.mode === "stock" && v.stockLevel !== "out") && <span class="badge stock">Ready stock</span>}
                 {p.variants.some((v) => v.mode === "preorder") && <span class="badge preorder">Pre-order</span>}
-                {!p.variants.some((v) => v.mode === "preorder" || v.available === null || v.available > 0) && <span class="badge">Stok habis</span>}
+                {p.variants.some((v) => v.mode === "stock" && v.stockLevel === "low") && !p.variants.some((v) => v.mode === "stock" && v.stockLevel === "in_stock") && <span class="badge">Stok terbatas</span>}
+                {!p.variants.some((v) => v.mode === "preorder" || v.stockLevel !== "out") && <span class="badge">Habis</span>}
               </div>
             </div>
             <div class="product-heading">

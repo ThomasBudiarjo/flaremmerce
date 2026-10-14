@@ -2,7 +2,7 @@ import { lookupPayment, verifyPaymentWebhook } from '../integrations/index';
 import { type CommerceEnv, id, json, statement as s } from './types';
 import { envMinutes, PAYMENT_DUE_MINUTES } from '../shared';
 
-type VerifiedEvent = { eventKey: string; reference: string; amount: number; currency: string; status: 'succeeded' | 'failed' | 'expired' | 'ignored'; providerTx?: string };
+type VerifiedEvent = { eventKey: string; reference: string; amount: number; currency: string; status: 'succeeded' | 'failed' | 'expired' | 'ignored' | 'provider_event'; providerTx?: string; kind?: string };
 // Exhausted attempts keep their unfinished status for operators but leave every next_check range scan.
 export const EXHAUSTED = 8_640_000_000_000_000;
 
@@ -18,6 +18,16 @@ export function expiryDeadline(env: CommerceEnv, createdAt: number) {
 export async function applyPayment(env: CommerceEnv, event: VerifiedEvent) {
   const { eventKey: key, reference, amount, currency, status } = event, providerTx = event.providerTx ?? null;
   const now = Date.now();
+  if (status === 'provider_event') {
+    // Recorded as already-processed evidence plus an operator review; no payment, order or stock change.
+    await env.DB.batch([
+      s(env, "INSERT OR IGNORE INTO payment_events(event_key,reference,amount,currency,status,provider_tx,processed,kind,created_at) VALUES(?,?,?,?,'ignored',?,1,?,?)", key, reference, amount, currency, providerTx, event.kind ?? null, now),
+      s(env, `INSERT OR IGNORE INTO manual_review(id,event_key,order_id,reason,created_at)
+        SELECT ?,?,o.id,CASE WHEN o.id IS NULL THEN 'unknown_reference' ELSE 'provider_event' END,? FROM (SELECT 1) LEFT JOIN payment_attempts a ON a.reference=? LEFT JOIN orders o ON o.id=a.order_id`, id(), key, now, reference),
+    ]);
+    console.info('payment_transition', { status, outcome: 'review' });
+    return;
+  }
   if (status === 'ignored') {
     // Authenticated Checkout FAILED is durable/acknowledged, never terminal failure.
     await s(env, 'INSERT OR IGNORE INTO payment_events(event_key,reference,amount,currency,status,provider_tx,processed,created_at) VALUES(?,?,?,?,?,?,1,?)', key, reference, amount, currency, status, providerTx, now).run();

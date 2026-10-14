@@ -1,6 +1,6 @@
 import { requireAdmin } from './integrations/auth';
 import { demand, origin } from './integrations/security';
-import { HttpError, readBounded } from './shared';
+import { adminPermits, HttpError, readBounded } from './shared';
 
 export interface StorageEnv {
   DB: D1Database;
@@ -48,12 +48,14 @@ export async function storageRequest(request: Request, env: StorageEnv): Promise
     demand(download ? request.method === 'GET' : (path === '/api/admin/media' || path === '/api/admin/files') && request.method === 'POST', 405, 'Method not allowed');
     if (!download) origin(request, env);
     const actor = await requireAdmin(request, env);
+    demand(adminPermits(actor.role, path), 403, 'Role not permitted');
     if (download) {
       demand(env.PRIVATE_FILES, 503, 'Private storage unavailable');
       const row = await env.DB.prepare('SELECT object_key FROM private_files WHERE id=?').bind(download[1]).first<{ object_key: string }>();
       demand(row, 404, 'File not found');
       const object = await env.PRIVATE_FILES.get(row.object_key);
       demand(object, 404, 'File not found');
+      await env.DB.prepare('INSERT INTO audit_logs(id,actor,action,target,details_json,created_at) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(), actor.id, 'file.download', download[1], '{}', Date.now()).run();
       return new Response(object.body, { headers: { ...headers, 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${download[1]}.bin"`, 'Content-Security-Policy': "default-src 'none'; sandbox" } });
     }
     const media = path === '/api/admin/media', bucket = media ? env.MEDIA : env.PRIVATE_FILES;
