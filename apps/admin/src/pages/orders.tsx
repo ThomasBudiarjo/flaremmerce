@@ -12,6 +12,7 @@ import { MoneyText } from "@/components/money-text";
 import { FulfillmentBadge, OrderStatusBadge } from "@/components/status-badge";
 import { DataTable } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
+import { LoadError } from "@/components/field";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -139,14 +140,7 @@ export function OrdersPage() {
           </Button>
         )}
       </FilterBar>
-      {list.error && (
-        <p role="alert" className="text-sm text-destructive">
-          {list.error}{" "}
-          <Button variant="outline" size="sm" onClick={list.reload}>
-            Coba lagi
-          </Button>
-        </p>
-      )}
+      {list.error && <LoadError message={list.error} onRetry={list.reload} />}
       <DataTable
         loading={list.loading}
         columns={[

@@ -370,6 +370,80 @@ describe('admin SPA', () => {
     expect(text()).toContain('Produk jauh · Edisi');
     expect(button('Ganti varian')).toBeTruthy();
   });
+
+  const productRoutes: Handler = (url) => {
+    if (url === '/api/admin/categories') return Response.json({ categories: [] });
+    if (url === '/api/admin/products/p') return Response.json({ product });
+    if (url.startsWith('/api/admin/products?')) return Response.json({ products: [product], nextCursor: null });
+  };
+  const sidebar = (label: string) => [...document.querySelectorAll('nav a')].find(a => a.textContent === label) as HTMLAnchorElement;
+  async function inDialog(label: string) {
+    const target = [...document.querySelectorAll('[role="alertdialog"] button, [role="dialog"] button')].find(b => b.textContent?.trim() === label) as HTMLButtonElement;
+    expect(target, label).toBeTruthy();
+    await act(async () => target.click());
+  }
+
+  it('guards unsaved edits against sidebar links: stay keeps the draft, discard navigates', async () => {
+    await renderAdmin('/admin/products/p', productRoutes);
+    await type(labelled('Nama produk'), 'Draft saya');
+    await act(async () => sidebar('Kategori').click());
+    expect(text()).toContain('Buang perubahan?');
+    expect(location.pathname).toBe('/admin/products/p');
+    await press('Tetap di sini');
+    expect(text()).not.toContain('Buang perubahan?');
+    expect(labelled('Nama produk').value).toBe('Draft saya');
+    await act(async () => sidebar('Kategori').click());
+    await inDialog('Buang');
+    expect(location.pathname).toBe('/admin/categories');
+    expect(document.querySelector('h1')?.textContent).toBe('Kategori');
+    // The guard left with the editor: later navigation is not prompted.
+    await act(async () => sidebar('Produk').click());
+    expect(location.pathname).toBe('/admin/products');
+    expect(text()).not.toContain('Buang perubahan?');
+  });
+
+  it('restores the guarded URL when the browser goes back, then leaves on discard', async () => {
+    await renderAdmin('/admin/products/p', productRoutes);
+    await type(labelled('Nama produk'), 'Draft saya');
+    // The browser has already moved when popstate fires.
+    await act(async () => { history.pushState(null, '', '/admin/categories'); window.dispatchEvent(new PopStateEvent('popstate')); });
+    expect(location.pathname).toBe('/admin/products/p');
+    expect(text()).toContain('Buang perubahan?');
+    expect(document.querySelector('h1')?.textContent).toBe('Produk');
+    await press('Tetap di sini');
+    expect(labelled('Nama produk').value).toBe('Draft saya');
+    await act(async () => { history.pushState(null, '', '/admin/categories'); window.dispatchEvent(new PopStateEvent('popstate')); });
+    await inDialog('Buang');
+    await wait(30);
+    expect(location.pathname).toBe('/admin/categories');
+    expect(document.querySelector('h1')?.textContent).toBe('Kategori');
+  });
+
+  it('names the browser tab after the current page', async () => {
+    await renderAdmin('/admin/products/p', productRoutes);
+    expect(document.title).toBe('Produk · Admin Flaremmerce');
+    await act(async () => sidebar('Kategori').click());
+    expect(document.title).toBe('Kategori · Admin Flaremmerce');
+  });
+});
+
+describe('admin helpers', () => {
+  it('formats slugs, WhatsApp links, ranges and ages the way the server and operators expect', async () => {
+    const format = await import('../apps/admin/src/lib/format');
+    expect(format.slugify('  Kaos Polos — Édition #2!  ')).toBe('kaos-polos-edition-2');
+    expect(format.slugify('---')).toBe('');
+    expect(format.slugify('a'.repeat(99) + ' b')).toBe('a'.repeat(99));
+    expect(format.whatsappLink('0812-3456-7890')).toBe('https://wa.me/6281234567890');
+    expect(format.whatsappLink('+62 812 3456 7890')).toBe('https://wa.me/6281234567890');
+    expect(format.whatsappLink('021 555 1234')).toBeNull();
+    const wib = (s: string) => Date.parse(`${s}+07:00`);
+    expect(format.rangeWIB(wib('2026-10-01T00:00:00'), wib('2026-10-15T12:00:00'))).toBe('1–15 Okt 2026 WIB');
+    expect(format.rangeWIB(wib('2026-09-16T08:00:00'), wib('2026-10-15T08:00:00'))).toBe('16 Sep – 15 Okt 2026 WIB');
+    expect(format.rangeWIB(wib('2026-10-15T00:00:00'), wib('2026-10-15T09:00:00'))).toBe('15 Okt 2026 WIB');
+    expect(format.ago(30_000)).toBe('baru saja');
+    expect(format.ago(3 * 3_600_000)).toBe('3 jam lalu');
+    expect(format.shiftDay('2026-03-01', -1)).toBe('2026-02-28');
+  });
 });
 
 describe('storefront checkout and order status', () => {

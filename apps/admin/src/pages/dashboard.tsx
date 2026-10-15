@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/page-header";
 import { MoneyText } from "@/components/money-text";
 import { OrderStatusBadge, FulfillmentBadge } from "@/components/status-badge";
 import { DataTable } from "@/components/data-table";
+import { LoadError } from "@/components/field";
 import { TableRow, TableCell } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -105,14 +106,7 @@ export function DashboardPage() {
         </Card>
       ) : (
         <>
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}{" "}
-              <Button variant="outline" size="sm" onClick={load}>
-                Muat ulang
-              </Button>
-            </p>
-          )}
+          {error && <LoadError message={error} onRetry={() => void load()} />}
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {(
               [

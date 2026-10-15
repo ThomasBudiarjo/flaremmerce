@@ -15,6 +15,9 @@ export function PageHeader({
   useEffect(() => {
     if (!document.activeElement || document.activeElement === document.body) heading.current?.focus();
   }, []);
+  useEffect(() => {
+    document.title = `${title} · Admin Flaremmerce`;
+  }, [title]);
   return (
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">

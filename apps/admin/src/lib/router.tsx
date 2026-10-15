@@ -1,4 +1,14 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 /** Tiny history-API router for the /admin/ SPA. The worker serves index.html for every deep link. */
 export const BASE = "/admin/";
@@ -56,32 +66,122 @@ export function href(name: string, params: Record<string, string> = {}, query?: 
   return `/${path}${search.size ? `?${search}` : ""}`;
 }
 
-const RouterContext = createContext<{ route: Route; navigate: (to: string, replace?: boolean) => void }>({
+const DEFAULT_GUARD_MESSAGE = "Perubahan yang belum disimpan akan hilang.";
+// Guards live outside React so navigate() can consult them synchronously from any event handler.
+const guards = new Set<{ message: string }>();
+
+/**
+ * While `dirty`, every in-app navigation (Link, navigate, back/forward) asks for confirmation
+ * first, and leaving or reloading the page triggers the browser's unload prompt.
+ */
+export function useNavigationGuard(dirty: boolean, message = DEFAULT_GUARD_MESSAGE) {
+  useEffect(() => {
+    if (!dirty) return;
+    const entry = { message };
+    guards.add(entry);
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => {
+      guards.delete(entry);
+      window.removeEventListener("beforeunload", warn);
+    };
+  }, [dirty, message]);
+}
+
+type Navigate = (to: string, replace?: boolean, force?: boolean) => void;
+
+const RouterContext = createContext<{ route: Route; navigate: Navigate }>({
   route: parse("/admin/", "")!,
   navigate: () => {},
 });
 
+const here = () => location.pathname + location.search;
+const resolve = (to: string) => (to.startsWith(BASE) ? to : BASE + to.replace(/^\//, ""));
+
 export function RouterProvider({ children }: { children: React.ReactNode }) {
   const [route, setRoute] = useState<Route>(() => parse(location.pathname, location.search) ?? parse(BASE, "")!);
-  const navigate = useCallback((to: string, replace = false) => {
-    const target = to.startsWith(BASE) ? to : BASE + to.replace(/^\//, "");
+  const [prompt, setPrompt] = useState<{ message: string; proceed: () => void } | null>(null);
+  const current = useRef(here());
+  const bypass = useRef(false);
+
+  const go = useCallback((target: string, replace: boolean) => {
     if (replace) history.replaceState(null, "", target);
     else history.pushState(null, "", target);
     window.dispatchEvent(new Event("admin:navigate"));
   }, []);
+
+  /** `force` skips the unsaved-changes guard, for navigations that follow a successful save. */
+  const navigate = useCallback<Navigate>(
+    (to, replace = false, force = false) => {
+      const target = resolve(to);
+      const [guard] = guards;
+      if (!force && guard && target !== here()) {
+        setPrompt({ message: guard.message, proceed: () => go(target, replace) });
+        return;
+      }
+      go(target, replace);
+    },
+    [go],
+  );
+
   useEffect(() => {
     const update = () => {
+      current.current = here();
       setRoute(parse(location.pathname, location.search) ?? parse(BASE, "")!);
       window.scrollTo(0, 0);
     };
-    window.addEventListener("popstate", update);
+    const pop = () => {
+      const [guard] = guards;
+      if (bypass.current || !guard) {
+        bypass.current = false;
+        update();
+        return;
+      }
+      // The browser already moved; put the guarded page back until the user decides.
+      history.pushState(null, "", current.current);
+      setPrompt({
+        message: guard.message,
+        proceed: () => {
+          bypass.current = true;
+          history.back();
+        },
+      });
+    };
+    window.addEventListener("popstate", pop);
     window.addEventListener("admin:navigate", update);
     return () => {
-      window.removeEventListener("popstate", update);
+      window.removeEventListener("popstate", pop);
       window.removeEventListener("admin:navigate", update);
     };
   }, []);
-  return <RouterContext.Provider value={{ route, navigate }}>{children}</RouterContext.Provider>;
+
+  return (
+    <RouterContext.Provider value={{ route, navigate }}>
+      {children}
+      <AlertDialog open={!!prompt} onOpenChange={(open) => !open && setPrompt(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Buang perubahan?</AlertDialogTitle>
+            <AlertDialogDescription>{prompt?.message}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Tetap di sini</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const proceed = prompt?.proceed;
+                setPrompt(null);
+                guards.clear();
+                proceed?.();
+              }}
+            >
+              Buang
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </RouterContext.Provider>
+  );
 }
 
 export function useRoute() {
@@ -97,7 +197,7 @@ export function Link({
   const { navigate } = useRoute();
   return (
     <a
-      href={BASE + to.replace(/^\//, "")}
+      href={resolve(to)}
       onClick={(event) => {
         onClick?.(event);
         if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;

@@ -133,8 +133,54 @@ export function age(ms: number) {
   return `${Math.floor(hours / 24)} hari`;
 }
 
+/** "3 jam lalu"; anything under a minute (or slightly in the future from clock skew) is "baru saja". */
+export const ago = (ms: number) => (ms < 60_000 ? "baru saja" : `${age(ms)} lalu`);
+
 /** Today's calendar date (YYYY-MM-DD) in Asia/Jakarta. */
 export const todayWIB = () => new Date(Date.now() + 7 * 3_600_000).toISOString().slice(0, 10);
+
+/** Calendar date `days` after a YYYY-MM-DD date (negative goes back). */
+export const shiftDay = (day: string, days: number) => new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+
+/** HH:MM in WIB. */
+export const clockWIB = (n: number) => new Date(n).toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta", hour: "2-digit", minute: "2-digit" });
+
+/** "1–15 Okt 2026 WIB", "28 Sep – 15 Okt 2026 WIB" or "15 Okt 2026 WIB" for an epoch range. */
+export function rangeWIB(since: number, until: number) {
+  const parts = (n: number) => {
+    const d = new Date(n + 7 * 3_600_000);
+    return { day: d.getUTCDate(), month: d.toLocaleDateString("id-ID", { timeZone: "UTC", month: "short" }), year: d.getUTCFullYear() };
+  };
+  const a = parts(since), b = parts(until);
+  if (a.year !== b.year) return `${a.day} ${a.month} ${a.year} – ${b.day} ${b.month} ${b.year} WIB`;
+  if (a.month !== b.month) return `${a.day} ${a.month} – ${b.day} ${b.month} ${b.year} WIB`;
+  if (a.day !== b.day) return `${a.day}–${b.day} ${b.month} ${b.year} WIB`;
+  return `${b.day} ${b.month} ${b.year} WIB`;
+}
+
+/** Same rule as the server's normalizePhone (src/shared.ts): Indonesian mobile as +628…, else null. */
+export function normalizePhone(value: string) {
+  const match = /^(?:\+62|62|0)(8[1-9]\d{6,10})$/.exec(value.trim().replace(/[\s().-]/g, ""));
+  return match ? `+62${match[1]}` : null;
+}
+
+/** WhatsApp click-to-chat link for an Indonesian mobile number, or null. */
+export function whatsappLink(phone: string | null | undefined) {
+  const normalized = phone ? normalizePhone(phone) : null;
+  return normalized ? `https://wa.me/${normalized.slice(1)}` : null;
+}
+
+/** URL slug (same alphabet the server accepts): lowercase ASCII words joined by single hyphens, at most 100 characters. */
+export function slugify(text: string) {
+  return text
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 100)
+    .replace(/-+$/, "");
+}
 
 export const label = (map: Record<string, string>, value: string | null | undefined) =>
   (value && map[value]) || value || "—";

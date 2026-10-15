@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Archive, ArrowLeft, ImageIcon, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { patch, post } from "@/lib/api";
-import { href, Link, useRoute } from "@/lib/router";
+import { href, Link, useNavigationGuard, useRoute } from "@/lib/router";
 import { money, number, variantMode } from "@/lib/format";
 import type { Category, Product, Variant } from "@/lib/types";
 import { useMutation } from "@/hooks/use-mutation";
@@ -261,15 +261,6 @@ function useCategories() {
   return useResource<{ categories: Category[] }>("/api/admin/categories").data?.categories ?? [];
 }
 
-function useUnsavedPrompt(dirty: boolean) {
-  useEffect(() => {
-    if (!dirty) return;
-    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
-}
-
 function NewProductEditor() {
   const { navigate } = useRoute();
   const categories = useCategories();
@@ -279,7 +270,7 @@ function NewProductEditor() {
   const [editing, setEditing] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const dirty = !!(draft.name || draft.slug || draft.description || draft.imageUrl || variants.some((v) => v.sku || v.price != null));
-  useUnsavedPrompt(dirty);
+  useNavigationGuard(dirty);
   const create = useMutation(
     () => {
       const { imageUrl, categoryId, ...rest } = draft;
@@ -290,7 +281,7 @@ function NewProductEditor() {
         variants: variants.map(({ key, stock, ...v }) => ({ ...v, stock: stock ?? 0 })),
       });
     },
-    { key: "product-create", success: "Produk dibuat.", onSuccess: (result) => navigate(href("product-edit", { id: result.product.id }), true) },
+    { key: "product-create", success: "Produk dibuat.", onSuccess: (result) => navigate(href("product-edit", { id: result.product.id }), true, true) },
   );
   const editingVariant = variants.find((v) => v.key === editing);
   return (
@@ -532,7 +523,7 @@ function ExistingProductEditor({ id }: { id: string }) {
     [product, variantDrafts],
   );
   const dirty = Object.keys(productChanges).length > 0 || variantChanges.length > 0;
-  useUnsavedPrompt(dirty);
+  useNavigationGuard(dirty);
 
   const save = useMutation(
     async () => {

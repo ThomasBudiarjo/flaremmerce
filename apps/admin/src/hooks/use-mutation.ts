@@ -19,6 +19,20 @@ function subscribe(listener: () => void) {
 /** Whether a mutation with this key is still waiting for the server. */
 export const isLocked = (key: string) => inflight.has(key);
 
+/**
+ * Runs `fn` under the same lock a `useMutation({ key })` would take, for loops that write many
+ * entities (bulk actions). Returns `{ locked: true }` without calling `fn` when the key is busy.
+ */
+export async function runLocked<T>(key: string, fn: () => Promise<T>): Promise<{ locked: true } | { locked: false; result: T }> {
+  if (inflight.has(key)) return { locked: true };
+  setLocked(key, true);
+  try {
+    return { locked: false, result: await fn() };
+  } finally {
+    setLocked(key, false);
+  }
+}
+
 type Options<TResult> = {
   /**
    * Stable lock name. Give mutations that live inside dialogs or per-row components an explicit
