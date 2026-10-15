@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createPayment, getCustomer, verifyTurnstile } from '../integrations/index';
-import { cartWeightMessage, chargeableWeight, clientIp, digest, envCount, maxCartWeight, normalizeEmail, normalizePhone, paymentsConfigured, riskHash, riskSecret, shippingConfigured, volumetricDivisor } from '../shared';
+import { cartWeightMessage, chargeableWeight, clientIp, digest, envCount, maxCartWeight, normalizeEmail, normalizeIp, normalizePhone, paymentsConfigured, riskHash, riskSecret, shippingConfigured, volumetricDivisor } from '../shared';
 import { cartItems, shipPromise } from './cart';
 import { disposableEmail } from './risk';
 import { nextLookup } from './payments';
@@ -67,7 +67,7 @@ export async function checkout(request: Request, env: CommerceEnv, body: unknown
   // Risk checks come after idempotency (a retry always returns its order) and before Turnstile is consumed.
   const secret = riskSecret(env), ip = clientIp(request), email = normalizeEmail(input.contact.email);
   // A missing client IP (local tooling) is no identity at all rather than one shared by every such request.
-  const [emailHash, phoneHash, ipHash] = await Promise.all([riskHash(secret, 'email', email), riskHash(secret, 'phone', phone), ip === 'unknown' ? null : riskHash(secret, 'ip', ip)]);
+  const [emailHash, phoneHash, ipHash] = await Promise.all([riskHash(secret, 'email', email), riskHash(secret, 'phone', phone), ip === 'unknown' ? null : riskHash(secret, 'ip', normalizeIp(ip) ?? ip)]);
   if (await s(env, "SELECT 1 AS blocked FROM blocklist WHERE (kind='email' AND value_hash=?) OR (kind='phone' AND value_hash=?) OR (kind='ip' AND value_hash=?) LIMIT 1", emailHash, phoneHash, ipHash).first('blocked')) throw new HttpError(403, 'Pesanan tidak dapat diproses');
   // Indonesian mobile carriers put many shoppers behind one CGNAT address, so the IP gets its own, higher limit.
   const maxPending = envCount(env.MAX_PENDING_PER_IDENTITY, 3), maxPendingIp = envCount(env.MAX_PENDING_PER_IP, 10);

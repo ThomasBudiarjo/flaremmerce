@@ -12,10 +12,12 @@ declare global {
 }
 export default function Turnstile({
   siteKey,
+  action = "checkout",
   onToken,
   reset,
 }: {
   siteKey: string;
+  action?: string;
   onToken: (token: string) => void;
   reset: number;
 }) {
@@ -37,7 +39,7 @@ export default function Turnstile({
       if (disposed || !ref.current || !window.turnstile) return;
       widget = window.turnstile.render(ref.current, {
         sitekey: siteKey,
-        action: "checkout",
+        action,
         callback: (t: string) => callback.current(t),
         "expired-callback": () => callback.current(""),
         "error-callback": () => {
@@ -70,7 +72,7 @@ export default function Turnstile({
       script?.removeEventListener("error", scriptError);
       if (widget) window.turnstile?.remove(widget);
     };
-  }, [siteKey, reset, retry]);
+  }, [siteKey, action, reset, retry]);
   return (
     <>
       <div ref={ref} />

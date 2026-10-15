@@ -106,7 +106,7 @@ function CampaignFields({ draft, onChange, disabled, editing }: { draft: Draft; 
           <FieldError message={errors.shipTo} />
         </div>
       </div>
-      <NumberField label="Kuota" hint="Kosong = tanpa kuota. 0 menutup pemesanan baru." min={0} max={1_000_000} value={draft.quota} disabled={disabled} onValueChange={(quota) => onChange({ ...draft, quota })} />
+      <NumberField label="Kuota" hint="Kosong = tanpa kuota. Untuk menutup pemesanan, nonaktifkan atau majukan tanggal selesai." min={0} max={1_000_000} value={draft.quota} disabled={disabled} onValueChange={(quota) => onChange({ ...draft, quota })} />
       {editing && (
         <Label className="font-normal">
           <Checkbox checked={draft.active} disabled={disabled} onCheckedChange={(checked) => onChange({ ...draft, active: checked === true })} />

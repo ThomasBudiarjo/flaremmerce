@@ -39,6 +39,7 @@ const roleHelp: Record<Role, string> = {
 function explain(error: HttpError) {
   if (/last owner/i.test(error.message)) return "Owner terakhir tidak dapat diturunkan atau dicabut. Tambahkan owner lain terlebih dahulu.";
   if (/installation owner/i.test(error.message)) return "Pemilik instalasi tidak dapat dicabut atau diturunkan.";
+  if (/Banned users/i.test(error.message)) return "Pengguna ini diblokir. Buka blokirnya terlebih dahulu sebelum memberi akses admin.";
   if (/Verified Google/i.test(error.message)) return "Pengguna harus login dengan akun Google terverifikasi dan tidak diblokir.";
   return error.message;
 }

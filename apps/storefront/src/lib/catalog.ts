@@ -29,6 +29,8 @@ export const money = (value: number) =>
   new Intl.NumberFormat("id-ID", {
     style: "currency",
     currency: "IDR",
+    // Older engines default the minimum to IDR's 2 digits and throw when the maximum is below it.
+    minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   }).format(value);
 export const date = (value: string | number) =>

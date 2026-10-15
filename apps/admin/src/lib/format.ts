@@ -1,6 +1,6 @@
 /** Formatting and enum labels. Money is integer IDR; all timestamps render in Asia/Jakarta. */
 export const money = (n: number, currency = "IDR") =>
-  new Intl.NumberFormat("id-ID", { style: "currency", currency, maximumFractionDigits: 0 }).format(n);
+  new Intl.NumberFormat("id-ID", { style: "currency", currency, minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(n);
 
 export const number = (n: number) => new Intl.NumberFormat("id-ID").format(n);
 
@@ -173,7 +173,7 @@ export function rangeWIB(since: number, until: number) {
 
 /** Same rule as the server's normalizePhone (src/shared.ts): Indonesian mobile as +628…, else null. */
 export function normalizePhone(value: string) {
-  const match = /^(?:\+62|62|0)(8[1-9]\d{6,10})$/.exec(value.trim().replace(/[\s().-]/g, ""));
+  const match = /^(?:\+62|0062|62|0)(8[1-9]\d{7,10})$/.exec(value.trim().replace(/[\s().-]/g, ""));
   return match ? `+62${match[1]}` : null;
 }
 

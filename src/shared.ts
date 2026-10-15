@@ -184,13 +184,34 @@ export type RiskKind = 'email' | 'phone' | 'ip';
 // Domain-separated so an email can never collide with a phone or IP of the same text.
 export const riskHash = (secret: string, kind: RiskKind, value: string) => hmac(secret, `${kind}:${value}`);
 export const normalizeEmail = (value: string) => value.trim().toLowerCase();
-/** Indonesian mobile number as +628…; accepts 08…, 628… and +628… with common separators. */
+/** Indonesian mobile number (10–13 digits written as 08…) as +628…; accepts 08…, 628…, +628… and 00628… with common separators. */
 export function normalizePhone(value: string): string | null {
   const compact = value.trim().replace(/[\s().-]/g, '');
-  const match = /^(?:\+62|62|0)(8[1-9]\d{6,10})$/.exec(compact);
+  const match = /^(?:\+62|0062|62|0)(8[1-9]\d{7,10})$/.exec(compact);
   return match ? `+62${match[1]}` : null;
 }
 export const clientIp = (request: Request) => request.headers.get('CF-Connecting-IP')?.slice(0, 64) || 'unknown';
+/**
+ * One spelling per address, so a block typed by hand hashes like CF-Connecting-IP: IPv4 without leading zeros,
+ * IPv6 compressed and lowercase. Null when the text is not an IP address.
+ */
+export function normalizeIp(value: string): string | null {
+  const ip = value.trim();
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+  // Parsed by hand: the URL parser would read "010" as octal.
+  if (v4) return v4.slice(1).every(part => Number(part) <= 255) ? v4.slice(1).map(Number).join('.') : null;
+  if (!ip.includes(':') || !/^[0-9a-fA-F:.]{2,45}$/.test(ip)) return null;
+  try { return new URL(`http://[${ip}]/`).hostname.slice(1, -1); } catch { return null; }
+}
+/** Rate-limit identity: an IPv6 client usually controls a whole /64, so it counts as one; IPv4 stays per address. */
+export function rateLimitIp(value: string) {
+  const ip = normalizeIp(value);
+  if (!ip?.includes(':')) return ip ?? value;
+  // The normalized form has at most one "::" and no embedded IPv4 part.
+  const [head, tail] = ip.split('::'), left = head ? head.split(':') : [], right = tail ? tail.split(':') : [];
+  const groups = tail === undefined ? left : [...left, ...Array(8 - left.length - right.length).fill('0'), ...right];
+  return `${groups.slice(0, 4).join(':')}::/64`;
+}
 
 export type AdminRole = 'owner' | 'ops' | 'catalog';
 export const ADMIN_ROLES: readonly AdminRole[] = ['owner', 'ops', 'catalog'];

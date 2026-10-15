@@ -1,5 +1,5 @@
 import { json } from './commerce/types';
-import { clientIp, hmac, optionalRiskSecret } from './shared';
+import { clientIp, hmac, optionalRiskSecret, rateLimitIp } from './shared';
 
 export interface RateLimitEnv {
   DB: D1Database;
@@ -25,6 +25,7 @@ function bucket(method: string, path: string): { bucket: Bucket; route: string }
   if (path === '/api/account/addresses' || path.startsWith('/api/account/addresses/')) return { bucket: 'lookup', route: 'account:addresses' };
   // Per-reference paths share one counter so enumerating references cannot multiply the budget.
   if ((method === 'GET' || method === 'POST') && path.startsWith('/api/orders/')) return { bucket: 'lookup', route: path.endsWith('/cancel') ? 'orders:cancel' : 'orders:read' };
+  if (method === 'GET' && path === '/api/orders') return { bucket: 'lookup', route: 'orders:list' };
   if (method === 'POST' && (path.startsWith('/api/auth/') || path === '/api/setup')) return { bucket: 'auth', route: 'auth' };
   return null;
 }
@@ -33,7 +34,7 @@ function bucket(method: string, path: string): { bucket: Bucket; route: string }
 export async function rateLimit(request: Request, env: RateLimitEnv): Promise<Response | null> {
   const match = bucket(request.method, new URL(request.url).pathname);
   if (!match) return null;
-  const rule = RATE_LIMITS[match.bucket], ip = clientIp(request);
+  const rule = RATE_LIMITS[match.bucket], ip = rateLimitIp(clientIp(request));
   const binding = env[rule.binding];
   let allowed = true;
   if (binding) allowed = (await binding.limit({ key: `${match.route}:${ip}` })).success;

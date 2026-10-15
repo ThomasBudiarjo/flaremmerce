@@ -35,7 +35,8 @@ export async function catalog(env: CommerceEnv, slug?: string, query = new URLSe
   // Keep IN parameters below D1's 100-bind limit and avoid one query per product.
   const filter = and(includeInactive ? (active === undefined ? undefined : eq(products.active, active ? 1 : 0)) : eq(products.active, 1), slug ? eq(products.slug, slug) : undefined, category, search);
   const [page, counted] = await Promise.all([
-    db.select({ product: products, category: { slug: categories.slug, name: categories.name } }).from(products).leftJoin(categories, eq(categories.id, products.categoryId))
+    // A deactivated category is neither shown nor linked publicly; its products stay listed without it.
+    db.select({ product: products, category: { slug: categories.slug, name: categories.name } }).from(products).leftJoin(categories, and(eq(categories.id, products.categoryId), includeInactive ? undefined : eq(categories.active, 1)))
       .where(and(filter, after ? gt(products.slug, after) : undefined)).orderBy(products.slug).limit(limit + 1).offset((pageNo - 1) * limit),
     numbered ? db.select({ n: sql<number>`count(*)` }).from(products).where(filter) : undefined,
   ]);

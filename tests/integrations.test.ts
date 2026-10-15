@@ -392,7 +392,7 @@ describe('anti-abuse integration boundaries', () => {
     const owner = await identity('owner'), staff = await identity('staff'), other = await identity('other');
     expect((await handleIntegrationRequest(request('/api/setup',{secret},owner),env))?.status).toBe(200);
     const call = (method: string, path: string, cookie: string, body?: unknown) => handleIntegrationRequest(new Request(`https://shop.example${path}`,{method,headers:{Origin:'https://shop.example','Content-Type':'application/json',Cookie:cookie},...(body ? {body:JSON.stringify(body)} : {})}),env);
-    expect(await (await call('GET','/api/admin/me',owner))!.json()).toEqual({user:{id:'owner',name:'owner',email:'owner@example.com'},role:'owner',areas:['owner','ops','catalog']});
+    expect(await (await call('GET','/api/admin/me',owner))!.json()).toEqual({user:{id:'owner',name:'owner',email:'owner@example.com'},role:'owner',areas:['owner','ops','catalog'],lowStockDefault:5});
     expect((await call('POST','/api/admin/roles',owner,{userId:'staff',role:'ops'}))?.status).toBe(200);
     expect((await call('POST','/api/admin/roles',owner,{userId:'staff',role:'superuser'}))?.status).toBe(400);
     expect(await (await call('GET','/api/admin/me',staff))!.json()).toMatchObject({role:'ops',areas:['ops']});
@@ -437,6 +437,11 @@ describe('anti-abuse integration boundaries', () => {
     await env.DB.prepare("UPDATE session SET user_id='shopper' WHERE user_id='shopper2'").run();
     expect(await (await call('/api/admin/users/shopper/ban',staff,{banned:true}))!.json()).toEqual({ok:true,banned:true,changed:true});
     expect(await env.DB.prepare("SELECT count(*) n FROM session WHERE user_id='shopper'").first('n')).toBe(0);
+    // A banned customer cannot be made an administrator (the ban is re-checked inside the grant insert).
+    const granted = await call('/api/admin/roles',owner,{userId:'shopper',role:'ops'});
+    expect(granted?.status).toBe(409);
+    expect(await granted!.json()).toMatchObject({error:'Banned users cannot be granted admin access'});
+    expect(await env.DB.prepare("SELECT count(*) n FROM admin_roles WHERE user_id='shopper'").first('n')).toBe(0);
     await env.DB.prepare("INSERT INTO session (id,token,user_id,expires_at,created_at,updated_at) VALUES ('fresh','token-shopper2','shopper',?,?,?)").bind(Date.now()+3600000,Date.now(),Date.now()).run();
     expect(await getCustomer(request('/x',undefined,again),env)).toBeNull();
     expect(await getCustomer(request('/x',undefined,again),env,{includeBanned:true})).toEqual({id:'shopper',banned:true});

@@ -27,8 +27,8 @@ export async function cancelOrder(env: CommerceEnv, orderId: string, by: CancelA
   if (!order) throw new HttpError(404, 'Order not found');
   const force = by.kind === 'admin' && !!by.force;
   // A forced cancel is only for attempts the scheduler gave up on: DOKU may never have seen the create.
-  const exhausted = " AND EXISTS(SELECT 1 FROM manual_review WHERE order_id=orders.id AND reason='reconciliation_exhausted')";
-  if (force && !await s(env, `SELECT 1 AS ok FROM orders WHERE id=?${exhausted}`, orderId).first('ok')) throw new HttpError(409, 'Pembatalan paksa memerlukan review reconciliation_exhausted');
+  const exhausted = " AND EXISTS(SELECT 1 FROM manual_review WHERE order_id=orders.id AND reason='reconciliation_exhausted' AND status='open')";
+  if (force && !await s(env, `SELECT 1 AS ok FROM orders WHERE id=?${exhausted}`, orderId).first('ok')) throw new HttpError(409, 'Pembatalan paksa memerlukan review reconciliation_exhausted yang masih terbuka');
   if (order.status === 'pending_payment') await confirmUnpaid(env, order.reference, !!order.url, force);
   else if (order.status !== 'cancelled') throw new HttpError(409, 'Only unpaid orders can be cancelled');
   else if (!guard) return { order: { id: order.id, reference: order.reference, status: 'cancelled' }, changed: false, results: [] as D1Result[] };

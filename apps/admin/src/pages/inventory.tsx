@@ -19,7 +19,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { TableCell, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-/** Store default when a variant has no own threshold; mirrors LOW_STOCK_DEFAULT's default on the server. */
+/** Fallback for a server that does not report LOW_STOCK_DEFAULT; same default as the server's. */
 const LOW_DEFAULT = 5;
 
 type Row = { variantId: string; sku: string; name: string; productId: string; productName: string; onHand: number; reserved: number; available: number; threshold?: number; low?: boolean };
@@ -83,12 +83,12 @@ function Ledger({ target, onClose }: { target: Target | null; onClose: () => voi
   );
 }
 
-function rowsFromProducts(products: Product[]): Row[] {
+function rowsFromProducts(products: Product[], lowDefault: number): Row[] {
   return products.flatMap((p) =>
     p.variants
       .filter((v) => v.mode === "stock")
       .map((v) => {
-        const threshold = v.lowStockThreshold ?? LOW_DEFAULT, available = v.onHand - v.reserved;
+        const threshold = v.lowStockThreshold ?? lowDefault, available = v.onHand - v.reserved;
         return { variantId: v.id, sku: v.sku, name: v.name, productId: p.id, productName: p.name, onHand: v.onHand, reserved: v.reserved, available, threshold, low: v.active && p.active && available <= threshold };
       }),
   );
@@ -96,6 +96,7 @@ function rowsFromProducts(products: Product[]): Row[] {
 
 export function InventoryPage() {
   const { route, navigate } = useRoute();
+  const { me } = useSession();
   const low = route.query.get("low") === "1";
   const [adjusting, setAdjusting] = useState<Target | null>(null);
   const [ledger, setLedger] = useState<Target | null>(null);
@@ -107,7 +108,7 @@ export function InventoryPage() {
   const term = filter.trim().toLowerCase();
   const rows: Row[] = low
     ? (lowList.data?.lowStock ?? []).map((row) => ({ ...row, low: true }))
-    : rowsFromProducts(all.items).filter((row) => !term || `${row.sku} ${row.name} ${row.productName}`.toLowerCase().includes(term));
+    : rowsFromProducts(all.items, me.lowStockDefault ?? LOW_DEFAULT).filter((row) => !term || `${row.sku} ${row.name} ${row.productName}`.toLowerCase().includes(term));
   const loading = low ? lowList.loading : all.loading;
   const error = low ? lowList.error : all.error;
 

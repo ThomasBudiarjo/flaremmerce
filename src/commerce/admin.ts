@@ -4,7 +4,7 @@ import { catalog } from './catalog';
 import { operations } from './operations';
 import { cancelOrder } from './cancel';
 import { EXHAUSTED } from './payments';
-import { type AdminRole, envCount, likeFits, likePattern, orderTracking, validSlug, normalizeEmail, normalizePhone, riskHash, riskSecret } from '../shared';
+import { type AdminRole, envCount, likeFits, likePattern, orderTracking, validSlug, normalizeEmail, normalizeIp, normalizePhone, riskHash, riskSecret } from '../shared';
 import { categoryList } from './catalog';
 import { exportOrders, LOW_STOCK, orderFilter, orderPage, summary } from './reports';
 
@@ -62,8 +62,9 @@ function blockValue(kind: 'email' | 'phone' | 'ip', value: string) {
     if (!phone) throw new HttpError(400, 'Nomor HP tidak valid');
     return phone;
   }
-  if (!/^[0-9a-fA-F:.]{2,45}$/.test(value)) throw new HttpError(400, 'Invalid IP address');
-  return value.toLowerCase();
+  const ip = normalizeIp(value);
+  if (!ip) throw new HttpError(400, 'Invalid IP address');
+  return ip;
 }
 // The exhaustion sentinel is a scan-range device, not a schedule.
 const nextCheck = `CASE WHEN next_check>=${EXHAUSTED} THEN NULL ELSE next_check END AS nextCheck`;
@@ -94,7 +95,7 @@ async function casUpdate(env: CommerceEnv, actor: string, table: string, action:
   if (!result.meta.changes) throw new HttpError(409, 'Data sudah diubah oleh admin lain; muat ulang sebelum menyimpan', { current });
   return current;
 }
-export async function admin(request: Request, env: CommerceEnv, actor: string, body: unknown, role: AdminRole = 'owner') {
+export async function admin(request: Request, env: CommerceEnv, actor: string, body: unknown, role: AdminRole) {
   const url = new URL(request.url), path = url.pathname;
   if (path === '/api/admin/operations' && request.method === 'GET') return operations(env);
   if (path === '/api/admin/summary' && request.method === 'GET') return summary(env, url);
@@ -120,13 +121,20 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
   }
   if (categoryMatch && request.method === 'DELETE') {
     const target = decodeURIComponent(categoryMatch[1]);
-    if (await s(env, 'SELECT 1 AS used FROM products WHERE category_id=? LIMIT 1', target).first('used')) throw new HttpError(409, 'Kategori masih dipakai produk; pindahkan produk terlebih dahulu');
-    // Audit first while the row exists; the guarded DELETE in the same batch removes exactly that row.
-    const [audited] = await env.DB.batch([
-      s(env, "INSERT INTO audit_logs(id,actor,action,target,details_json,created_at) SELECT ?,?,'category.delete',id,json_object('slug',slug,'name',name),? FROM categories WHERE id=?", id(), actor, Date.now(), target),
+    const inUse = 'Kategori masih dipakai produk; pindahkan produk terlebih dahulu';
+    const category = await s(env, 'SELECT slug,name FROM categories WHERE id=?', target).first<{ slug: string; name: string }>();
+    if (!category) throw new HttpError(404, 'Category not found');
+    if (await s(env, 'SELECT 1 AS used FROM products WHERE category_id=? LIMIT 1', target).first('used')) throw new HttpError(409, inUse);
+    // The guarded DELETE decides; the audit row is written only when it removed the category. A product
+    // assigned after the check above makes the DELETE a no-op and the request a 409, never a false success.
+    const [deleted] = await env.DB.batch([
       s(env, 'DELETE FROM categories WHERE id=? AND NOT EXISTS(SELECT 1 FROM products WHERE category_id=?)', target, target),
+      s(env, "INSERT INTO audit_logs(id,actor,action,target,details_json,created_at) SELECT ?,?,'category.delete',?,json_object('slug',?,'name',?),? WHERE changes()=1", id(), actor, target, category.slug, category.name, Date.now()),
     ]);
-    if (!audited.meta.changes) throw new HttpError(404, 'Category not found');
+    if (!deleted.meta.changes) {
+      if (!await s(env, 'SELECT 1 AS found FROM categories WHERE id=?', target).first('found')) throw new HttpError(404, 'Category not found');
+      throw new HttpError(409, inUse);
+    }
     return json({ deleted: true });
   }
   if (path === '/api/admin/variants/search' && request.method === 'GET') {
@@ -145,7 +153,8 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
       FROM product_variants v JOIN inventory i ON i.variant_id=v.id JOIN products p ON p.id=v.product_id WHERE ${LOW_STOCK.replace('?', '?1')} ORDER BY available,v.sku LIMIT 100`, envCount(env.LOW_STOCK_DEFAULT, 5)).all();
     return json({ lowStock: results });
   }
-  const before = Number(url.searchParams.get('before') ?? Date.now() + 1);
+  // Rows can carry the database clock (trigger timestamps), so the first page has no time bound at all.
+  const before = Number(url.searchParams.get('before') ?? Number.MAX_SAFE_INTEGER);
   const beforeId = url.searchParams.get('beforeId') ?? '';
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 50)));
   if (!Number.isSafeInteger(before) || !Number.isSafeInteger(limit) || beforeId.length > 100) throw new HttpError(400, 'Invalid pagination');
@@ -219,7 +228,12 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
       ...(input.shipFrom !== undefined || input.shipTo !== undefined ? [s(env,`INSERT INTO order_events(id,order_id,kind,details_json,created_at)
         SELECT ? || ':' || o.id,o.id,'campaign_updated',json_object('campaignId',c.id,'shipFrom',c.ship_from,'shipTo',c.ship_to),? FROM preorder_campaigns c JOIN orders o ON o.id IN (SELECT order_id FROM order_items WHERE campaign_id=c.id)
         WHERE c.id=? AND o.status<>'cancelled' AND EXISTS(SELECT 1 FROM audit_logs WHERE id=?)`,auditId,now,target,auditId)] : []),
-    ]);
+    ]).catch(async error=>{
+      // CHECK(reserved + sold <= quota): name the units already taken instead of a generic conflict.
+      const taken=input.quota!=null && /CHECK constraint failed/.test(String(error)) ? await s(env,'SELECT reserved,sold FROM preorder_campaigns WHERE id=?',target).first<{reserved:number;sold:number}>() : null;
+      if (taken && input.quota!<taken.reserved+taken.sold) throw new HttpError(409,`Kuota tidak boleh di bawah ${taken.reserved+taken.sold} unit yang sudah dipesan (${taken.sold} terjual, ${taken.reserved} menunggu pembayaran). Untuk menutup pemesanan, nonaktifkan campaign atau majukan tanggal selesai.`,{sold:taken.sold,reserved:taken.reserved});
+      throw error;
+    });
     const current=await campaignEntity(env,target);
     if (!current) throw new HttpError(404,'Campaign not found');
     if (!result[0].meta.changes) throw new HttpError(409,'Data sudah diubah oleh admin lain; muat ulang sebelum menyimpan',{current});
@@ -273,9 +287,11 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     return json({ orders: items.map(hold).map(({ contactName, shippingService, ...row }) => ({ ...row, contact: { name: contactName ?? null }, shipping: { service: shippingService ?? null } })), nextCursor });
   }
   if (path === '/api/admin/review' && request.method === 'GET') {
-    const status = url.searchParams.get('status') || null;
+    const status = url.searchParams.get('status') || null, orderId = url.searchParams.get('orderId') || null;
     if (status !== null && status !== 'open' && status !== 'resolved') throw new HttpError(400, 'Invalid status filter');
-    const rows = await s(env, `SELECT r.id,r.order_id AS orderId,r.reason,r.event_key AS eventKey,r.created_at AS createdAt,r.status,r.note,r.version,r.updated_at AS updatedAt,r.updated_by AS updatedBy,o.reference FROM manual_review r LEFT JOIN orders o ON o.id=r.order_id WHERE ${status ? 'r.status=? AND ' : ''}(r.created_at<? OR (r.created_at=? AND r.id<?)) ORDER BY r.created_at DESC,r.id DESC LIMIT ?`, ...(status ? [status] : []), before, before, beforeId, limit+1).all();
+    if (orderId !== null && orderId.length > 100) throw new HttpError(400, 'Invalid order filter');
+    const filters = [...(status ? ['r.status=?'] : []), ...(orderId ? ['r.order_id=?'] : [])].map(f => `${f} AND `).join('');
+    const rows = await s(env, `SELECT r.id,r.order_id AS orderId,r.reason,r.event_key AS eventKey,r.created_at AS createdAt,r.status,r.note,r.version,r.updated_at AS updatedAt,r.updated_by AS updatedBy,o.reference FROM manual_review r LEFT JOIN orders o ON o.id=r.order_id WHERE ${filters}(r.created_at<? OR (r.created_at=? AND r.id<?)) ORDER BY r.created_at DESC,r.id DESC LIMIT ?`, ...(status ? [status] : []), ...(orderId ? [orderId] : []), before, before, beforeId, limit+1).all();
     return json(page(rows.results, limit, last => ({ before: last.createdAt, beforeId: last.id })));
   }
   const reviewMatch = path.match(/^\/api\/admin\/review\/([^/]+)$/);

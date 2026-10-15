@@ -20,7 +20,7 @@ const expiry = (q: Quote) => new Date(q.expiresAt).getTime();
 export default function Checkout() {
   const [items, setItems] = useState<CartItem[]>([]);
   const [view, setView] = useState<Preview | null>(null);
-  const [config, setConfig] = useState<{ turnstileSiteKey?: string | null; turnstile?: boolean; googleEnabled?: boolean; payments?: boolean; shipping?: boolean }>({});
+  const [config, setConfig] = useState<{ turnstileSiteKey?: string | null; turnstileAction?: string | null; turnstile?: boolean; googleEnabled?: boolean; payments?: boolean; shipping?: boolean }>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -508,7 +508,7 @@ export default function Checkout() {
               <span>Saya menyetujui total dan estimasi satu pengiriman di atas.<RequiredMark /></span>
             </label>
             {!needsToken ? null : config.turnstileSiteKey ? (
-              <Turnstile siteKey={config.turnstileSiteKey} onToken={setToken} reset={reset} />
+              <Turnstile siteKey={config.turnstileSiteKey} action={config.turnstileAction ?? undefined} onToken={setToken} reset={reset} />
             ) : (
               <p role="alert">Verifikasi checkout belum tersedia. Pembayaran tidak dapat dilanjutkan.</p>
             )}

@@ -40,7 +40,8 @@ export async function orderFilter(env: CommerceEnv, params: URLSearchParams) {
     const phone = normalizePhone(q);
     if (q.includes('@')) { where.push('email_hash=?'); values.push(await riskHash(riskSecret(env), 'email', normalizeEmail(q))); }
     else if (phone) { where.push('phone_hash=?'); values.push(await riskHash(riskSecret(env), 'phone', phone)); }
-    else { where.push('reference=?'); values.push(q); }
+    // References are "FL-" plus lowercase hex; a reference typed in any case still matches.
+    else { where.push('reference=?'); values.push(/^fl-[0-9a-f]+$/i.test(q) ? `FL-${q.slice(3).toLowerCase()}` : q); }
   }
   return { where, values, filters: { status: status || null, from: params.get('from') || null, to: params.get('to') || null, q: q ? (q.includes('@') ? 'email' : normalizePhone(q) ? 'phone' : 'reference') : null } };
 }
@@ -72,7 +73,7 @@ export async function exportOrders(env: CommerceEnv, actor: string, params: URLS
       if (!results.length) { controller.close(); return; }
       const lines = results.map(row => {
         const contact = JSON.parse(String(row.contact_json)), address = JSON.parse(String(row.address_json)), shipping = JSON.parse(String(row.shipping_json));
-        return [row.reference, new Date(Number(row.created_at)).toISOString(), row.status, row.fulfillment, row.held ? 'held' : '', row.total, row.currency, contact.name, contact.email, contact.phone,
+        return [row.reference, `${new Date(Number(row.created_at) + WIB).toISOString().slice(0, -1)}+07:00`, row.status, row.fulfillment, row.held ? 'held' : '', row.total, row.currency, contact.name, contact.email, contact.phone,
           address.line, address.subdistrict, address.district, address.city, address.province, address.postalCode, shipping.service, shipping.amount].map(csvCell).join(',');
       });
       controller.enqueue(encoder.encode(`${lines.join('\r\n')}\r\n`));

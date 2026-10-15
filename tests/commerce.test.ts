@@ -8,8 +8,8 @@ import lifecycleMigration from '../migrations/0008_lifecycle.sql?raw';
 import riskMigration from '../migrations/0010_risk.sql?raw';
 import ecommerceMigration from '../migrations/0012_ecommerce.sql?raw';
 import reportingMigration from '../migrations/0014_reporting.sql?raw';
-import worker, { housekeepingDue, type Env } from '../src/worker';
-import { chargeableWeight, publicCacheKey, catalogParams, riskHash, tracking } from '../src/shared';
+import worker, { housekeepingDue, queueRetryDelay, type Env } from '../src/worker';
+import { chargeableWeight, publicCacheKey, catalogParams, normalizeIp, rateLimitIp, riskHash, tracking } from '../src/shared';
 import { csvCell } from '../src/commerce/reports';
 import { withAdminHeaders, withStorefrontHeaders } from '../src/headers';
 
@@ -1098,6 +1098,12 @@ describe('anti-fraud and abuse controls', () => {
     expect(limited.headers.get('Cache-Control')).toBe('private, no-store');
     expect(await limited.json()).toEqual({ error: 'Terlalu banyak permintaan. Coba lagi sebentar.' });
     expect((await lookup('203.0.113.2', tight)).status).toBe(404);
+    // The order history list shares the lookup bucket, and an IPv6 client counts per /64, whatever its spelling.
+    const list = (ip: string) => worker.fetch(new Request('https://shop.test/api/orders', { headers: { 'CF-Connecting-IP': ip } }), tight);
+    expect((await list('2001:db8:1:2::a')).status).not.toBe(429);
+    expect((await list('2001:0DB8:0001:0002:ffff::b')).status).not.toBe(429);
+    expect((await list('2001:db8:1:2:3:4:5:6')).status).toBe(429);
+    expect((await list('2001:db8:1:3::a')).status).not.toBe(429);
     const fallback = { ...e, RL_CHECKOUT: undefined, RL_QUOTE: undefined, RL_LOOKUP: undefined, RL_AUTH: undefined } as unknown as Env;
     const signIn = () => worker.fetch(new Request('https://shop.test/api/auth/sign-in/social', { method: 'POST', headers: { Origin: e.PUBLIC_ORIGIN, 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.7' }, body: '{}' }), fallback);
     for (let i = 0; i < 10; i++) expect((await signIn()).status).not.toBe(429);
@@ -1116,12 +1122,13 @@ describe('anti-fraud and abuse controls', () => {
 
   it('normalizes Indonesian mobile numbers and rejects others before reserving', async () => {
     await stock();
-    for (const [phone, normalized] of [['0812-3456-789', '+628123456789'], ['62812345678', '+62812345678'], ['+62 812 345 678', '+62812345678']]) {
+    for (const [phone, normalized] of [['0812-3456-789', '+628123456789'], ['62812345678', '+62812345678'], ['+62 812 345 678', '+62812345678'], ['0062 812 345 678', '+62812345678'], ['0812-3456-78901', '+62812345678901']]) {
       const { order } = await (await buy({ contact: { phone } })).json() as any;
       expect(JSON.parse((await sql('SELECT contact_json FROM orders WHERE id=?', order.id).first<string>('contact_json'))!).phone).toBe(normalized);
     }
     const before = await count('orders');
-    for (const phone of ['12345', '+6512345678', '0212345678', '08123', '0812345678901234']) {
+    // Mobile numbers are 10–13 digits written with the leading 0; 9 digits is too short.
+    for (const phone of ['12345', '+6512345678', '0212345678', '08123', '081234567', '+6281234567', '08123456789012', '0812345678901234']) {
       const response = await buy({ contact: { phone } });
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({ error: 'Nomor HP tidak valid' });
@@ -1192,6 +1199,25 @@ describe('anti-fraud and abuse controls', () => {
     expect((await request(`/api/admin/review/${review}`, { version: 0, status: 'resolved', note: 'Customer verified by phone' }, owner, 'PATCH')).status).toBe(200);
     expect((await (await request(`/api/admin/orders/${order.id}`, undefined, owner)).json() as any).order.hold).toBe(false);
     expect((await request(`/api/admin/orders/${order.id}/fulfillment`, { status: 'processing' }, owner, 'PATCH')).status).toBe(200);
+  });
+
+  it('normalizes IP blocks so a hand-typed spelling matches the connecting address', async () => {
+    await stock();
+    const ops = { 'X-Test-Admin': 'ops' };
+    const block = (value: string) => request('/api/admin/blocklist', { kind: 'ip', value, reason: 'bot' }, ops);
+    expect((await block('2001:0DB8:0000:0000:0000:0000:0000:0001')).status).toBe(201);
+    expect((await block('192.000.002.010')).status).toBe(201);
+    expect(await (await block('2001:db8::1')).json()).toMatchObject({ created: false });
+    expect(await (await block('192.0.2.10')).json()).toMatchObject({ created: false });
+    for (const value of ['1.2.3.256', '1.2.3', '2001:db8::1::2', 'abc', '::ffff:1.2.3.400']) expect((await block(value)).status).toBe(400);
+    expect((await buy({ headers: { 'CF-Connecting-IP': '2001:db8::1' } })).status).toBe(403);
+    expect((await buy({ headers: { 'CF-Connecting-IP': '192.0.2.10' } })).status).toBe(403);
+    expect((await buy({ headers: { 'CF-Connecting-IP': '192.0.2.11' } })).status).toBe(200);
+    expect(normalizeIp(' 2001:DB8:0:0:1:0:0:1 ')).toBe('2001:db8::1:0:0:1');
+    expect(rateLimitIp('2001:db8:1:2:3:4:5:6')).toBe('2001:db8:1:2::/64');
+    expect(rateLimitIp('::1')).toBe('0:0:0:0::/64');
+    expect(rateLimitIp('203.0.113.007')).toBe('203.0.113.7');
+    expect(rateLimitIp('unknown')).toBe('unknown');
   });
 
   it('blocks hashed identities before Turnstile with audited admin CRUD that never stores raw values', async () => {
@@ -1310,8 +1336,11 @@ describe('anti-fraud and abuse controls', () => {
     expect((await cancel({ confirmNoPayment: true, reason: 'DOKU has no record' }, { 'X-Test-Admin': 'ops' })).status).toBe(403);
     const early = await cancel({ confirmNoPayment: true, reason: 'DOKU has no record' });
     expect(early.status).toBe(409);
-    expect(await early.json()).toEqual({ error: 'Pembatalan paksa memerlukan review reconciliation_exhausted' });
-    await sql("INSERT INTO manual_review(id,event_key,order_id,reason,created_at) VALUES(?,?,?,'reconciliation_exhausted',?)", `recovery:${order.reference}`, `recovery:${order.reference}`, order.id, Date.now()).run();
+    expect(await early.json()).toEqual({ error: 'Pembatalan paksa memerlukan review reconciliation_exhausted yang masih terbuka' });
+    // A review that was already resolved no longer authorizes a forced cancel.
+    await sql("INSERT INTO manual_review(id,event_key,order_id,reason,created_at,status) VALUES(?,?,?,'reconciliation_exhausted',?,'resolved')", `recovery:${order.reference}`, `recovery:${order.reference}`, order.id, Date.now()).run();
+    expect((await cancel({ confirmNoPayment: true, reason: 'DOKU has no record' })).status).toBe(409);
+    await sql("UPDATE manual_review SET status='open' WHERE order_id=?", order.id).run();
     provider.lookupStatus = 404;
     const forced = await cancel({ confirmNoPayment: true, reason: 'DOKU has no record' });
     expect(forced.status).toBe(200);
@@ -1426,6 +1455,62 @@ describe('ecommerce features', () => {
     expect((await (await request(`/api/admin/products/${catan.id}`, { categoryId: null, version: catan.version }, owner, 'PATCH')).json() as any).product).toMatchObject({ categoryId: null, version: 1 });
     expect((await request(`/api/admin/categories/${category.id}`, undefined, catalogRole, 'DELETE')).status).toBe(200);
     expect(await sql("SELECT count(*) AS n FROM audit_logs WHERE action LIKE 'category.%'").first('n')).toBe(3);
+  });
+
+  it('hides a deactivated category from public products and audits a category delete only when it happens', async () => {
+    const { category } = await (await request('/api/admin/categories', { slug: 'lama', name: 'Lama', active: false }, catalogRole)).json() as any;
+    await sql("UPDATE products SET category_id=? WHERE id='p'", category.id).run();
+    expect((await (await request('/api/catalog/product')).json() as any).product.category).toBeNull();
+    expect((await (await request('/api/catalog')).json() as any).products[0].category).toBeNull();
+    expect((await (await request('/api/admin/products/p', undefined, catalogRole)).json() as any).product.category).toEqual({ slug: 'lama', name: 'Lama' });
+    const deletes = () => sql("SELECT details_json FROM audit_logs WHERE action='category.delete'").all<{ details_json: string }>();
+    expect((await request(`/api/admin/categories/${category.id}`, undefined, catalogRole, 'DELETE')).status).toBe(409);
+    expect((await deletes()).results).toEqual([]);
+    await sql("UPDATE products SET category_id=NULL WHERE id='p'").run();
+    expect((await request(`/api/admin/categories/${category.id}`, undefined, catalogRole, 'DELETE')).status).toBe(200);
+    expect((await deletes()).results.map(r => JSON.parse(r.details_json))).toEqual([{ slug: 'lama', name: 'Lama' }]);
+    expect((await request(`/api/admin/categories/${category.id}`, undefined, catalogRole, 'DELETE')).status).toBe(404);
+  });
+
+  it('names the units already taken when a pre-order quota is set below them', async () => {
+    await sql("UPDATE product_variants SET mode='preorder' WHERE id='a'").run();
+    const now = Date.now();
+    const { campaign } = await (await request('/api/admin/campaigns', { variantId: 'a', startsAt: now - 1000, endsAt: now + 300000, shipFrom: '2026-12-01', shipTo: '2026-12-15', quota: 5 }, owner)).json() as any;
+    const { order } = await (await place()).json() as any;
+    await notify(order.reference);
+    const refused = await request(`/api/admin/campaigns/${campaign.id}`, { quota: 0, version: 0 }, owner, 'PATCH');
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: 'Kuota tidak boleh di bawah 1 unit yang sudah dipesan (1 terjual, 0 menunggu pembayaran). Untuk menutup pemesanan, nonaktifkan campaign atau majukan tanggal selesai.', details: { sold: 1, reserved: 0 } });
+    expect((await request(`/api/admin/campaigns/${campaign.id}`, { quota: 1, version: 0 }, owner, 'PATCH')).status).toBe(200);
+  });
+
+  it('finds an order reference typed in any case and filters open reviews by order', async () => {
+    await sql("UPDATE inventory SET on_hand=5 WHERE variant_id='a'").run();
+    const first = (await (await place('first-key', 1)).json() as any).order, second = (await (await place('second-key', 2)).json() as any).order;
+    const ids = async (q: string) => ((await (await request(`/api/admin/orders?q=${encodeURIComponent(q)}`, undefined, ops)).json() as any).orders as any[]).map(o => o.id);
+    expect(await ids(first.reference.toLowerCase())).toEqual([first.id]);
+    expect(await ids(`FL-${first.reference.slice(3).toUpperCase()}`)).toEqual([first.id]);
+    for (const [orderId, n] of [[first.id, 1], [second.id, 2], [second.id, 3]] as const) await sql("INSERT INTO manual_review(id,event_key,order_id,reason,created_at) VALUES(?,?,?,'risk_velocity',?)", `r${n}`, `r${n}`, orderId, n).run();
+    await sql("UPDATE manual_review SET status='resolved' WHERE id='r3'").run();
+    const reviews = async (query: string) => ((await (await request(`/api/admin/review?${query}`, undefined, ops)).json() as any).items as any[]).map(r => r.id);
+    expect(await reviews(`status=open&orderId=${second.id}`)).toEqual(['r2']);
+    expect(await reviews(`orderId=${second.id}`)).toEqual(['r3', 'r2']);
+    expect((await request(`/api/admin/review?orderId=${'x'.repeat(101)}`, undefined, ops)).status).toBe(400);
+    // The first page has no time bound: a row stamped slightly ahead by the database clock still shows.
+    await sql("INSERT INTO orders(id,reference,guest_token_hash,total,contact_json,address_json,shipping_json,created_at) VALUES('ahead','FL-ahead','h',1,'{}','{}','{}',?)", Date.now() + 120_000).run();
+    expect((await ids('')).at(0)).toBe('ahead');
+  });
+
+  it('passes the Turnstile action to the widget and retries failed outbox messages with backoff', async () => {
+    const config = async (env: Env) => (await (await worker.fetch(new Request('https://shop.test/api/config'), env)).json() as any).turnstileAction;
+    expect(await config(e)).toBe('checkout');
+    expect(await config({ ...e, TURNSTILE_ACTION: 'checkout-v2' } as Env)).toBe('checkout-v2');
+    expect([1, 2, 3, 4, 5, 9].map(queueRetryDelay)).toEqual([30, 60, 120, 240, 300, 300]);
+    const ack = vi.fn(), retry = vi.fn();
+    const broken = { ...e, DB: { prepare: () => ({ bind: () => ({}) }), batch: async () => { throw new Error('D1 unavailable'); } } } as unknown as Env;
+    await worker.queue({ messages: [{ body: { outboxId: 'outbox-1' }, attempts: 3, ack, retry }] } as unknown as MessageBatch<{ outboxId: string }>, broken);
+    expect(retry).toHaveBeenCalledWith({ delaySeconds: 120 });
+    expect(ack).not.toHaveBeenCalled();
   });
 
   it('filters admin products by active/archived status without changing the public catalog', async () => {
@@ -1710,6 +1795,8 @@ describe('ecommerce features', () => {
     expect(rows[0]).toBe('reference,created_at,status,fulfillment,hold,total,currency,name,email,phone,address,subdistrict,district,city,province,postal_code,shipping_service,shipping_amount');
     expect(rows).toHaveLength(4);
     expect(rows[1]).toMatch(/^"FL-hashed",.*"held"/);
+    // Timestamps are exported in WIB, the same calendar the date filters use.
+    expect(rows[1].split(',')[1]).toBe(`"${new Date(now - 500 + 7 * 3_600_000).toISOString().slice(0, -1)}+07:00"`);
     expect(rows[2]).toContain(`"'=HYPERLINK(""http://evil"")"`);
     expect(rows[3]).toContain(`"'@SUM(A1)"`);
     expect(csvCell('-1+1')).toBe(`"'-1+1"`);

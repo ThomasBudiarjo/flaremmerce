@@ -1,7 +1,7 @@
 import type { IntegrationEnv } from './index';
 import { requireAdmin } from './auth';
 import { demand, json, origin } from './security';
-import { ADMIN_ROLES, type AdminRole, adminPermits, likeFits, likePattern } from '../shared';
+import { ADMIN_ROLES, type AdminRole, adminPermits, envCount, likeFits, likePattern } from '../shared';
 
 const audit = (env: IntegrationEnv, actor: string, action: string, target: string, details: unknown, when = 'WHERE changes()=1') =>
   env.DB.prepare(`INSERT INTO audit_logs(id,actor,action,target,details_json,created_at) SELECT ?,?,?,?,?,? ${when}`).bind(crypto.randomUUID(), actor, action, target, JSON.stringify(details), Date.now());
@@ -23,7 +23,7 @@ export async function adminUsers(request: Request, env: IntegrationEnv): Promise
   demand(adminPermits(actor.role, path), 403, 'Role not permitted');
   if (path === '/api/admin/me' && method === 'GET') {
     const user = await env.DB.prepare('SELECT id,name,email FROM user WHERE id=?').bind(actor.id).first();
-    return { user, role: actor.role, areas: actor.role === 'owner' ? ['owner', 'ops', 'catalog'] : [actor.role] };
+    return { user, role: actor.role, areas: actor.role === 'owner' ? ['owner', 'ops', 'catalog'] : [actor.role], lowStockDefault: envCount(env.LOW_STOCK_DEFAULT, 5) };
   }
   if (path === '/api/admin/roles' && method === 'GET') {
     const { results } = await env.DB.prepare('SELECT r.user_id AS userId,u.name,u.email,r.role,r.granted_by AS grantedBy,r.created_at AS createdAt,r.user_id IN (SELECT owner_id FROM installation) AS installationOwner FROM admin_roles r JOIN user u ON u.id=r.user_id ORDER BY r.created_at,r.user_id LIMIT 200').all();
@@ -46,12 +46,15 @@ export async function adminUsers(request: Request, env: IntegrationEnv): Promise
       demand(result.meta.changes === 1, 409, 'The last owner cannot be demoted');
       return { ok: true, changed: true };
     }
-    const target = await env.DB.prepare("SELECT u.id FROM user u JOIN account a ON a.user_id=u.id WHERE u.id=? AND u.email_verified=1 AND a.provider_id='google' AND u.id NOT IN (SELECT user_id FROM customer_bans)").bind(input.userId).first();
+    const target = await env.DB.prepare("SELECT u.id,EXISTS(SELECT 1 FROM customer_bans b WHERE b.user_id=u.id) AS banned FROM user u JOIN account a ON a.user_id=u.id WHERE u.id=? AND u.email_verified=1 AND a.provider_id='google'").bind(input.userId).first<{ banned: number }>();
     demand(target, 400, 'Verified Google identity required');
-    const [, audited] = await env.DB.batch([
-      env.DB.prepare('INSERT INTO admin_roles(user_id,granted_by,created_at,role) VALUES(?,?,?,?) ON CONFLICT(user_id) DO NOTHING').bind(input.userId, actor.id, Date.now(), role),
+    demand(!target.banned, 409, 'Banned users cannot be granted admin access');
+    // The ban check is repeated in the insert: a ban landing between the read and this batch must win.
+    const [inserted, audited] = await env.DB.batch([
+      env.DB.prepare('INSERT INTO admin_roles(user_id,granted_by,created_at,role) SELECT ?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM customer_bans WHERE user_id=?) ON CONFLICT(user_id) DO NOTHING').bind(input.userId, actor.id, Date.now(), role, input.userId),
       audit(env, actor.id, 'role.grant', input.userId, { role }),
     ]);
+    if (!inserted.meta.changes) demand(!await env.DB.prepare('SELECT 1 AS banned FROM customer_bans WHERE user_id=?').bind(input.userId).first('banned'), 409, 'Banned users cannot be granted admin access');
     return { ok: true, changed: audited.meta.changes === 1 };
   }
   const revoke = path.match(/^\/api\/admin\/roles\/([^/]+)$/);

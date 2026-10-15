@@ -107,7 +107,7 @@ it('staging without credentials disables features cleanly and never creates unpa
     });
     const call = (env: Record<string, unknown>, path: string, input?: unknown, cookie?: string) => worker.fetch(new Request(`https://shop.example${path}`,{method:input ? 'POST':'GET',headers:{Origin:'https://shop.example','Content-Type':'application/json',...(cookie ? {Cookie:cookie}:{})},...(input ? {body:JSON.stringify(input)}:{})}),env as unknown as Env);
     const config = async (env: Record<string, unknown>) => (await call(env,'/api/config')).json();
-    expect(await config(base)).toEqual({environment:'staging',turnstileSiteKey:null,turnstile:false,googleEnabled:false,devLoginEnabled:false,stagingLogin:false,payments:false,shipping:false});
+    expect(await config(base)).toEqual({environment:'staging',turnstileSiteKey:null,turnstile:false,turnstileAction:'checkout',googleEnabled:false,devLoginEnabled:false,stagingLogin:false,payments:false,shipping:false});
     expect(await config({...base,...shipping,...payments,STAGING_LOGIN_SECRET:'x'.repeat(32),TURNSTILE_SITE_KEY:'site',TURNSTILE_SECRET_KEY:'secret'})).toMatchObject({turnstileSiteKey:'site',turnstile:true,stagingLogin:true,payments:true,shipping:true});
     // Production never skips Turnstile or offers staging login, whatever the configuration.
     expect(await config({...base,APP_ENV:undefined,STAGING_LOGIN_SECRET:'x'.repeat(32)})).toMatchObject({environment:'production',turnstile:true,stagingLogin:false,payments:false,shipping:false});

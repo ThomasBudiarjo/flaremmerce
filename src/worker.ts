@@ -18,6 +18,8 @@ export interface Env extends IntegrationEnv, StorageEnv, RateLimitEnv {
   PUBLIC_ORIGIN: string;
 }
 
+/** Exponential backoff for a failed outbox message: 30 s, 60 s, 120 s, … capped at 5 minutes. */
+export const queueRetryDelay = (attempts: number) => Math.min(300, 30 * 2 ** Math.max(0, attempts - 1));
 export const housekeepingDue = (scheduledTime: number | undefined) => typeof scheduledTime !== 'number' || Math.floor(scheduledTime / 60_000) % 5 === 0;
 
 export default {
@@ -47,6 +49,8 @@ export default {
           environment: environment(env),
           turnstileSiteKey: skipTurnstile ? null : env.TURNSTILE_SITE_KEY ?? null,
           turnstile: !skipTurnstile,
+          // The widget must request the action Siteverify checks for, or every checkout is refused.
+          turnstileAction: env.TURNSTILE_ACTION || 'checkout',
           googleEnabled: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.BETTER_AUTH_SECRET),
           devLoginEnabled: devLoginEnabled(env),
           stagingLogin: stagingLoginEnabled(env),
@@ -119,7 +123,7 @@ export default {
     for (const message of batch.messages.slice(0, 20)) {
       if (!message.body || typeof message.body.outboxId !== 'string' || message.body.outboxId.length > 200) { message.ack(); continue; }
       try { await consumeOutbox(env, message.body.outboxId); message.ack(); }
-      catch { console.warn('outbox_queue_retry', { kind: 'delivery_error' }); message.retry(); }
+      catch { console.warn('outbox_queue_retry', { kind: 'delivery_error' }); message.retry({ delaySeconds: queueRetryDelay(message.attempts) }); }
     }
   },
 } satisfies ExportedHandler<Env, { outboxId: string }>;

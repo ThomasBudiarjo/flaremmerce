@@ -5,6 +5,8 @@ export type Me = {
   user: { id: string; name: string; email: string };
   role: Role;
   areas: Role[];
+  /** LOW_STOCK_DEFAULT: threshold for variants without their own; older servers omit it. */
+  lowStockDefault?: number;
 };
 
 export type Summary = {
