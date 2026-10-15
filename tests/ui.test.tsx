@@ -71,6 +71,19 @@ it.each([
   }
 });
 
+it.each([
+  ['pending_payment', undefined, true],
+  ['pending_payment', 'https://sandbox.doku.com/existing-attempt', false],
+  ['cancelled', undefined, false],
+] as const)('tells the shopper to cancel and reorder when no payment link exists (%s, %s)', async (status, paymentUrl, shown) => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url.startsWith('/api/orders/')
+    ? Response.json({ access: { type: 'account', ownerId: 'A' }, order: { ...summary('A-order'), status, items: [], timeline: [] }, paymentState: 'unknown', ...(paymentUrl ? { paymentUrl } : {}) })
+    : page('A', ['A-order'])));
+  await act(async () => root.render(<OrderStatus />));
+  await click('A-order');
+  expect(document.body.textContent?.includes('Link pembayaran gagal dibuat, batalkan lalu pesan ulang.')).toBe(shown);
+});
+
 it('resumes guest payment without placing another order', async () => {
   sessionStorage.setItem('flaremmerce-order-access', JSON.stringify({ reference: 'guest-order', token: 'private-fixture' }));
   vi.stubGlobal('fetch', vi.fn(async (url: string) => url.startsWith('/api/orders/')

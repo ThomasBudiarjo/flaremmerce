@@ -264,6 +264,11 @@ export default function Checkout() {
             </button>
           </div>
         )}
+        {result.order.status === "pending_payment" && !(result.paymentUrl && /^https:\/\//.test(result.paymentUrl)) && (
+          <div className="notice error" role="status">
+            Link pembayaran gagal dibuat, batalkan lalu pesan ulang. Buka status pesanan untuk membatalkannya; stok dilepas setelah dibatalkan.
+          </div>
+        )}
         <div className="actions">
           {result.paymentUrl && /^https:\/\//.test(result.paymentUrl) && (
             <a className="button" href={result.paymentUrl} rel="noreferrer">Lanjut ke penyedia pembayaran ↗</a>

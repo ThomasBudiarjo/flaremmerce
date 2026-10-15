@@ -3,6 +3,7 @@ import { createPayment, getCustomer, verifyTurnstile } from '../integrations/ind
 import { cartWeightMessage, chargeableWeight, clientIp, digest, envCount, maxCartWeight, normalizeEmail, normalizePhone, paymentsConfigured, riskHash, riskSecret, shippingConfigured, volumetricDivisor } from '../shared';
 import { cartItems, shipPromise } from './cart';
 import { disposableEmail } from './risk';
+import { nextLookup } from './payments';
 import { type CommerceEnv, hash, HttpError, id, json, statement as s } from './types';
 
 export const checkoutInput = z.object({
@@ -126,7 +127,7 @@ export async function checkout(request: Request, env: CommerceEnv, body: unknown
       JSON.stringify({ sku: v.sku, name: v.name, productName: v.product_name, mode: v.mode, weight: v.weight, billedWeight: chargeableWeight(v, divisor), ...(campaignId ? { campaign: { id: campaignId, shipFrom: v.ship_from, shipTo: v.ship_to } } : {}) })),
       s(env, 'INSERT INTO stock_reservations(item_id,order_id,variant_id,campaign_id,quantity) VALUES(?,?,?,?,?)', itemId, orderId, v.id, campaignId, quantity));
   }
-  batch.push(s(env, 'INSERT INTO payment_attempts(id,order_id,reference,next_check,created_at) VALUES(?,?,?,?,?)', attemptId, orderId, reference, now + 60_000, now));
+  batch.push(s(env, 'INSERT INTO payment_attempts(id,order_id,reference,next_check,created_at) VALUES(?,?,?,?,?)', attemptId, orderId, reference, nextLookup(env, now, now), now));
   // Soft signals: the order is accepted, but an open review holds fulfillment until an operator resolves it.
   // Velocity counts include this order and are evaluated inside the same serialized batch.
   const since = now - 86_400_000;

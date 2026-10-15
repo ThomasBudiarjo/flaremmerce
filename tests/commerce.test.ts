@@ -7,7 +7,7 @@ import pagesMigration from '../migrations/0006_admin_pages.sql?raw';
 import lifecycleMigration from '../migrations/0008_lifecycle.sql?raw';
 import riskMigration from '../migrations/0010_risk.sql?raw';
 import ecommerceMigration from '../migrations/0012_ecommerce.sql?raw';
-import worker, { type Env } from '../src/worker';
+import worker, { housekeepingDue, type Env } from '../src/worker';
 import { chargeableWeight, publicCacheKey, catalogParams, riskHash, tracking } from '../src/shared';
 import { csvCell } from '../src/commerce/reports';
 import { withAdminHeaders, withStorefrontHeaders } from '../src/headers';
@@ -835,6 +835,118 @@ describe('payment expiry, cancellation and provider identity', () => {
     await scheduled();
     expect(await count('manual_review')).toBe(2);
     expect(await sql('SELECT next_check FROM payment_attempts WHERE order_id=?', legacy.id).first('next_check')).toBe(8_640_000_000_000_000);
+  });
+  // Runs the cron as if `minutes` had passed since the attempt was created.
+  async function cronAt(orderId: string, minutes: number, env: Env = e) {
+    const created = (await sql('SELECT created_at FROM payment_attempts WHERE order_id=?', orderId).first<number>('created_at'))!;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(created + minutes * 60_000);
+    try { await worker.scheduled({} as ScheduledController, env); } finally { clock.mockRestore(); }
+    return sql('SELECT checks,next_check-created_at AS nextIn FROM payment_attempts WHERE order_id=?', orderId).first<{ checks: number; nextIn: number }>();
+  }
+  const minutes = (n: number) => n * 60_000;
+  it('expires an abandoned order after three lookups at fixed checkpoints', async () => {
+    const { order } = await (await place()).json() as any;
+    provider.lookup = { status: 'not_paid', amount: 1100, currency: 'IDR' };
+    expect(await sql('SELECT next_check-created_at AS n FROM payment_attempts WHERE order_id=?', order.id).first('n')).toBe(minutes(10));
+    expect(await cronAt(order.id, 5)).toEqual({ checks: 0, nextIn: minutes(10) });
+    expect(await cronAt(order.id, 10)).toEqual({ checks: 1, nextIn: minutes(30) });
+    expect(await cronAt(order.id, 20)).toEqual({ checks: 1, nextIn: minutes(30) });
+    expect(await cronAt(order.id, 31)).toEqual({ checks: 2, nextIn: minutes(90) });
+    expect(await cronAt(order.id, 89)).toMatchObject({ checks: 2 });
+    expect(await status(order.id)).toEqual({ orderStatus: 'pending_payment', attemptStatus: 'pending' });
+    await cronAt(order.id, 90);
+    expect(provider.lookups).toBe(3);
+    expect(await status(order.id)).toEqual({ orderStatus: 'cancelled', attemptStatus: 'expired' });
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 0 });
+    expect(await count('manual_review')).toBe(0);
+  });
+  it('skips missed checkpoints after a late cron run and keeps inconclusive answers going after the deadline', async () => {
+    const { order } = await (await place()).json() as any;
+    provider.lookup = { status: 'unknown' };
+    // A backlog reaching the order at 45 minutes skips the 30-minute checkpoint instead of adding lookups.
+    expect(await cronAt(order.id, 45)).toEqual({ checks: 1, nextIn: minutes(90) });
+    const expected: [number, number][] = [[90, 95], [95, 105], [106, 125], [125, 165], [170, 225], [225, 285]];
+    for (const [at, next] of expected) expect((await cronAt(order.id, at))!.nextIn).toBe(minutes(next));
+    expect(provider.lookups).toBe(7);
+    await cronAt(order.id, 285);
+    expect(provider.lookups).toBe(8);
+    expect(await sql('SELECT reason FROM manual_review').first('reason')).toBe('reconciliation_exhausted');
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 1 });
+  });
+  it('expires with the maximum grace instead of filing every abandoned order for review', async () => {
+    const { order } = await (await place()).json() as any;
+    const graced = { ...e, EXPIRY_GRACE_MIN: '120' } as Env;
+    provider.lookup = { status: 'not_paid', amount: 1100, currency: 'IDR' };
+    await cronAt(order.id, 10, graced);
+    expect(await cronAt(order.id, 30, graced)).toEqual({ checks: 2, nextIn: minutes(180) });
+    await cronAt(order.id, 179, graced);
+    expect(await status(order.id)).toMatchObject({ orderStatus: 'pending_payment' });
+    await cronAt(order.id, 180, graced);
+    expect(await status(order.id)).toEqual({ orderStatus: 'cancelled', attemptStatus: 'expired' });
+    expect(provider.lookups).toBe(3);
+    expect(await count('manual_review')).toBe(0);
+  });
+  it('expires an order whose payment link was never created once DOKU has no invoice after the deadline', async () => {
+    provider.failCreate = true;
+    const { order } = await (await place()).json() as any;
+    expect(await sql('SELECT status,url FROM payment_attempts WHERE order_id=?', order.id).first()).toEqual({ status: 'unknown', url: null });
+    provider.lookup = { status: 'not_found' };
+    await cronAt(order.id, 10);
+    expect(await status(order.id)).toEqual({ orderStatus: 'pending_payment', attemptStatus: 'unknown' });
+    await cronAt(order.id, 90);
+    expect(await status(order.id)).toEqual({ orderStatus: 'cancelled', attemptStatus: 'expired' });
+    expect(await sql('SELECT amount,status FROM payment_events WHERE event_key=?', `expiry:${order.reference}`).first()).toEqual({ amount: 1100, status: 'expired' });
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 0 });
+    // A payment that still arrives is evidence for an operator, not a sale.
+    await notify(order.reference, 'succeeded', 'late-after-404');
+    expect(await sql('SELECT reason FROM manual_review').first('reason')).toBe('late_payment');
+  });
+  it('holds an order with a payment link when DOKU reports no invoice', async () => {
+    const { order } = await (await place()).json() as any;
+    provider.lookup = { status: 'not_found' };
+    await cronAt(order.id, 90);
+    expect(await status(order.id)).toEqual({ orderStatus: 'pending_payment', attemptStatus: 'pending' });
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 1 });
+    const route = `/api/orders/${order.reference}/cancel`;
+    expect((await request(route, undefined, { 'X-Order-Token': order.guestToken }, 'POST')).status).toBe(503);
+  });
+  it('lets the shopper cancel right away when no payment link was created and DOKU has no invoice', async () => {
+    provider.failCreate = true;
+    const { order } = await (await place()).json() as any;
+    provider.lookup = { status: 'not_found' };
+    const cancelled = await request(`/api/orders/${order.reference}/cancel`, undefined, { 'X-Order-Token': order.guestToken }, 'POST');
+    expect(cancelled.status).toBe(200);
+    expect(await status(order.id)).toEqual({ orderStatus: 'cancelled', attemptStatus: 'expired' });
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 0 });
+  });
+  it('reviews a second webhook without a shared transaction, but not a lookup echoing the webhook', async () => {
+    const { order } = await (await place()).json() as any;
+    await notify(order.reference, 'succeeded', 'doku:first');
+    await notify(order.reference, 'succeeded', `lookup:${order.reference}:succeeded:1100:IDR`);
+    expect(await count('manual_review')).toBe(0);
+    await notify(order.reference, 'succeeded', 'doku:second');
+    expect(await sql('SELECT reason,event_key FROM manual_review').first()).toEqual({ reason: 'additional_payment_confirmation', event_key: 'doku:second' });
+    // A webhook with a transaction id after a lookup without one is still the same payment.
+    await sql("UPDATE inventory SET on_hand=2 WHERE variant_id='a'").run();
+    const other = (await (await place('lookup-first', 2)).json() as any).order;
+    await notify(other.reference, 'succeeded', `lookup:${other.reference}:succeeded:1100:IDR`);
+    await notify(other.reference, 'succeeded', 'doku:after-lookup', 1100, 'IDR', 'VA_BCA@1');
+    expect(await sql('SELECT count(*) AS n FROM manual_review WHERE order_id=?', other.id).first('n')).toBe(0);
+  });
+  it('runs payment recovery every minute but cleanup only on five-minute marks', async () => {
+    expect(housekeepingDue(undefined)).toBe(true);
+    expect(housekeepingDue(Date.UTC(2026, 9, 15, 3, 10))).toBe(true);
+    expect(housekeepingDue(Date.UTC(2026, 9, 15, 3, 12))).toBe(false);
+    const { order } = await (await place()).json() as any;
+    provider.lookup = { status: 'unknown' };
+    await sql('UPDATE payment_attempts SET next_check=0').run();
+    await sql("INSERT INTO rate_counters(key,\"window\",count) VALUES('old',0,1)").run();
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 9, 15, 3, 12) } as ScheduledController, e);
+    expect(provider.lookups).toBe(1);
+    expect(await count('rate_counters')).toBe(1);
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 9, 15, 3, 15) } as ScheduledController, e);
+    expect(await count('rate_counters')).toBe(0);
+    expect(await sql('SELECT checks FROM payment_attempts WHERE order_id=?', order.id).first('checks')).toBe(1);
   });
   it('rejected payment creation cancels the order and releases stock; ambiguous failures keep it', async () => {
     provider.createStatus = 400;

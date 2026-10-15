@@ -72,7 +72,8 @@ export async function verifyPaymentWebhook(request: Request, env: IntegrationEnv
   const providerTx = transactionIdentity(event);
   return {eventKey, reference, amount, currency:'IDR', status:status === 'SUCCESS' ? 'succeeded' : 'ignored', ...(providerTx ? {providerTx} : {})};
 }
-export type LookupResult = {status:'succeeded'|'not_paid'; amount:number; currency:string; providerTx?:string} | {status:'unknown'};
+// `not_found` (HTTP 404): DOKU holds no invoice under this reference. Commerce decides what that means for an attempt.
+export type LookupResult = {status:'succeeded'|'not_paid'; amount:number; currency:string; providerTx?:string} | {status:'unknown'|'not_found'};
 export async function lookupPayment(reference: string, env: IntegrationEnv): Promise<LookupResult> {
   const {client,secret} = credentials(env);
   demand(/^[A-Za-z0-9-]{1,30}$/.test(reference));
@@ -80,6 +81,7 @@ export async function lookupPayment(reference: string, env: IntegrationEnv): Pro
   const response = await fetch(`${env.DOKU_MODE === 'production' ? 'https://api.doku.com' : 'https://api-sandbox.doku.com'}${path}`, {
     headers:{'Client-Id':client,'Request-Id':id,'Request-Timestamp':timestamp,Signature:await signature(null,client,id,timestamp,path,secret)}, signal:AbortSignal.timeout(10000),
   });
+  if (response.status === 404) return {status:'not_found'};
   if (!response.ok) return {status:'unknown'};
   const result: any = await response.json();
   const amount = Number(result.order?.amount);

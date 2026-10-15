@@ -277,10 +277,13 @@ describe('provider boundaries', () => {
       vi.stubGlobal('fetch',vi.fn(async()=>Response.json(result)));
       expect(await lookupPayment('ref1',env)).toEqual({status:'unknown'});
     }
-    for (const status of [404,500,503]) {
+    for (const status of [400,401,429,500,503]) {
       vi.stubGlobal('fetch',vi.fn(async()=>Response.json({order:{invoice_number:'ref1',amount:10000},transaction:{status:'PENDING'}},{status})));
       expect(await lookupPayment('ref1',env)).toEqual({status:'unknown'});
     }
+    // Only a 404 says DOKU has no such invoice; commerce decides whether that can mean "never payable".
+    vi.stubGlobal('fetch',vi.fn(async()=>Response.json({error:{message:'not found'}},{status:404})));
+    expect(await lookupPayment('ref1',env)).toEqual({status:'not_found'});
     vi.stubGlobal('fetch',vi.fn(async()=>{throw new DOMException('timeout','TimeoutError');}));
     await expect(lookupPayment('ref1',env)).rejects.toThrow();
   });

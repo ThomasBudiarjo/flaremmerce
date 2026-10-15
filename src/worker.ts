@@ -18,6 +18,8 @@ export interface Env extends IntegrationEnv, StorageEnv, RateLimitEnv {
   PUBLIC_ORIGIN: string;
 }
 
+export const housekeepingDue = (scheduledTime: number | undefined) => typeof scheduledTime !== 'number' || Math.floor(scheduledTime / 60_000) % 5 === 0;
+
 export default {
   async fetch(request: Request, env: Env, context?: ExecutionContext): Promise<Response> {
     const requestId = crypto.randomUUID();
@@ -94,11 +96,14 @@ export default {
     }
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   },
-  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     const results = await Promise.allSettled([reconcile(env), recoverOutbox(env)]);
     // Housekeeping only: a failure here never masks or fails the recovery scanners. Each task is a few bounded statements.
-    const housekeeping = { rate_counter_prune: pruneRateCounters, auto_complete: autoComplete, commerce_retention: commerceRetention, integration_retention: integrationRetention, inbound_retention: inboundRetention };
-    for (const [category, task] of Object.entries(housekeeping)) await task(env).catch(() => console.warn('cron_error', { category, kind: 'background_error' }));
+    // The cron fires every minute for payment recovery; cleanup keeps its 5-minute cadence (and always runs without a schedule time).
+    if (housekeepingDue(controller?.scheduledTime)) {
+      const housekeeping = { rate_counter_prune: pruneRateCounters, auto_complete: autoComplete, commerce_retention: commerceRetention, integration_retention: integrationRetention, inbound_retention: inboundRetention };
+      for (const [category, task] of Object.entries(housekeeping)) await task(env).catch(() => console.warn('cron_error', { category, kind: 'background_error' }));
+    }
     const failures = results.filter(result => result.status === 'rejected');
     results.forEach((result, index) => {
       if (result.status === 'rejected') console.error('cron_error', { category: index === 0 ? 'payment_recovery' : 'outbox_recovery', kind: 'background_error' });
