@@ -7,6 +7,7 @@ import { usePagedList } from "@/hooks/use-paged-list";
 import { PageHeader } from "@/components/page-header";
 import { DataTable, LinkRow } from "@/components/data-table";
 import { LoadError } from "@/components/field";
+import { LoadMoreButton } from "@/components/loading";
 import { RelativeTime } from "@/components/relative-time";
 import { ReviewStatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +20,7 @@ export function ReviewsPage() {
   const { summary } = useSummary();
   const status = route.query.get("status") === "resolved" ? "resolved" : "open";
   const list = usePagedList<ReviewItem>("/api/admin/review", { listKey: "items", cursor: "keyset", params: { status } });
-  useRememberList("reviews", list.items.map((item) => item.id));
+  useRememberList("reviews", list.loading ? null : list.items.map((item) => item.id));
   const now = Date.now();
   return (
     <>
@@ -76,9 +77,7 @@ export function ReviewsPage() {
         ))}
       </DataTable>
       {list.cursor && (
-        <Button variant="outline" className="self-center" disabled={list.loadingMore} onClick={list.loadMore}>
-          {list.loadingMore ? "Memuat…" : "Muat lebih banyak"}
-        </Button>
+        <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} />
       )}
     </>
   );

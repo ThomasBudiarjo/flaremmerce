@@ -10,6 +10,7 @@ import { PageHeader } from "@/components/page-header";
 import { DataTable } from "@/components/data-table";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, LoadError, TextField } from "@/components/field";
+import { LoadMoreButton } from "@/components/loading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -170,9 +171,7 @@ export function BlocklistPage() {
         ))}
       </DataTable>
       {list.cursor && (
-        <Button variant="outline" className="self-center" disabled={list.loadingMore} onClick={list.loadMore}>
-          {list.loadingMore ? "Memuat…" : "Muat lebih banyak"}
-        </Button>
+        <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} />
       )}
       <AddDialog open={open} onOpenChange={setOpen} onAdded={(entry, created) => created && list.setItems((items) => [entry, ...items])} />
     </>

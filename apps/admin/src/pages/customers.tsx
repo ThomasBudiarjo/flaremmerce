@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/page-header";
 import { DataTable } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
 import { LoadError } from "@/components/field";
+import { LoadMoreButton } from "@/components/loading";
 import { CopyButton } from "@/components/copy-button";
 import {
   AlertDialog,
@@ -179,9 +180,7 @@ export function CustomersPage() {
         ))}
       </DataTable>
       {list.cursor && (
-        <Button variant="outline" className="self-center" disabled={list.loadingMore} onClick={list.loadMore}>
-          {list.loadingMore ? "Memuat…" : "Muat lebih banyak"}
-        </Button>
+        <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} />
       )}
       <AlertDialog open={!!action} onOpenChange={(open) => !open && setAction(null)}>
         {action && (

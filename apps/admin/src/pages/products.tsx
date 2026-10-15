@@ -12,6 +12,7 @@ import { PageHeader } from "@/components/page-header";
 import { DataTable, LinkRow } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
 import { LoadError } from "@/components/field";
+import { LoadMoreButton } from "@/components/loading";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -65,7 +66,7 @@ export function ProductsPage() {
   if (category) params.category = category;
   if (status !== "all") params.status = status;
   const list = usePagedList<Product>("/api/admin/products", { listKey: "products", cursor: "slug", params, limit: 30 });
-  useRememberList("products", list.items.map((p) => p.id));
+  useRememberList("products", list.loading ? null : list.items.map((p) => p.id));
   const apply = (next: Record<string, string>) =>
     navigate(href("products", {}, Object.fromEntries(Object.entries({ q, category, status, ...next }).filter(([k, v]) => v && !(k === "status" && v === "all")))), true);
 
@@ -238,9 +239,7 @@ export function ProductsPage() {
         })}
       </DataTable>
       {list.cursor && (
-        <Button variant="outline" className="self-center" disabled={list.loadingMore} onClick={list.loadMore}>
-          {list.loadingMore ? "Memuat…" : "Muat lebih banyak"}
-        </Button>
+        <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} />
       )}
       <AlertDialog open={!!toggle} onOpenChange={(open) => !open && setToggle(null)}>
         {toggle && (

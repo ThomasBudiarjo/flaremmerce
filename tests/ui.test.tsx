@@ -808,6 +808,74 @@ describe('admin SPA', () => {
     expect(phoneHint('12345')).toContain('Bukan nomor HP Indonesia');
   });
 
+  it('shows skeleton rows only on first load and keeps rows on screen, dimmed and inert, while filters refresh', async () => {
+    const row = (id: string, reference: string) => ({ ...order().order, id, reference });
+    const first = deferred<Response>();
+    const shipped = deferred<Response>();
+    await renderAdmin('/admin/orders', url => {
+      if (!url.startsWith('/api/admin/orders?')) return undefined;
+      if (url.includes('from=')) return Response.json({ error: 'Gagal memuat.' }, { status: 500 });
+      return url.includes('status=shipped') ? shipped.promise : first.promise;
+    });
+    expect(document.querySelectorAll('tbody [data-slot="skeleton"]').length).toBeGreaterThan(0);
+    expect(text()).not.toContain('Tidak ada pesanan');
+    await act(async () => first.resolve(Response.json({ orders: [row('o1', 'FL-1')], nextCursor: { before: 1, beforeId: 'o1' } })));
+    expect(document.querySelector('[data-slot="skeleton"]')).toBeNull();
+    expect(button('Muat lebih banyak')).toBeTruthy();
+
+    const tab = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'Dikirim')!;
+    await act(async () => tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })));
+    const body = document.querySelector('tbody')!;
+    expect(text()).toContain('FL-1');
+    expect(body.hasAttribute('inert')).toBe(true);
+    expect(body.classList.contains('is-stale')).toBe(true);
+    expect(document.querySelector('[aria-busy="true"] .loading-bar')).toBeTruthy();
+    expect(document.querySelector('[data-slot="skeleton"]')).toBeNull();
+    // The old cursor belongs to the previous filter; load-more waits for the new page.
+    expect(button('Muat lebih banyak')).toBeUndefined();
+    await act(async () => shipped.resolve(Response.json({ orders: [row('o2', 'FL-2')], nextCursor: null })));
+    expect(text()).toContain('FL-2');
+    expect(text()).not.toContain('FL-1');
+    expect(document.querySelector('tbody')!.hasAttribute('inert')).toBe(false);
+    expect(document.querySelector('[aria-busy]')).toBeNull();
+
+    // A failed refresh must not leave the previous filter's rows looking current.
+    await type(document.getElementById('orders-from')!, '2026-10-01');
+    expect(text()).not.toContain('FL-2');
+    expect(text()).toContain('Gagal memuat.');
+  });
+
+  it('shows a detail skeleton while duplicating instead of a blank form that refills', async () => {
+    const source = deferred<Response>();
+    await renderAdmin('/admin/products/new?duplicate=p', url => {
+      if (url === '/api/admin/categories') return Response.json({ categories: [] });
+      if (url === '/api/admin/products/p') return source.promise;
+    });
+    expect(document.querySelector('h1')?.textContent).toBe('Duplikat produk');
+    expect(document.querySelector('[role="status"][aria-label="Memuat produk sumber"]')).toBeTruthy();
+    expect(document.getElementById('product-form')).toBeNull();
+    await act(async () => source.resolve(Response.json({ product })));
+    expect(document.querySelector('[aria-label="Memuat produk sumber"]')).toBeNull();
+    expect(labelled('Nama produk').value).toBe('Produk (salinan)');
+  });
+
+  it('keeps dashboard figures on screen while another range loads', async () => {
+    const week = deferred<Response>();
+    await renderAdmin('/admin', url => {
+      if (url.startsWith('/api/admin/orders')) return Response.json({ orders: [] });
+      if (url === '/api/admin/operations') return Response.json({ sections: {} });
+    });
+    vi.mocked(fetch).mockImplementationOnce(async () => week.promise);
+    const tab = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === '7 hari')!;
+    await act(async () => tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })));
+    const revenue = [...document.querySelectorAll('[data-slot="card-title"]')].find(t => t.closest('[data-slot="card"]')?.textContent?.startsWith('Penjualan'))!;
+    expect(revenue.classList.contains('is-stale')).toBe(true);
+    expect(revenue.querySelector('[data-slot="skeleton"]')).toBeNull();
+    await act(async () => week.resolve(Response.json({ ...summaryBody, range: '7d', revenue: 5000 })));
+    expect(revenue.classList.contains('is-stale')).toBe(false);
+    expect(text()).toContain('Rp 5.000');
+  });
+
   it('names the browser tab after the current page', async () => {
     await renderAdmin('/admin/products/p', productRoutes);
     expect(document.title).toBe('Produk · Admin Flaremmerce');

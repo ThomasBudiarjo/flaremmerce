@@ -4,11 +4,9 @@ import {
   ClipboardList,
   ExternalLink,
   Home,
-  LoaderCircle,
   LogOut,
   Package,
   RefreshCw,
-  Search,
   ShieldCheck,
   ShieldAlert,
   Store,
@@ -57,6 +55,7 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { EmptyState } from "@/components/empty-state";
+import { SearchStatusIcon } from "@/components/loading";
 import { DashboardPage } from "@/pages/dashboard";
 import { OrdersPage } from "@/pages/orders";
 import { OrderDetailPage } from "@/pages/order-detail";
@@ -131,6 +130,7 @@ function GlobalSearch() {
   const [orders, setOrders] = useState<{ q: string; items: OrderSummary[] } | null>(null);
   const [active, setActive] = useState(-1);
   const [busy, setBusy] = useState(false);
+  const [searching, setSearching] = useState(false);
   const beginVariants = useLatestRequest();
   const beginOrders = useLatestRequest();
   const box = useRef<HTMLFormElement>(null);
@@ -140,6 +140,7 @@ function GlobalSearch() {
   const fetchVariants = useCallback(
     async (value: string) => {
       const controller = beginVariants();
+      setSearching(true);
       try {
         const data = await get<{ variants: VariantSearchResult[] }>(`/api/admin/variants/search?${new URLSearchParams({ q: value })}`, controller.signal);
         if (controller.signal.aborted) return null;
@@ -149,6 +150,8 @@ function GlobalSearch() {
       } catch {
         if (!controller.signal.aborted) setVariants([]);
         return null;
+      } finally {
+        if (!controller.signal.aborted) setSearching(false);
       }
     },
     [beginVariants],
@@ -157,12 +160,14 @@ function GlobalSearch() {
   useEffect(() => {
     // The server caps the LIKE pattern at 50 bytes (48 plus wildcards); longer terms cannot match anyway.
     if (!catalog || q.length < 2 || new TextEncoder().encode(q).length > 48) {
+      beginVariants();
       setVariants(null);
+      setSearching(false);
       return;
     }
     const timer = setTimeout(() => void fetchVariants(q), 250);
     return () => clearTimeout(timer);
-  }, [q, catalog, fetchVariants]);
+  }, [q, catalog, fetchVariants, beginVariants]);
 
   useEffect(() => {
     const close = (event: MouseEvent) => {
@@ -259,11 +264,7 @@ function GlobalSearch() {
 
   return (
     <form ref={box} className="relative w-full max-w-sm" role="search" onSubmit={submit}>
-      {busy ? (
-        <LoaderCircle className="pointer-events-none absolute top-2.5 left-2.5 size-4 animate-spin text-muted-foreground motion-reduce:animate-none" />
-      ) : (
-        <Search className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
-      )}
+      <SearchStatusIcon busy={busy || searching} />
       <Input
         id="global-search"
         role="combobox"
@@ -506,7 +507,9 @@ function Shell() {
               </Button>
             </EmptyState>
           ) : (
-            <Page name={route.name} />
+            <div key={route.name} className="content-reveal flex flex-col gap-6">
+              <Page name={route.name} />
+            </div>
           )}
         </div>
       </SidebarInset>

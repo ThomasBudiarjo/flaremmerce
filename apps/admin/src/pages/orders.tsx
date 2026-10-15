@@ -16,6 +16,7 @@ import { FulfillmentBadge, OrderStatusBadge } from "@/components/status-badge";
 import { DataTable, LinkRow, SelectCell } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
 import { LoadError } from "@/components/field";
+import { LoadMoreButton, Spinner } from "@/components/loading";
 import { PrintView, usePrint } from "@/components/print-view";
 import { RelativeTime } from "@/components/relative-time";
 import { Badge } from "@/components/ui/badge";
@@ -82,7 +83,7 @@ export function OrdersPage() {
   const signature = JSON.stringify(filters);
 
   const list = usePagedList<OrderSummary>("/api/admin/orders", { listKey: "orders", cursor: "keyset", params: filters });
-  useRememberList("orders", list.items.map((o) => o.id));
+  useRememberList("orders", list.loading ? null : list.items.map((o) => o.id));
   useEffect(() => setSelected(new Set()), [signature]);
 
   const apply = (next: Record<string, string>) =>
@@ -178,7 +179,7 @@ export function OrdersPage() {
               void exporter.mutate(new URLSearchParams(filters).toString());
             }}
           >
-            <DownloadIcon />
+            {exporter.pending ? <Spinner /> : <DownloadIcon />}
             {exporter.pending ? "Mengekspor…" : "Ekspor CSV"}
           </Button>
         }
@@ -320,9 +321,7 @@ export function OrdersPage() {
         ))}
       </DataTable>
       {list.cursor && (
-        <Button variant="outline" className="self-center" disabled={list.loadingMore} onClick={list.loadMore}>
-          {list.loadingMore ? "Memuat…" : "Muat lebih banyak"}
-        </Button>
+        <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} />
       )}
       {bulkMode && chosen.length > 0 && (
         <div role="region" aria-label="Aksi massal" className="sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center gap-2 border-t bg-background p-3 md:-mx-6 lg:-mx-8 print:hidden">
@@ -339,11 +338,11 @@ export function OrdersPage() {
               title={chosen.length > MAX_BULK_PRINT ? `Maksimal ${MAX_BULK_PRINT} pesanan per cetak` : undefined}
               onClick={() => void printBulk.mutate(chosen)}
             >
-              <Printer />
+              {printBulk.pending ? <Spinner /> : <Printer />}
               {printBulk.pending ? "Menyiapkan…" : `Cetak packing slip (${chosen.length})`}
             </Button>
             <Button disabled={processBulk.pending} onClick={() => void processBulk.mutate(chosen)}>
-              <Play />
+              {processBulk.pending ? <Spinner /> : <Play />}
               {processBulk.pending ? "Memproses…" : `Mulai proses (${chosen.length})`}
             </Button>
           </div>

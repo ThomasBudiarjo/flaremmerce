@@ -53,13 +53,16 @@ export function neighbours(name: string, id: string) {
   return { prev: ids[index - 1] as string | undefined, next: ids[index + 1] as string | undefined, index, total: ids.length };
 }
 
-/** Records the current URL and the rows a list page has loaded. Call from the list page. */
-export function useRememberList(name: string, ids: string[]) {
+/**
+ * Records the current URL and the rows a list page has loaded. Call from the list page; pass null
+ * while the list is refreshing, when the rows on screen may still belong to the previous filters.
+ */
+export function useRememberList(name: string, ids: string[] | null) {
   const { route } = useRoute();
-  const signature = ids.join(",");
+  const signature = ids?.join(",") ?? null;
   const search = route.query.toString();
   useEffect(() => {
-    if (route.name !== name) return;
+    if (route.name !== name || signature === null) return;
     const url = `/${location.pathname.slice(BASE.length)}${search ? `?${search}` : ""}`;
     write(name, { url, ids: signature ? signature.split(",") : [] });
   }, [name, route.name, search, signature]);

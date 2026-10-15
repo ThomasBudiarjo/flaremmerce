@@ -17,7 +17,7 @@ type Options = {
   enabled?: boolean;
 };
 
-/** Keyset-paginated list with load-more, reset-on-filter-change and id dedupe. */
+/** Keyset-paginated list with load-more, refresh-on-filter-change and id dedupe. */
 export function usePagedList<T extends { id: string }>(path: string, options: Options) {
   const { listKey, cursor: cursorKind, params, limit = 50, enabled = true } = options;
   const [items, setItems] = useState<T[]>([]);
@@ -27,8 +27,8 @@ export function usePagedList<T extends { id: string }>(path: string, options: Op
   const [error, setError] = useState("");
   const begin = useLatestRequest();
   const signature = JSON.stringify(params ?? {});
-  const state = useRef({ items, cursor });
-  state.current = { items, cursor };
+  const state = useRef({ items, cursor, loading });
+  state.current = { items, cursor, loading };
 
   const load = useCallback(
     async (from: Cursor, append: boolean) => {
@@ -55,7 +55,14 @@ export function usePagedList<T extends { id: string }>(path: string, options: Op
         });
         setCursor(data.nextCursor ?? null);
       } catch (e) {
-        if (!controller.signal.aborted) setError((e as Error).message);
+        if (!controller.signal.aborted) {
+          // The rows kept during the refresh may belong to the previous filters; do not leave them looking current.
+          if (!append) {
+            setItems([]);
+            setCursor(null);
+          }
+          setError((e as Error).message);
+        }
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);
@@ -66,19 +73,20 @@ export function usePagedList<T extends { id: string }>(path: string, options: Op
     [begin, path, listKey, cursorKind, signature, limit],
   );
 
+  // Changing filters keeps the current rows until the new page arrives, so the table refreshes in
+  // place rather than flashing empty; `loading` with rows present means "refreshing".
   useEffect(() => {
     if (!enabled) return;
-    setItems([]);
-    setCursor(null);
     void load(null, false);
   }, [load, enabled]);
 
   const loadMore = useCallback(() => {
-    const { cursor } = state.current;
-    if (cursor) void load(cursor, true);
+    const { cursor, loading } = state.current;
+    // During a refresh the cursor still points into the previous result set.
+    if (cursor && !loading) void load(cursor, true);
   }, [load]);
 
   const reload = useCallback(() => load(null, false), [load]);
 
-  return { items, setItems, cursor, loading, loadingMore, error, loadMore, reload };
+  return { items, setItems, cursor: loading ? null : cursor, loading, loadingMore, error, loadMore, reload };
 }

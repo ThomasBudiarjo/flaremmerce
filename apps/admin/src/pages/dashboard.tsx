@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { cn } from "cn";
 import { RefreshCw } from "lucide-react";
 import { href, Link } from "@/lib/router";
 import { get } from "@/lib/api";
@@ -37,9 +38,9 @@ export function DashboardPage() {
   const [paymentsUnknown, setPaymentsUnknown] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [loadedAt, setLoadedAt] = useState<number | null>(null);
-  const [loading, setLoading] = useState(false);
-  const begin = useLatestRequest();
   const ops = can("ops");
+  const [loading, setLoading] = useState(ops);
+  const begin = useLatestRequest();
   const { lowStock } = useSummary();
 
   const load = useCallback(async () => {
@@ -65,11 +66,12 @@ export function DashboardPage() {
     }
   }, [begin, range, ops]);
 
+  // A range switch keeps the previous figures on screen, dimmed, until the new ones arrive.
   useEffect(() => {
-    setSummary(null);
-    setOrders(null);
     void load();
   }, [load]);
+  const stale = cn("transition-opacity duration-200", loading && summary && "is-stale");
+  const placeholder = (className: string) => (error ? "—" : <Skeleton className={className} />);
 
   return (
     <>
@@ -132,7 +134,7 @@ export function DashboardPage() {
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
-            {summary ? <span>{rangeWIB(summary.since, summary.now)}</span> : <Skeleton className="h-4 w-36" />}
+            {summary ? <span className={stale}>{rangeWIB(summary.since, summary.now)}</span> : <Skeleton className="h-4 w-36" />}
             {loadedAt && <span>Diperbarui {clockWIB(loadedAt)}</span>}
             <Button variant="ghost" size="sm" disabled={loading} onClick={() => void load()}>
               <RefreshCw className={loading ? "animate-spin motion-reduce:animate-none" : undefined} />
@@ -152,9 +154,7 @@ export function DashboardPage() {
               <Card key={title}>
                 <CardHeader>
                   <CardDescription>{title}</CardDescription>
-                  <CardTitle className="text-2xl tabular-nums">
-                    {value ?? <Skeleton className="h-7 w-24" />}
-                  </CardTitle>
+                  <CardTitle className={cn("text-2xl tabular-nums", stale)}>{value ?? placeholder("h-7 w-24")}</CardTitle>
                 </CardHeader>
               </Card>
             ))}
@@ -174,9 +174,7 @@ export function DashboardPage() {
                   <Link to={to} className="block h-full">
                     <CardHeader>
                       <CardDescription>{title}</CardDescription>
-                      <CardTitle className="text-2xl tabular-nums">
-                        {count == null ? <Skeleton className="h-7 w-12" /> : number(count)}
-                      </CardTitle>
+                      <CardTitle className={cn("text-2xl tabular-nums", stale)}>{count == null ? placeholder("h-7 w-12") : number(count)}</CardTitle>
                     </CardHeader>
                     <CardContent className="text-sm text-muted-foreground">{description}</CardContent>
                   </Link>
@@ -192,7 +190,7 @@ export function DashboardPage() {
               </Button>
             </div>
             <DataTable
-              loading={orders === null && !error}
+              loading={loading}
               columns={[
                 { head: "Referensi" },
                 { head: "Tanggal", mobileHidden: true },

@@ -12,11 +12,11 @@ import { PageHeader } from "@/components/page-header";
 import { ConflictBanner } from "@/components/conflict-banner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, LoadError } from "@/components/field";
+import { DetailSkeleton, Reveal } from "@/components/loading";
 import { OrderStatusBadge, ReviewStatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -80,7 +80,7 @@ export function ReviewDetailPage() {
     return (
       <>
         <PageHeader title="Review" />
-        {resource.error ? <LoadError message={resource.error} onRetry={() => void resource.reload()} /> : <Skeleton className="h-64" role="status" aria-label="Memuat review" />}
+        {resource.error ? <LoadError message={resource.error} onRetry={() => void resource.reload()} /> : <DetailSkeleton label="Memuat review" />}
       </>
     );
   }
@@ -88,7 +88,7 @@ export function ReviewDetailPage() {
   const canCancel = item.status === "open" && order && (order.status === "pending_payment" || order.status === "cancelled");
   const disabled = save.pending || conflict || !note.trim();
   return (
-    <>
+    <Reveal className="flex flex-col gap-6">
       <div className="print:hidden">
         <Button asChild variant="ghost" size="sm">
           <Link to={listHref("reviews")}>
@@ -258,6 +258,6 @@ export function ReviewDetailPage() {
           </CardContent>
         </Card>
       </div>
-    </>
+    </Reveal>
   );
 }

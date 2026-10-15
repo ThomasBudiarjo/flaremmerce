@@ -9,6 +9,7 @@ import { useResource } from "@/hooks/use-resource";
 import { PageHeader } from "@/components/page-header";
 import { DataTable } from "@/components/data-table";
 import { LoadError } from "@/components/field";
+import { LoadMoreButton } from "@/components/loading";
 import { StockAdjustDialog, type StockTarget } from "@/components/stock-adjust-dialog";
 import { VariantPicker } from "@/components/variant-picker";
 import { Badge } from "@/components/ui/badge";
@@ -75,9 +76,7 @@ function Ledger({ target, onClose }: { target: Target | null; onClose: () => voi
             ))}
           </DataTable>
           {list.cursor && (
-            <Button variant="outline" disabled={list.loadingMore} onClick={list.loadMore}>
-              {list.loadingMore ? "Memuat…" : "Muat lebih banyak"}
-            </Button>
+            <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} className="" />
           )}
         </div>
       </SheetContent>
@@ -203,9 +202,7 @@ export function InventoryPage() {
         })}
       </DataTable>
       {!low && all.cursor && (
-        <Button variant="outline" className="self-center" disabled={all.loadingMore} onClick={all.loadMore}>
-          {all.loadingMore ? "Memuat…" : "Muat lebih banyak"}
-        </Button>
+        <LoadMoreButton loading={all.loadingMore} onClick={all.loadMore} />
       )}
       <StockAdjustDialog
         target={adjusting}

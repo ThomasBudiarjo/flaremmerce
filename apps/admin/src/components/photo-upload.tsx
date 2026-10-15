@@ -3,6 +3,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/loading";
 
 /**
  * Primary photo upload with the original detached-upload semantics: the object is stored
@@ -109,7 +110,8 @@ export function PhotoUpload({
       </div>
       {preview && <img src={preview} alt="Pratinjau foto pilihan" className="h-40 w-full rounded-md object-contain" />}
       {uploading && (
-        <p role="status" className="text-sm">
+        <p role="status" className="flex items-center gap-2 text-sm">
+          <Spinner />
           Mengunggah foto…
         </p>
       )}

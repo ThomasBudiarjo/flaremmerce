@@ -150,11 +150,89 @@
   }
 }
 
+/* Loading motion. Placeholders wait ~200ms before fading in, so a quick response never flashes a
+   skeleton or spinner; content that arrives afterwards fades in instead of popping. */
+@keyframes admin-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes admin-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes admin-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+@keyframes admin-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+@utility skeleton {
+  background-color: var(--muted);
+  background-image: linear-gradient(90deg, transparent 30%, color-mix(in oklch, var(--background) 65%, transparent) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation:
+    admin-fade-in 400ms ease-out 200ms backwards,
+    admin-shimmer 1.8s ease-in-out 200ms infinite;
+}
+@utility loading-reveal {
+  animation: admin-fade-in 400ms ease-out 200ms backwards;
+}
+@utility loading-conceal {
+  animation: admin-fade-out 300ms ease-out 200ms both;
+}
+@utility content-reveal {
+  animation: admin-fade-in 250ms ease-out;
+}
+/* Rows or values being refreshed: dimmed only when the refresh is slow enough to notice. */
+@utility is-stale {
+  opacity: 0.5;
+  transition-delay: 150ms;
+}
+@utility loading-bar {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  z-index: 1;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  animation: admin-fade-in 300ms ease-out 200ms backwards;
+  &::after {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    width: 40%;
+    background-color: var(--primary);
+    opacity: 0.5;
+    animation: admin-progress 1.2s ease-in-out infinite;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+  /* Infinite loops at the collapsed duration above would strobe; show them static instead. */
+  .skeleton {
+    background-image: none;
+  }
+  .loading-bar::after {
+    width: 100%;
+    animation: none !important;
   }
 }

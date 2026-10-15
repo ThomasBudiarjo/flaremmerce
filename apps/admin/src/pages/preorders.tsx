@@ -10,6 +10,7 @@ import { PageHeader } from "@/components/page-header";
 import { DataTable } from "@/components/data-table";
 import { ConflictBanner } from "@/components/conflict-banner";
 import { LoadError, NumberField, TextField } from "@/components/field";
+import { LoadMoreButton } from "@/components/loading";
 import { VariantPicker } from "@/components/variant-picker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -304,9 +305,7 @@ export function PreordersPage() {
         ))}
       </DataTable>
       {list.cursor && (
-        <Button variant="outline" className="self-center" disabled={list.loadingMore} onClick={list.loadMore}>
-          {list.loadingMore ? "Memuat…" : "Muat lebih banyak"}
-        </Button>
+        <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} />
       )}
       <CampaignSheet
         key={sheetKey}

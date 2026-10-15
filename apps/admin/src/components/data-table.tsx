@@ -31,8 +31,12 @@ const hideColumn = [
 
 const SelectionContext = createContext<Selection | null>(null);
 
+// Percentage widths keep placeholder cells from forcing the table wider than its real rows on phones.
+const placeholderWidths = ["max-w-24", "max-w-32", "max-w-20", "max-w-28", "max-w-16"];
+
 /**
- * Table with skeleton rows while loading and a consistent empty state. With `selection`, a
+ * Table with skeleton rows on first load, dimmed rows while refreshing, and a consistent empty
+ * state. With `selection`, a
  * leading checkbox column is added; rows render <SelectCell id=…/> as their first cell.
  */
 export function DataTable({
@@ -53,9 +57,15 @@ export function DataTable({
   const all = selection ? selection.ids.length > 0 && selection.ids.every((id) => selection.selected.has(id)) : false;
   const some = selection ? selection.ids.some((id) => selection.selected.has(id)) : false;
   const width = columns.length + offset;
+  const hasRows = React.Children.toArray(children).length > 0;
+  // A refresh keeps the current rows on screen (dimmed, not interactive) instead of blanking the
+  // table; skeleton rows are only for a load with nothing to show yet.
+  const placeholder = loading && !hasRows;
+  const stale = loading && hasRows;
   return (
     <SelectionContext.Provider value={selection ?? null}>
-      <div className="overflow-x-auto rounded-md border">
+      <div className="relative overflow-x-auto rounded-md border" aria-busy={loading || undefined}>
+        {stale && <div aria-hidden className="loading-bar" />}
         <Table className={hidden.join(" ") || undefined}>
           <TableHeader>
             <TableRow>
@@ -76,22 +86,26 @@ export function DataTable({
               ))}
             </TableRow>
           </TableHeader>
-          <TableBody>
-            {loading
-              ? Array.from({ length: 5 }, (_, row) => (
-                  <TableRow key={row}>
-                    {Array.from({ length: width }, (_, cell) => (
-                      <TableCell key={cell}>
-                        <Skeleton className="h-4 w-full max-w-40" />
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                ))
-              : children}
-          </TableBody>
+          {placeholder ? (
+            <TableBody key="placeholder">
+              {Array.from({ length: 5 }, (_, row) => (
+                <TableRow key={row} className="hover:bg-transparent">
+                  {Array.from({ length: width }, (_, cell) => (
+                    <TableCell key={cell}>
+                      <Skeleton className={cn("h-4 w-full", placeholderWidths[(row + cell) % placeholderWidths.length])} />
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          ) : (
+            <TableBody key="rows" inert={stale} className={cn("content-reveal transition-opacity duration-200", stale && "is-stale")}>
+              {children}
+            </TableBody>
+          )}
         </Table>
-        {!loading && empty && !React.Children.count(children) && (
-          <div className="p-6">
+        {!loading && empty && !hasRows && (
+          <div className="content-reveal p-6">
             <EmptyState title={empty.title} description={empty.description} />
           </div>
         )}

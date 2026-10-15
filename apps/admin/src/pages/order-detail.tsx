@@ -29,6 +29,7 @@ import { addressLines, PrintView, usePrint } from "@/components/print-view";
 import { MoneyText } from "@/components/money-text";
 import { FulfillmentBadge, OrderStatusBadge, PaymentBadge } from "@/components/status-badge";
 import { Field, LoadError, TextField } from "@/components/field";
+import { DetailSkeleton, Reveal } from "@/components/loading";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -410,7 +411,11 @@ function OpenReviews({ order }: { order: OrderDetail }) {
   if (!order.hold) return null;
   return (
     <ul className="grid gap-1 text-sm">
-      {reviews === null && <Skeleton className="h-4 w-40" />}
+      {reviews === null && (
+        <li role="status" aria-label="Memuat review terbuka">
+          <Skeleton className="h-4 w-40" />
+        </li>
+      )}
       {reviews?.map((review) => (
         <li key={review.id}>
           <Link className="underline underline-offset-4" to={href("review-detail", { id: review.id })}>
@@ -450,10 +455,7 @@ export function OrderDetailPage() {
         {resource.error ? (
           <LoadError message={resource.error} onRetry={() => void resource.reload()} />
         ) : (
-          <div className="grid gap-4 lg:grid-cols-3" role="status" aria-label="Memuat pesanan">
-            <Skeleton className="h-64 lg:col-span-2" />
-            <Skeleton className="h-64" />
-          </div>
+          <DetailSkeleton label="Memuat pesanan" />
         )}
       </>
     );
@@ -464,7 +466,7 @@ export function OrderDetailPage() {
   const lookup = order.contact.email || order.contact.phone;
   const address = [order.contact.name, order.contact.phone, ...addressLines(order.address)].filter(Boolean).join("\n");
   return (
-    <>
+    <Reveal className="flex flex-col gap-6">
       <nav aria-label="Navigasi pesanan" className="flex flex-wrap items-center gap-2 print:hidden">
         <Button asChild variant="ghost" size="sm">
           <Link to={listHref("orders")}>
@@ -737,6 +739,6 @@ export function OrderDetailPage() {
       <BlockDialog order={order} open={blockOpen} onOpenChange={setBlockOpen} />
       <CancelDialog order={order} open={cancelOpen} onOpenChange={setCancelOpen} onCancelled={refresh} />
       {print && <PrintView mode={print} orders={[order]} />}
-    </>
+    </Reveal>
   );
 }

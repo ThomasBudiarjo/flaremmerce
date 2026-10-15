@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Archive, ArrowLeft, Copy, CopyCheck, ExternalLink, ImageIcon, Pencil, Plus, RotateCcw, SlidersHorizontal, Trash2 } from "lucide-react";
 import { patch, post } from "@/lib/api";
 import { href, Link, useNavigationGuard, useRoute } from "@/lib/router";
@@ -15,6 +15,7 @@ import { PhotoUpload } from "@/components/photo-upload";
 import { ConflictBanner } from "@/components/conflict-banner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, LoadError, NumberField, RequiredMark, TextField } from "@/components/field";
+import { DetailSkeleton, Reveal, Spinner } from "@/components/loading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,7 +25,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -295,6 +295,7 @@ function SaveBar({ dirty, saving, blocked, blockers = [], onDiscard, form }: { d
           Buang
         </Button>
         <Button form={form} disabled={saving || blocked || blockers.length > 0} title="Ctrl+S">
+          {saving && <Spinner />}
           {saving ? "Menyimpan…" : "Simpan"}
         </Button>
       </div>
@@ -351,15 +352,16 @@ function NewProductEditor({ duplicateOf }: { duplicateOf: string | null }) {
   const [slugEdited, setSlugEdited] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const prefilled = useRef(false);
+  // Duplicating waits for the source product so the form never shows blank and then refills.
+  const [prefilled, setPrefilled] = useState(!duplicateOf);
   useEffect(() => {
-    if (!source.data || prefilled.current) return;
-    prefilled.current = true;
+    if (!source.data || prefilled) return;
     const copy = duplicateDraft(source.data.product);
     setDraft(copy.draft);
     setVariants(copy.variants);
     setSlugEdited(true);
-  }, [source.data]);
+    setPrefilled(true);
+  }, [source.data, prefilled]);
   const dirty = !!(draft.name || draft.slug || draft.description || draft.imageUrl || variants.some((v) => v.sku || v.price != null || v.weight != null));
   useNavigationGuard(dirty);
   const create = useMutation(
@@ -378,8 +380,16 @@ function NewProductEditor({ duplicateOf }: { duplicateOf: string | null }) {
   useSaveHotkey("product-form", dirty && !create.pending && !blockers.length);
   const editingVariant = variants.find((v) => v.key === editing);
   const update = (key: string, next: Partial<NewVariant>) => setVariants((list) => list.map((row) => (row.key === key ? { ...row, ...next } : row)));
+  if (!prefilled && !source.error) {
+    return (
+      <>
+        <PageHeader title="Duplikat produk" />
+        <DetailSkeleton label="Memuat produk sumber" />
+      </>
+    );
+  }
   return (
-    <>
+    <Reveal className="flex flex-col gap-6">
       <div className="print:hidden">
         <Button asChild variant="ghost" size="sm">
           <Link to={listHref("products")}>
@@ -564,7 +574,7 @@ function NewProductEditor({ duplicateOf }: { duplicateOf: string | null }) {
           setSlugEdited(false);
         }}
       />
-    </>
+    </Reveal>
   );
 }
 
@@ -701,10 +711,7 @@ function ExistingProductEditor({ id }: { id: string }) {
         {resource.error ? (
           <LoadError message={resource.error} onRetry={() => void resource.reload()} />
         ) : (
-          <div className="grid gap-6 lg:grid-cols-3" role="status" aria-label="Memuat produk">
-            <Skeleton className="h-80 lg:col-span-2" />
-            <Skeleton className="h-80" />
-          </div>
+          <DetailSkeleton label="Memuat produk" />
         )}
       </>
     );
@@ -713,7 +720,7 @@ function ExistingProductEditor({ id }: { id: string }) {
   const busy = save.pending || toggleActive.pending;
   const editingVariant = product.variants.find((v) => v.id === editing);
   return (
-    <>
+    <Reveal className="flex flex-col gap-6">
       <div className="print:hidden">
         <Button asChild variant="ghost" size="sm">
           <Link to={listHref("products")}>
@@ -929,7 +936,7 @@ function ExistingProductEditor({ id }: { id: string }) {
           setPhotoKey((k) => k + 1);
         }}
       />
-    </>
+    </Reveal>
   );
 }
 

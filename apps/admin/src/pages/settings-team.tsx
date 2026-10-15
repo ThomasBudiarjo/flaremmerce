@@ -179,7 +179,7 @@ export function SettingsTeamPage() {
       </Card>
       {resource.error && <LoadError message={resource.error} onRetry={() => void resource.reload()} />}
       {owners === 1 && <p className="text-sm text-muted-foreground">Hanya ada satu owner. Owner terakhir tidak dapat diturunkan atau dicabut.</p>}
-      <DataTable loading={resource.loading && !resource.data} columns={[{ head: "Admin" }, { head: "Peran" }, { head: "Sejak" }, { head: <span className="sr-only">Aksi</span> }]} empty={{ title: "Belum ada admin" }}>
+      <DataTable loading={resource.loading} columns={[{ head: "Admin" }, { head: "Peran" }, { head: "Sejak" }, { head: <span className="sr-only">Aksi</span> }]} empty={{ title: "Belum ada admin" }}>
         {admins.map((admin) => {
           const self = admin.userId === me.user.id;
           const locked = admin.installationOwner || (admin.role === "owner" && owners <= 1);

@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { SearchIcon } from "lucide-react";
 import { get } from "@/lib/api";
 import { money, variantMode } from "@/lib/format";
 import type { VariantSearchResult } from "@/lib/types";
@@ -7,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useLatestRequest } from "@/hooks/use-latest-request";
+import { SearchStatusIcon } from "@/components/loading";
 
 /**
  * Server-side variant search (GET /api/admin/variants/search), so pickers are not
@@ -31,18 +31,22 @@ export function VariantPicker({
   const [results, setResults] = useState<VariantSearchResult[]>([]);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
+  const [searching, setSearching] = useState(false);
   const begin = useLatestRequest();
   const box = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const term = query.trim();
     if (!term) {
+      begin();
       setResults([]);
       setOpen(false);
+      setSearching(false);
       return;
     }
     const controller = begin();
     const timer = setTimeout(async () => {
+      setSearching(true);
       try {
         const params = new URLSearchParams({ q: term });
         if (mode) params.set("mode", mode);
@@ -53,6 +57,8 @@ export function VariantPicker({
         setError("");
       } catch (e) {
         if (!controller.signal.aborted) setError((e as Error).message);
+      } finally {
+        if (!controller.signal.aborted) setSearching(false);
       }
     }, 200);
     return () => clearTimeout(timer);
@@ -92,9 +98,10 @@ export function VariantPicker({
         </div>
       ) : (
         <div className="relative">
-          <SearchIcon className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
+          <SearchStatusIcon busy={searching} />
           <Input
             id={id}
+            aria-busy={searching || undefined}
             className="pl-9"
             placeholder="Cari SKU, nama varian, atau produk…"
             value={query}

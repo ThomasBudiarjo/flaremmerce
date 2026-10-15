@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { LoaderCircle, LogIn, LogOut } from "lucide-react";
+import { LogIn, LogOut } from "lucide-react";
 import "./style.css";
 import { get, post, HttpError } from "@/lib/api";
 import { AuthProvider, areaAllowed, type Config, type Session } from "@/lib/auth";
@@ -9,6 +9,7 @@ import { RouterProvider } from "@/lib/router";
 import type { Me } from "@/lib/types";
 import { AppShell } from "@/components/app-shell";
 import { RequiredMark } from "@/components/field";
+import { Spinner } from "@/components/loading";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -137,13 +138,13 @@ function Bootstrap() {
   return (
     <Centered>
       {state.kind === "loading" && (
-        <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-          <LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" />
+        <p role="status" className="loading-reveal flex items-center gap-2 text-sm text-muted-foreground">
+          <Spinner />
           Memuat data…
         </p>
       )}
       {state.kind === "error" && (
-        <Alert variant="destructive" role="alert" className="max-w-md">
+        <Alert variant="destructive" role="alert" className="content-reveal max-w-md">
           <AlertDescription className="grid gap-2">
             {state.message}
             <Button variant="outline" className="justify-self-start" onClick={resolve}>
@@ -153,7 +154,7 @@ function Bootstrap() {
         </Alert>
       )}
       {(state.kind === "signed-out" || state.kind === "setup" || state.kind === "denied") && (
-        <Card className="w-full max-w-md">
+        <Card className="content-reveal w-full max-w-md">
           <CardHeader>
             <CardTitle>
               <h1 className="text-xl">

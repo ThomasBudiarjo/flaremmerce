@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { SearchIcon } from "lucide-react";
 import { get } from "@/lib/api";
 import type { Customer } from "@/lib/types";
 import { useLatestRequest } from "@/hooks/use-latest-request";
+import { SearchStatusIcon } from "@/components/loading";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,6 +28,7 @@ export function CustomerPicker({
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
   const [error, setError] = useState("");
+  const [searching, setSearching] = useState(false);
   const begin = useLatestRequest();
   const box = useRef<HTMLDivElement>(null);
   const listId = useId();
@@ -35,11 +36,14 @@ export function CustomerPicker({
 
   useEffect(() => {
     if (term.length < 2) {
+      begin();
       setResults(null);
+      setSearching(false);
       return;
     }
     const controller = begin();
     const timer = setTimeout(async () => {
+      setSearching(true);
       try {
         const data = await get<{ customers: Customer[] }>(`/api/admin/customers?${new URLSearchParams({ q: term, limit: "10" })}`, controller.signal);
         if (controller.signal.aborted) return;
@@ -49,6 +53,8 @@ export function CustomerPicker({
         setError("");
       } catch (e) {
         if (!controller.signal.aborted) setError((e as Error).message);
+      } finally {
+        if (!controller.signal.aborted) setSearching(false);
       }
     }, 250);
     return () => clearTimeout(timer);
@@ -86,10 +92,11 @@ export function CustomerPicker({
         </div>
       ) : (
         <div className="relative">
-          <SearchIcon className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
+          <SearchStatusIcon busy={searching} />
           <Input
             id={id}
             role="combobox"
+            aria-busy={searching || undefined}
             aria-expanded={open && !!results}
             aria-controls={listId}
             aria-autocomplete="list"
