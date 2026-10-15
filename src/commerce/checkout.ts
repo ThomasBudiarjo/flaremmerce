@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createPayment, getCustomer, verifyTurnstile } from '../integrations/index';
-import { cartWeightMessage, chargeableWeight, clientIp, digest, envCount, maxCartWeight, normalizeEmail, normalizeIp, normalizePhone, paymentsConfigured, riskHash, riskSecret, shippingConfigured, volumetricDivisor } from '../shared';
+import { cartWeightMessage, chargeableWeight, clientIp, digest, envCount, maxCartWeight, normalizeEmail, normalizeIp, normalizePhone, paymentLinkFailed, paymentsConfigured, riskHash, riskSecret, shippingConfigured, volumetricDivisor } from '../shared';
 import { cartItems, shipPromise } from './cart';
 import { disposableEmail } from './risk';
 import { nextLookup } from './payments';
@@ -15,7 +15,7 @@ export const checkoutInput = z.object({
   expectedTotal: z.number().int().min(0).max(1_000_000_000), idempotencyKey: z.string().min(8).max(128), turnstileToken: z.string().max(4096),
 }).strict();
 type OrderRow = { id: string; reference: string; status: string; total: number; customer_id: string | null };
-type AttemptRow = { status: string; url: string | null };
+type AttemptRow = { status: string; url: string | null; created_at: number };
 type VariantRow = { id: string; sku: string; name: string; product_name: string; price: number; weight: number; length_cm: number | null; width_cm: number | null; height_cm: number | null; mode: string; max_per_order: number | null; max_per_customer: number | null; campaign_id: string | null; ship_from: string | null; ship_to: string | null };
 type DestinationRow = { id: string; label: string; province: string; city: string; district: string; subdistrict: string; postal_code: string };
 type QuoteRow = { id: string; fingerprint: string; destination: string; weight: number; amount: number; service: string; expires_at: number; details_json: string };
@@ -29,12 +29,13 @@ async function retry(env: CommerceEnv, scope: string, key: string, fingerprint: 
 async function checkoutResponse(env: CommerceEnv, orderId: string, guestSecret: string | null) {
   const order = await s(env, 'SELECT id,reference,status,total,customer_id,shipping_json FROM orders WHERE id=?', orderId).first<OrderRow & { shipping_json: string }>();
   if (!order) throw new HttpError(503, 'Checkout unavailable');
-  const attempt = await s(env, 'SELECT status,url FROM payment_attempts WHERE order_id=?', orderId).first<AttemptRow>();
+  const attempt = await s(env, 'SELECT status,url,created_at FROM payment_attempts WHERE order_id=?', orderId).first<AttemptRow>();
   const shipping = JSON.parse(order.shipping_json);
   return json({ order: { id: order.id, reference: order.reference, status: order.status, total: order.total,
     shipPromise: { shipFrom: shipping.shipFrom ?? null, shipTo: shipping.shipTo ?? null, policy: shipping.policy ?? 'single-shipment-latest-item' }, shippingService: shipping.service ?? null, shippingAmount: shipping.amount ?? null,
     ...(!order.customer_id && guestSecret ? { guestToken: await hash(`order-access:${guestSecret}:${order.id}`) } : {}) },
-    ...(attempt?.url && order.status === 'pending_payment' ? { paymentUrl: attempt.url } : {}), paymentState: attempt?.status ?? 'unknown' });
+    ...(attempt?.url && order.status === 'pending_payment' ? { paymentUrl: attempt.url } : {}), paymentState: attempt?.status ?? 'unknown',
+    ...(order.status === 'pending_payment' && paymentLinkFailed(attempt, Date.now()) ? { paymentLinkFailed: true } : {}) });
 }
 
 export async function checkout(request: Request, env: CommerceEnv, body: unknown) {

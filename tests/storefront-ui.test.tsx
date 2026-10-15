@@ -163,7 +163,7 @@ describe('checkout steps', () => {
   });
 
   it('recovers a corrupt stored cart: bad entries dropped, duplicates merged, quantities clamped', async () => {
-    localStorage.setItem('flaremmerce-cart', JSON.stringify([null, 'x', { variantId: 'a', quantity: 60 }, { variantId: 'a', quantity: 70 }, { variantId: 'b', quantity: 0 }, { variantId: 'c', quantity: 1.5 }, { quantity: 2 }, { variantId: 'd', quantity: 500 }]));
+    localStorage.setItem('flaremmerce-cart', JSON.stringify([null, 'x', { variantId: 'a', quantity: 60 }, { variantId: 'a', quantity: 70 }, { variantId: 'b', quantity: 0 }, { variantId: 'c', quantity: 1.5 }, { quantity: 2 }, { variantId: 'x'.repeat(101), quantity: 1 }, { variantId: 'd', quantity: 500 }]));
     expect(readCart()).toEqual([{ variantId: 'a', quantity: 100 }, { variantId: 'd', quantity: 100 }]);
     const calls = server(placed);
     await act(async () => root.render(<Checkout />));

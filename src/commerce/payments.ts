@@ -1,6 +1,6 @@
 import { lookupPayment, verifyPaymentWebhook } from '../integrations/index';
 import { type CommerceEnv, id, json, statement as s } from './types';
-import { envMinutes, PAYMENT_DUE_MINUTES } from '../shared';
+import { envMinutes, PAYMENT_DUE_MINUTES, paymentLinkFailed } from '../shared';
 
 type VerifiedEvent = { eventKey: string; reference: string; amount: number; currency: string; status: 'succeeded' | 'failed' | 'expired' | 'ignored' | 'provider_event'; providerTx?: string; kind?: string };
 // Exhausted attempts keep their unfinished status for operators but leave every next_check range scan.
@@ -81,9 +81,9 @@ export async function webhook(request: Request, env: CommerceEnv) {
 export async function reconcile(env: CommerceEnv) {
   const now = Date.now();
   // Combined reconciliation + outbox work stays below the Free invocation subrequest budget.
-  const rows = await s(env, `SELECT a.reference,a.checks,a.order_id,a.created_at,a.url,o.total FROM payment_attempts a JOIN orders o ON o.id=a.order_id
+  const rows = await s(env, `SELECT a.reference,a.status,a.checks,a.order_id,a.created_at,a.url,o.total FROM payment_attempts a JOIN orders o ON o.id=a.order_id
     WHERE a.status IN ('created','pending','unknown') AND a.next_check<=? AND a.checks<${MAX_CHECKS} ORDER BY a.next_check LIMIT 5`, now)
-    .all<{ reference: string; checks: number; order_id: string; created_at: number; url: string | null; total: number }>();
+    .all<{ reference: string; status: string; checks: number; order_id: string; created_at: number; url: string | null; total: number }>();
   for (const row of rows.results) {
     const deadline = expiryDeadline(env, row.created_at);
     // Claim a bounded retry slot before lookup; crashes recover at the next checkpoint.
@@ -98,8 +98,8 @@ export async function reconcile(env: CommerceEnv) {
       else if (result.status === 'not_paid' && now >= deadline) await expire(result.amount);
       // DOKU has no invoice and the shopper never received a payment page (creation failed ambiguously), so nothing
       // can have been paid. With a page issued, a missing invoice is unexplained: hold for the exhausted review.
-      else if (result.status === 'not_found' && now >= deadline && !row.url) await expire(row.total);
-      else console.warn('payment_lookup_unknown', { orderId: technicalId(row.order_id), kind: result.status === 'not_found' ? (row.url ? 'not_found_with_link' : 'not_found_not_due') : result.status === 'not_paid' ? 'not_due' : 'nonterminal' });
+      else if (result.status === 'not_found' && now >= deadline && paymentLinkFailed(row, now)) await expire(row.total);
+      else console.warn('payment_lookup_unknown', { orderId: technicalId(row.order_id), kind: result.status === 'not_found' ? (paymentLinkFailed(row, now) ? 'not_found_not_due' : 'not_found_with_link') : result.status === 'not_paid' ? 'not_due' : 'nonterminal' });
     } catch { console.warn('payment_lookup_failure', { orderId: technicalId(row.order_id), kind: 'lookup_error' }); }
   }
   // Single deterministic review path, also repairing a crash between the last claim and this sweep.

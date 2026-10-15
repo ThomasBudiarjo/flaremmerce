@@ -1,6 +1,6 @@
 import type { IntegrationEnv } from './index';
 import { body, demand, equal } from './security';
-import { base64, digest, encode, envMinutes, PAYMENT_DUE_MINUTES } from '../shared';
+import { base64, digest, encode, envMinutes, PAYMENT_CREATE_TIMEOUT_MS, PAYMENT_DUE_MINUTES } from '../shared';
 
 async function signature(raw: string | null, client: string, id: string, timestamp: string, path: string, secret: string) {
   const data = `Client-Id:${client}\nRequest-Id:${id}\nRequest-Timestamp:${timestamp}\nRequest-Target:${path}${raw === null ? '' : `\nDigest:${await digest(raw)}`}`;
@@ -27,7 +27,7 @@ export async function createPayment(input: {reference:string; amount:number; ret
   const path = '/checkout/v1/payment', id = input.reference, timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
   const raw = JSON.stringify({order:{invoice_number:input.reference, amount:input.amount, currency:'IDR', callback_url:callback.href, disable_retry_payment:true}, payment:{payment_due_date:PAYMENT_DUE_MINUTES, type:'SALE'}});
   const response = await fetch(`${env.DOKU_MODE === 'production' ? 'https://api.doku.com' : 'https://api-sandbox.doku.com'}${path}`, {
-    method:'POST', headers:{'Content-Type':'application/json', 'Client-Id':client, 'Request-Id':id, 'Request-Timestamp':timestamp, Signature:await signature(raw,client,id,timestamp,path,secret)}, body:raw, signal:AbortSignal.timeout(15000),
+    method:'POST', headers:{'Content-Type':'application/json', 'Client-Id':client, 'Request-Id':id, 'Request-Timestamp':timestamp, Signature:await signature(raw,client,id,timestamp,path,secret)}, body:raw, signal:AbortSignal.timeout(PAYMENT_CREATE_TIMEOUT_MS),
   });
   // A 4xx is a definite refusal: no payment page exists. Timeout/conflict/rate-limit replies may
   // follow or race an accepted request, so they stay ambiguous like 5xx and network failures.

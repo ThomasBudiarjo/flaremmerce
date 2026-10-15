@@ -10,7 +10,8 @@ import ecommerceMigration from '../migrations/0012_ecommerce.sql?raw';
 import reportingMigration from '../migrations/0014_reporting.sql?raw';
 import worker, { housekeepingDue, queueRetryDelay, type Env } from '../src/worker';
 import { chargeableWeight, publicCacheKey, catalogParams, normalizeIp, rateLimitIp, riskHash, tracking } from '../src/shared';
-import { csvCell } from '../src/commerce/reports';
+import { csvCell, PAID_SALES } from '../src/commerce/reports';
+import { AWAITING_SHIPMENT } from '../src/commerce/admin';
 import { withAdminHeaders, withStorefrontHeaders } from '../src/headers';
 
 const provider = vi.hoisted(() => ({ failCreate: false, createStatus: 200, lookupStatus: 200, lookups: 0, lookup: {status:'unknown'} as Record<string, unknown>, beforeResponse: null as null | ((input: { reference: string }) => Promise<void>) }));
@@ -93,6 +94,18 @@ function statements(source: string) {
   }
   if (current.trim()) throw new Error('Incomplete migration');
   return queries;
+}
+
+/** Env whose DB runs `race` right before the batch that prepares a statement starting with `marker`. */
+function raceBefore(marker: string, race: () => Promise<unknown>): Env {
+  let armed = false;
+  const DB = new Proxy(db(), { get(target, prop) {
+    if (prop === 'prepare') return (query: string) => { if (query.trimStart().startsWith(marker)) armed = true; return target.prepare(query); };
+    if (prop === 'batch') return async (list: D1PreparedStatement[]) => { if (armed) { armed = false; await race(); } return target.batch(list); };
+    const value = Reflect.get(target, prop);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  return { ...e, DB } as Env;
 }
 
 beforeAll(async () => {
@@ -671,8 +684,7 @@ describe('local baseline admin contracts',()=>{
     expect(await sql('SELECT count(*) AS n FROM inventory_movements WHERE variant_id=?',empty.id).first('n')).toBe(0);
   });
   it('sums awaiting shipment from in-flight paid orders, not from every order item',async()=>{
-    const {results}=await sql(`EXPLAIN QUERY PLAN SELECT (SELECT coalesce(sum(i.quantity),0) FROM orders o CROSS JOIN order_items i ON i.order_id=o.id
-      WHERE o.status='paid' AND o.fulfillment IN ('unfulfilled','processing') AND i.variant_id=inventory.variant_id AND i.campaign_id IS NULL) FROM inventory WHERE variant_id='a'`).all<{detail:string}>();
+    const {results}=await sql(`EXPLAIN QUERY PLAN SELECT ${AWAITING_SHIPMENT} FROM inventory WHERE variant_id='a'`).all<{detail:string}>();
     const plan=results.map(r=>r.detail).join('\n');
     expect(plan).toMatch(/SEARCH o USING INDEX orders_status_page \(status=\?\)/);
     expect(plan).toMatch(/SEARCH i USING INDEX items_order \(order_id=\?\)/);
@@ -890,7 +902,8 @@ describe('payment expiry, cancellation and provider identity', () => {
   });
   it('expires an order whose payment link was never created once DOKU has no invoice after the deadline', async () => {
     provider.failCreate = true;
-    const { order } = await (await place()).json() as any;
+    const placed = await (await place()).json() as any, order = placed.order;
+    expect(placed.paymentLinkFailed).toBe(true);
     expect(await sql('SELECT status,url FROM payment_attempts WHERE order_id=?', order.id).first()).toEqual({ status: 'unknown', url: null });
     provider.lookup = { status: 'not_found' };
     await cronAt(order.id, 10);
@@ -911,6 +924,35 @@ describe('payment expiry, cancellation and provider identity', () => {
     expect(await stock()).toEqual({ on_hand: 1, reserved: 1 });
     const route = `/api/orders/${order.reference}/cancel`;
     expect((await request(route, undefined, { 'X-Order-Token': order.guestToken }, 'POST')).status).toBe(503);
+  });
+  it('does not treat a payment create still in flight as a failed link', async () => {
+    const { order } = await (await place()).json() as any;
+    // As seen by a retry while the first request still waits on DOKU: status created, no URL yet.
+    await sql("UPDATE payment_attempts SET status='created',url=NULL,created_at=? WHERE order_id=?", Date.now(), order.id).run();
+    provider.lookup = { status: 'not_found' };
+    const read = async () => (await (await request(`/api/orders/${order.reference}`, undefined, { 'X-Order-Token': order.guestToken })).json() as any);
+    expect(await read()).not.toHaveProperty('paymentLinkFailed');
+    const cancel = () => request(`/api/orders/${order.reference}/cancel`, undefined, { 'X-Order-Token': order.guestToken }, 'POST');
+    expect((await cancel()).status).toBe(503);
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 1 });
+    // Long past the create timeout without a URL, the link has failed.
+    await sql('UPDATE payment_attempts SET created_at=? WHERE order_id=?', Date.now() - 2 * 60_000, order.id).run();
+    expect(await read()).toMatchObject({ paymentLinkFailed: true, paymentState: 'created' });
+    expect((await cancel()).status).toBe(200);
+    expect(await stock()).toEqual({ on_hand: 1, reserved: 0 });
+  });
+  it('gives attempts in flight at deploy the new pre-deadline lookup budget', async () => {
+    await sql("UPDATE inventory SET on_hand=4 WHERE variant_id='a'").run();
+    const orders = [];
+    for (const n of [1, 2, 3, 4]) orders.push((await (await place(`legacy-${n}-key`, n)).json() as any).order);
+    const now = Date.now();
+    const set = (order: any, checks: number, age: number) => sql('UPDATE payment_attempts SET checks=?,created_at=? WHERE order_id=?', checks, now - age * 60_000, order.id).run();
+    await set(orders[0], 6, 50); await set(orders[1], 7, 200); await set(orders[2], 8, 50); await set(orders[3], 1, 50);
+    const reset = statements(reportingMigration).find(q => q.startsWith('UPDATE payment_attempts'))!;
+    await sql(reset).run();
+    const checks = await Promise.all(orders.map(o => sql('SELECT checks FROM payment_attempts WHERE order_id=?', o.id).first('checks')));
+    // Young attempt reset; past every possible deadline, exhausted, or already within budget: unchanged.
+    expect(checks).toEqual([2, 7, 8, 1]);
   });
   it('lets the shopper cancel right away when no payment link was created and DOKU has no invoice', async () => {
     provider.failCreate = true;
@@ -1214,6 +1256,10 @@ describe('anti-fraud and abuse controls', () => {
     expect((await buy({ headers: { 'CF-Connecting-IP': '192.0.2.10' } })).status).toBe(403);
     expect((await buy({ headers: { 'CF-Connecting-IP': '192.0.2.11' } })).status).toBe(200);
     expect(normalizeIp(' 2001:DB8:0:0:1:0:0:1 ')).toBe('2001:db8::1:0:0:1');
+    // An IPv4-mapped address is the IPv4 client, for blocks and for rate limits.
+    for (const mapped of ['::ffff:192.0.2.10', '::FFFF:c000:20a', '0:0:0:0:0:ffff:192.0.2.10']) expect(normalizeIp(mapped)).toBe('192.0.2.10');
+    expect(rateLimitIp('::ffff:198.51.100.7')).toBe('198.51.100.7');
+    expect(await (await block('::ffff:192.0.2.10')).json()).toMatchObject({ created: false });
     expect(rateLimitIp('2001:db8:1:2:3:4:5:6')).toBe('2001:db8:1:2::/64');
     expect(rateLimitIp('::1')).toBe('0:0:0:0::/64');
     expect(rateLimitIp('203.0.113.007')).toBe('203.0.113.7');
@@ -1470,6 +1516,14 @@ describe('ecommerce features', () => {
     expect((await request(`/api/admin/categories/${category.id}`, undefined, catalogRole, 'DELETE')).status).toBe(200);
     expect((await deletes()).results.map(r => JSON.parse(r.details_json))).toEqual([{ slug: 'lama', name: 'Lama' }]);
     expect((await request(`/api/admin/categories/${category.id}`, undefined, catalogRole, 'DELETE')).status).toBe(404);
+    // A product assigned between the in-use check and the guarded DELETE: nothing is deleted, nothing audited, 409.
+    const { category: raced } = await (await request('/api/admin/categories', { slug: 'baru', name: 'Baru' }, catalogRole)).json() as any;
+    const racing = raceBefore('DELETE FROM categories', () => sql("UPDATE products SET category_id=? WHERE id='p'", raced.id).run());
+    const refused = await worker.fetch(new Request(`https://shop.test/api/admin/categories/${raced.id}`, { method: 'DELETE', headers: { Origin: e.PUBLIC_ORIGIN, ...catalogRole } }), racing);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: 'Kategori masih dipakai produk; pindahkan produk terlebih dahulu' });
+    expect(await sql('SELECT count(*) AS n FROM categories WHERE id=?', raced.id).first('n')).toBe(1);
+    expect((await deletes()).results).toHaveLength(1);
   });
 
   it('names the units already taken when a pre-order quota is set below them', async () => {
@@ -1741,7 +1795,7 @@ describe('ecommerce features', () => {
     expect(await summary('7d')).toMatchObject({ since: midnight - 6 * day, paidOrders: 2, revenue: 30_000, shipping: 1000, itemsRevenue: 29_000 });
     expect(await summary('30d')).toMatchObject({ since: midnight - 29 * day, paidOrders: 4, revenue: 150_000 });
     for (const range of ['constructor', '__proto__', '']) expect((await request(`/api/admin/summary?range=${range}`, undefined, ops)).status).toBe(400);
-    const plan = (await sql("EXPLAIN QUERY PLAN SELECT count(*) FROM order_events e CROSS JOIN orders o ON o.id=e.order_id WHERE e.kind='paid' AND e.created_at>=? AND o.status IN ('paid','completed')", 0).all<{ detail: string }>()).results.map(r => r.detail).join('\n');
+    const plan = (await sql(`EXPLAIN QUERY PLAN ${PAID_SALES}`, 0).all<{ detail: string }>()).results.map(r => r.detail).join('\n');
     expect(plan).toMatch(/SEARCH e USING INDEX order_events_paid \(created_at>\?\)/);
     expect(plan).toMatch(/SEARCH o USING INDEX sqlite_autoindex_orders_1 \(id=\?\)/);
   });

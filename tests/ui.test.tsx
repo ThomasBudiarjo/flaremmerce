@@ -73,12 +73,13 @@ it.each([
 });
 
 it.each([
-  ['pending_payment', undefined, true],
-  ['pending_payment', 'https://sandbox.doku.com/existing-attempt', false],
-  ['cancelled', undefined, false],
-] as const)('tells the shopper to cancel and reorder when no payment link exists (%s, %s)', async (status, paymentUrl, shown) => {
+  ['pending_payment', true, true],
+  // No URL yet but the create may still be in flight: the server leaves the flag off.
+  ['pending_payment', false, false],
+  ['cancelled', true, false],
+] as const)('tells the shopper to cancel and reorder only when the server reports a failed link (%s, %s)', async (status, linkFailed, shown) => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => url.startsWith('/api/orders/')
-    ? Response.json({ access: { type: 'account', ownerId: 'A' }, order: { ...summary('A-order'), status, items: [], timeline: [] }, paymentState: 'unknown', ...(paymentUrl ? { paymentUrl } : {}) })
+    ? Response.json({ access: { type: 'account', ownerId: 'A' }, order: { ...summary('A-order'), status, items: [], timeline: [] }, paymentState: linkFailed ? 'unknown' : 'created', ...(linkFailed ? { paymentLinkFailed: true } : {}) })
     : page('A', ['A-order'])));
   await act(async () => root.render(<OrderStatus />));
   await click('A-order');
@@ -667,6 +668,14 @@ describe('admin SPA', () => {
     expect(button('Simpan').disabled).toBe(true);
     await type(weight, '1.000');
     expect(weight.validity.valid).toBe(true);
+    // An invalid stock left behind when the variant becomes pre-order is hidden and never sent, so it does not block.
+    await type(document.querySelector('[aria-label="Stok awal varian 1"]')!, 'abc');
+    expect(document.querySelector('[aria-label="Belum bisa disimpan"]')?.textContent).toContain('Angka tidak valid: varian 1');
+    await press('Detail varian 1');
+    await type(labelled('Mode penjualan'), 'preorder');
+    expect(document.querySelector('[aria-label="Belum bisa disimpan"]')?.textContent ?? '').not.toContain('Angka tidak valid');
+    await type(labelled('Mode penjualan'), 'stock');
+    await type(document.querySelector('[aria-label="Stok awal varian 1"]')!, '0');
     await act(async () => (document.getElementById('product-form') as HTMLFormElement).requestSubmit());
     expect(calls.find(c => c.method === 'POST')!.body).toMatchObject({ variants: [{ sku: 'K-1', price: 150000, weight: 1000, stock: 0 }] });
   });
@@ -738,6 +747,9 @@ describe('admin SPA', () => {
     });
     await press('Sesuaikan SKU');
     await press('Set stok fisik (opname)');
+    await type(labelled('Stok fisik hasil hitung'), '1,5');
+    expect(text()).not.toContain('NaN');
+    expect(text()).toContain('Tercatat 12 · Tersedia 9');
     await type(labelled('Stok fisik hasil hitung'), '14');
     expect(text()).toContain('opname tetap dicatat tanpa selisih');
     await press('Kurangi');

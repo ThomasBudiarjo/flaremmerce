@@ -6,7 +6,7 @@ import { preview } from './cart';
 import { checkout } from './checkout';
 import { webhook } from './payments';
 import { cancelOrder } from './cancel';
-import { adminPermits, orderTracking, readBounded } from '../shared';
+import { adminPermits, orderTracking, paymentLinkFailed, readBounded } from '../shared';
 import { type CommerceEnv, hash, HttpError, json, statement as s } from './types';
 
 async function body(request: Request) {
@@ -55,14 +55,15 @@ async function order(request: Request, env: CommerceEnv, reference: string) {
   const { row, guestAuthorized } = await authorizedOrder(request, env, reference);
   const items = await s(env, 'SELECT id,variant_id AS variantId,campaign_id AS campaignId,quantity,price,snapshot_json FROM order_items WHERE order_id=?', String(row.id)).all();
   const events = await s(env, 'SELECT kind,details_json,created_at AS createdAt FROM order_events WHERE order_id=? ORDER BY created_at,id LIMIT 100', String(row.id)).all();
-  const payment = await s(env, 'SELECT status,url FROM payment_attempts WHERE order_id=?', String(row.id)).first<{ status: string; url: string | null }>();
+  const payment = await s(env, 'SELECT status,url,created_at FROM payment_attempts WHERE order_id=?', String(row.id)).first<{ status: string; url: string | null; created_at: number }>();
   const shipping = JSON.parse(String(row.shipping_json));
   return json({ order: { id: row.id, reference: row.reference, status: row.status, fulfillment: row.fulfillment, total: row.total, currency: row.currency, createdAt: row.created_at,
     contact: JSON.parse(String(row.contact_json)), address: JSON.parse(String(row.address_json)), shipping, tracking: orderTracking(events.results, shipping),
     items: items.results.map(({ snapshot_json, ...item }) => ({ ...item, ...JSON.parse(String(snapshot_json)) })),
     timeline: events.results.map(({ details_json, ...event }) => ({ ...event, details: JSON.parse(String(details_json)) })) },
     access: guestAuthorized ? { type: 'guest' } : { type: 'account', ownerId: row.customer_id },
-    paymentState: payment?.status, ...(payment?.url && row.status === 'pending_payment' ? { paymentUrl: payment.url } : {}) });
+    paymentState: payment?.status, ...(payment?.url && row.status === 'pending_payment' ? { paymentUrl: payment.url } : {}),
+    ...(row.status === 'pending_payment' && paymentLinkFailed(payment ?? null, Date.now()) ? { paymentLinkFailed: true } : {}) });
 }
 
 export async function commerceRequest(request: Request, env: CommerceEnv): Promise<Response | null> {

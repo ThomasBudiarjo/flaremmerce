@@ -29,7 +29,7 @@ const reasons = ["Stok opname", "Barang masuk", "Rusak", "Retur"];
  * with what should be on the shelf (recorded plus awaiting shipment); the server recomputes it from live numbers.
  */
 export function stockChange(mode: Mode, quantity: number | null, stock: Inventory) {
-  if (quantity == null) return null;
+  if (quantity == null || !Number.isFinite(quantity)) return null;
   const delta = mode === "add" ? quantity : mode === "remove" ? -quantity : quantity - (stock.onHand + stock.awaitingShipment);
   return { delta, next: stock.onHand + delta };
 }

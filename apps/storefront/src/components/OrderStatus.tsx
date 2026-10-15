@@ -205,7 +205,7 @@ export default function OrderStatus() {
               {order.shipping?.shipTo && <p>Estimasi kirim: {date(order.shipping.shipFrom)} – {date(order.shipping.shipTo)} (satu pengiriman)</p>}
             </section>
           )}
-          {order.status === "pending_payment" && !(typeof data.paymentUrl === "string" && /^https:\/\//.test(data.paymentUrl)) && (
+          {order.status === "pending_payment" && data.paymentLinkFailed === true && (
             <div className="notice error no-print" role="status">
               Link pembayaran gagal dibuat, batalkan lalu pesan ulang.
             </div>

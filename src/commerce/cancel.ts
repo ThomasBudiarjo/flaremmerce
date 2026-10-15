@@ -1,6 +1,7 @@
 import { lookupPayment } from '../integrations/index';
 import { applyPayment, lookupEvent } from './payments';
 import { type CommerceEnv, HttpError, id, statement as s } from './types';
+import { paymentLinkFailed } from '../shared';
 
 export type CancelActor = { kind: 'customer' } | { kind: 'admin'; actor: string; reason?: string; force?: boolean };
 /** Extra statements run first in the same batch; `condition` gates the order UPDATE on their effect. */
@@ -9,8 +10,8 @@ export type CancelGuard = { before: D1PreparedStatement[]; condition: string; va
 // A pending order is only cancelled after DOKU authoritatively says it is unpaid right now.
 // A success found here is applied (never discarded); lookup errors leave the hold untouched.
 // `force` (owner, after reconciliation was exhausted) only accepts an inconclusive answer; a found success still wins.
-// DOKU having no invoice (404) is unpaid only when no payment page was ever issued to the shopper.
-async function confirmUnpaid(env: CommerceEnv, reference: string, linkIssued: boolean, force = false) {
+// DOKU having no invoice (404) is unpaid only when the payment link failed: no page was issued and none still can be.
+async function confirmUnpaid(env: CommerceEnv, reference: string, linkFailed: boolean, force = false) {
   let result: Awaited<ReturnType<typeof lookupPayment>>;
   try { result = await lookupPayment(reference, env); }
   catch { if (force) return; throw new HttpError(503, 'Cannot confirm payment status; try again later'); }
@@ -18,18 +19,19 @@ async function confirmUnpaid(env: CommerceEnv, reference: string, linkIssued: bo
     await applyPayment(env, lookupEvent(reference, result));
     throw new HttpError(409, 'Payment already succeeded; order cannot be cancelled');
   }
-  if (result.status === 'not_found' && !linkIssued) return;
+  if (result.status === 'not_found' && linkFailed) return;
   if (result.status !== 'not_paid' && !force) throw new HttpError(503, 'Cannot confirm payment status; try again later');
 }
 
 export async function cancelOrder(env: CommerceEnv, orderId: string, by: CancelActor, guard?: CancelGuard) {
-  const order = await s(env, 'SELECT o.id,o.reference,o.status,a.url FROM orders o LEFT JOIN payment_attempts a ON a.order_id=o.id WHERE o.id=?', orderId).first<{ id: string; reference: string; status: string; url: string | null }>();
+  const order = await s(env, 'SELECT o.id,o.reference,o.status,a.status AS attempt_status,a.url,a.created_at FROM orders o LEFT JOIN payment_attempts a ON a.order_id=o.id WHERE o.id=?', orderId).first<{ id: string; reference: string; status: string; attempt_status: string | null; url: string | null; created_at: number }>();
   if (!order) throw new HttpError(404, 'Order not found');
   const force = by.kind === 'admin' && !!by.force;
   // A forced cancel is only for attempts the scheduler gave up on: DOKU may never have seen the create.
   const exhausted = " AND EXISTS(SELECT 1 FROM manual_review WHERE order_id=orders.id AND reason='reconciliation_exhausted' AND status='open')";
   if (force && !await s(env, `SELECT 1 AS ok FROM orders WHERE id=?${exhausted}`, orderId).first('ok')) throw new HttpError(409, 'Pembatalan paksa memerlukan review reconciliation_exhausted yang masih terbuka');
-  if (order.status === 'pending_payment') await confirmUnpaid(env, order.reference, !!order.url, force);
+  const linkFailed = order.attempt_status !== null && paymentLinkFailed({ status: order.attempt_status, url: order.url, created_at: order.created_at }, Date.now());
+  if (order.status === 'pending_payment') await confirmUnpaid(env, order.reference, linkFailed, force);
   else if (order.status !== 'cancelled') throw new HttpError(409, 'Only unpaid orders can be cancelled');
   else if (!guard) return { order: { id: order.id, reference: order.reference, status: 'cancelled' }, changed: false, results: [] as D1Result[] };
   const now = Date.now(), before = guard?.before ?? [];

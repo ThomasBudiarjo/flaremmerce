@@ -30,7 +30,7 @@ export async function catalog(env: CommerceEnv, slug?: string, query = new URLSe
   const numbered = !slug && !after, pageNo = numbered ? Number(params.page ?? 1) : 1;
   // An unknown or inactive category is an empty page, not an error: links may outlive the category.
   const category = params.category ? eq(products.categoryId, sql`(SELECT id FROM categories WHERE slug=${params.category}${includeInactive ? sql`` : sql` AND active=1`})`) : undefined;
-  // Bounded LIKE: the term is at most 60 escaped characters and the slug-ordered page stops at limit+1 matches.
+  // Bounded LIKE: searchTerm keeps the escaped `%term%` within D1's 50-byte pattern limit and the slug-ordered page stops at limit+1 matches.
   const search = params.q ? sql`${products.name} LIKE ${likePattern(params.q)} ESCAPE '\\'` : undefined;
   // Keep IN parameters below D1's 100-bind limit and avoid one query per product.
   const filter = and(includeInactive ? (active === undefined ? undefined : eq(products.active, active ? 1 : 0)) : eq(products.active, 1), slug ? eq(products.slug, slug) : undefined, category, search);

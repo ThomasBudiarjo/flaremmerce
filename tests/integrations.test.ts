@@ -416,6 +416,29 @@ describe('anti-abuse integration boundaries', () => {
     expect(list.admins.map((a:any)=>[a.userId,a.role,a.installationOwner])).toEqual([['owner','owner',true],['staff','ops',false]]);
     expect((await env.DB.prepare("SELECT action FROM audit_logs WHERE action LIKE 'role.%' ORDER BY rowid").all()).results.map(r=>r.action)).toEqual(['role.grant','role.grant','role.change','role.revoke']);
   });
+  it('lets a ban that lands between the grant check and its insert win', async () => {
+    await env.DB.exec(readFileSync(new URL('../migrations/0001_commerce.sql',import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+    const owner = await identity('owner');
+    await identity('newbie');
+    await env.DB.prepare("INSERT INTO admin_roles(user_id,granted_by,created_at,role) VALUES('owner','owner',1,'owner')").run();
+    // Runs the ban right before the batch that prepares the grant INSERT, after the handler's own ban check passed.
+    let armed = false;
+    const DB = new Proxy(env.DB, { get(target, prop) {
+      if (prop === 'prepare') return (query: string) => { if (query.startsWith('INSERT INTO admin_roles(user_id,granted_by,created_at,role) SELECT')) armed = true; return target.prepare(query); };
+      if (prop === 'batch') return async (list: D1PreparedStatement[]) => {
+        if (armed) { armed = false; await target.prepare("INSERT INTO customer_bans(user_id,actor,created_at) VALUES('newbie','staff',1)").run(); }
+        return target.batch(list);
+      };
+      const value = Reflect.get(target, prop);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    const granted = await handleIntegrationRequest(new Request('https://shop.example/api/admin/roles', { method: 'POST', headers: { Origin: 'https://shop.example', 'Content-Type': 'application/json', Cookie: owner }, body: JSON.stringify({ userId: 'newbie', role: 'ops' }) }), { ...env, DB });
+    expect(granted?.status).toBe(409);
+    expect(await granted!.json()).toMatchObject({ error: 'Banned users cannot be granted admin access' });
+    expect(await env.DB.prepare("SELECT count(*) n FROM customer_bans WHERE user_id='newbie'").first('n')).toBe(1);
+    expect(await env.DB.prepare("SELECT count(*) n FROM admin_roles WHERE user_id='newbie'").first('n')).toBe(0);
+    expect(await env.DB.prepare("SELECT count(*) n FROM audit_logs WHERE action='role.grant'").first('n')).toBe(0);
+  });
   it('lists customers, revokes sessions immediately and bans customers but never administrators', async () => {
     await env.DB.exec(readFileSync(new URL('../migrations/0001_commerce.sql',import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
     const owner = await identity('owner'), shopper = await identity('shopper'), staff = await identity('staff');

@@ -95,10 +95,8 @@ export async function summary(env: CommerceEnv, url: URL) {
   const range = url.searchParams.get('range') ?? 'today', now = Date.now(), days: Record<string, number> = { today: 1, '7d': 7, '30d': 30 };
   if (!Object.hasOwn(days, range)) throw new HttpError(400, 'Invalid range');
   const since = wibMidnight(now) - (days[range] - 1) * DAY;
-  // CROSS JOIN keeps the scan on the range's paid events instead of every paid and completed order ever.
   const [paid, pending, toFulfill, reviews, low] = await env.DB.batch([
-    s(env, `SELECT count(*) AS n,coalesce(sum(o.total),0) AS revenue,coalesce(sum(json_extract(o.shipping_json,'$.amount')),0) AS shipping
-      FROM order_events e CROSS JOIN orders o ON o.id=e.order_id WHERE e.kind='paid' AND e.created_at>=? AND o.status IN ('paid','completed')`, since),
+    s(env, PAID_SALES, since),
     s(env, "SELECT count(*) AS n FROM orders WHERE status='pending_payment'"),
     s(env, `SELECT count(*) AS n FROM orders WHERE status='paid' AND fulfillment IN ('unfulfilled','processing') AND NOT ${HELD}`),
     s(env, "SELECT count(*) AS n FROM manual_review WHERE status='open'"),
@@ -109,5 +107,8 @@ export async function summary(env: CommerceEnv, url: URL) {
   return json({ range, since, now, revenue, itemsRevenue: revenue - shipping, shipping, paidOrders: count, averageOrderValue: count ? Math.round(revenue / count) : 0,
     pendingPayment: first(pending).n, toFulfill: first(toFulfill).n, openReviews: first(reviews).n, lowStock: first(low).n });
 }
+/** Sales of orders paid since `?`. CROSS JOIN keeps the scan on the range's paid events instead of every paid and completed order ever. */
+export const PAID_SALES = `SELECT count(*) AS n,coalesce(sum(o.total),0) AS revenue,coalesce(sum(json_extract(o.shipping_json,'$.amount')),0) AS shipping
+  FROM order_events e CROSS JOIN orders o ON o.id=e.order_id WHERE e.kind='paid' AND e.created_at>=? AND o.status IN ('paid','completed')`;
 /** Active ready-stock variants at or below their threshold (per-variant, else LOW_STOCK_DEFAULT bound as the only parameter). */
 export const LOW_STOCK = "v.mode='stock' AND v.active=1 AND p.active=1 AND i.on_hand-i.reserved<=coalesce(v.low_stock_threshold,?)";

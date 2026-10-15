@@ -92,6 +92,8 @@ const blankVariant = (): NewVariant => ({
 });
 /** Pre-order variants sell campaign quota; the server refuses shelf stock on them. */
 const initialStock = (mode: NewVariant["mode"], stock: number | null) => (mode === "stock" ? (stock ?? 0) : 0);
+/** A NaN in the hidden (and never sent) stock field of a pre-order variant does not block saving. */
+const invalidVariant = (v: Partial<NewVariant>) => hasInvalidNumber(v.mode === "preorder" ? { ...v, stock: null } : v);
 /** Server variant entity → list shape (the PATCH/POST response has no `available`). */
 const withAvailable = (v: Variant): Variant => ({ ...v, available: v.mode === "stock" ? (v.onHand ?? 0) - (v.reserved ?? 0) : (v.available ?? null) });
 
@@ -317,7 +319,7 @@ export function variantBlockers(variants: (Pick<NewVariant, "sku" | "price" | "w
     ["SKU ganda", "SKU", rows((v, i) => !!skus[i] && skus.indexOf(skus[i]) !== i)],
     ["Isi harga", "Harga", rows((v) => v.price == null)],
     ["Isi berat", "Berat", rows((v) => v.weight == null || v.weight < 1)],
-    ["Angka tidak valid", "Harga", rows((v) => hasInvalidNumber(v))],
+    ["Angka tidak valid", "Harga", rows((v) => invalidVariant(v))],
   ];
   return checks
     .filter(([, , list]) => list.length)
@@ -614,7 +616,7 @@ function AddVariantDialog({ product, open, onOpenChange, onAdded }: { product: P
           id="add-variant-form"
           onSubmit={(e) => {
             e.preventDefault();
-            if (!hasInvalidNumber(value)) void add.mutate(undefined);
+            if (!invalidVariant(value)) void add.mutate(undefined);
           }}
         >
           <VariantFields value={value} onChange={setValue} disabled={add.pending} />

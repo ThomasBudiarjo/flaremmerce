@@ -24,7 +24,7 @@ const inventoryInput = z.object({ variantId: z.string().min(1).max(100), reason:
   .refine(v => (v.delta === undefined) !== (v.counted === undefined), { message: 'Exactly one of delta and counted' });
 // on_hand drops when an order is paid, not when it ships: paid ready-stock units still waiting to ship are on the shelf
 // but no longer in on_hand. CROSS JOIN keeps the scan on in-flight paid orders (orders_status_page) rather than every order item.
-const AWAITING_SHIPMENT = `(SELECT coalesce(sum(i.quantity),0) FROM orders o CROSS JOIN order_items i ON i.order_id=o.id
+export const AWAITING_SHIPMENT = `(SELECT coalesce(sum(i.quantity),0) FROM orders o CROSS JOIN order_items i ON i.order_id=o.id
   WHERE o.status='paid' AND o.fulfillment IN ('unfulfilled','processing') AND i.variant_id=inventory.variant_id AND i.campaign_id IS NULL)`;
 const inventoryColumns = `variant_id AS variantId,on_hand AS onHand,reserved,${AWAITING_SHIPMENT} AS awaitingShipment`;
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v => !Number.isNaN(Date.parse(v)) && new Date(v).toISOString().slice(0, 10) === v);
@@ -229,9 +229,11 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
         SELECT ? || ':' || o.id,o.id,'campaign_updated',json_object('campaignId',c.id,'shipFrom',c.ship_from,'shipTo',c.ship_to),? FROM preorder_campaigns c JOIN orders o ON o.id IN (SELECT order_id FROM order_items WHERE campaign_id=c.id)
         WHERE c.id=? AND o.status<>'cancelled' AND EXISTS(SELECT 1 FROM audit_logs WHERE id=?)`,auditId,now,target,auditId)] : []),
     ]).catch(async error=>{
-      // CHECK(reserved + sold <= quota): name the units already taken instead of a generic conflict.
-      const taken=input.quota!=null && /CHECK constraint failed/.test(String(error)) ? await s(env,'SELECT reserved,sold FROM preorder_campaigns WHERE id=?',target).first<{reserved:number;sold:number}>() : null;
-      if (taken && input.quota!<taken.reserved+taken.sold) throw new HttpError(409,`Kuota tidak boleh di bawah ${taken.reserved+taken.sold} unit yang sudah dipesan (${taken.sold} terjual, ${taken.reserved} menunggu pembayaran). Untuk menutup pemesanan, nonaktifkan campaign atau majukan tanggal selesai.`,{sold:taken.sold,reserved:taken.reserved});
+      if (input.quota==null || !/CHECK constraint failed/.test(String(error))) throw error;
+      // CHECK(reserved + sold <= quota): name the units already taken. Any other CHECK (e.g. the merged dates), or a
+      // failed read, keeps the original error, which the worker answers with a generic 409.
+      const taken=await s(env,'SELECT reserved,sold FROM preorder_campaigns WHERE id=?',target).first<{reserved:number;sold:number}>().catch(()=>null);
+      if (taken && input.quota<taken.reserved+taken.sold) throw new HttpError(409,`Kuota tidak boleh di bawah ${taken.reserved+taken.sold} unit yang sudah dipesan (${taken.sold} terjual, ${taken.reserved} menunggu pembayaran). Untuk menutup pemesanan, nonaktifkan campaign atau majukan tanggal selesai.`,{sold:taken.sold,reserved:taken.reserved});
       throw error;
     });
     const current=await campaignEntity(env,target);

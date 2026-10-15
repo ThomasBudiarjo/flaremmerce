@@ -31,6 +31,14 @@ export async function digest(value: string) { return base64(await crypto.subtle.
 
 /** DOKU Checkout payment_due_date; commerce expiry is measured from attempt creation. */
 export const PAYMENT_DUE_MINUTES = 60;
+/** Timeout of the DOKU create-payment request. */
+export const PAYMENT_CREATE_TIMEOUT_MS = 15_000;
+/**
+ * The shopper never got a payment page and none can still arrive: creation failed ambiguously (`unknown`), or the
+ * create request is long past its timeout without writing a URL. A create still in flight is not a failed link.
+ */
+export const paymentLinkFailed = (attempt: { status: string; url: string | null; created_at: number } | null, now: number) =>
+  !!attempt && !attempt.url && (attempt.status === 'unknown' || (attempt.status === 'created' && now - attempt.created_at > 4 * PAYMENT_CREATE_TIMEOUT_MS));
 
 export const validSlug = (value: string) => value.length <= 100 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value);
 
@@ -201,7 +209,13 @@ export function normalizeIp(value: string): string | null {
   // Parsed by hand: the URL parser would read "010" as octal.
   if (v4) return v4.slice(1).every(part => Number(part) <= 255) ? v4.slice(1).map(Number).join('.') : null;
   if (!ip.includes(':') || !/^[0-9a-fA-F:.]{2,45}$/.test(ip)) return null;
-  try { return new URL(`http://[${ip}]/`).hostname.slice(1, -1); } catch { return null; }
+  let v6: string;
+  try { v6 = new URL(`http://[${ip}]/`).hostname.slice(1, -1); } catch { return null; }
+  // An IPv4-mapped address (::ffff:1.2.3.4, serialized ::ffff:102:304) is that IPv4 client.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(v6);
+  if (!mapped) return v6;
+  const [high, low] = [parseInt(mapped[1], 16), parseInt(mapped[2], 16)];
+  return [high >> 8, high & 255, low >> 8, low & 255].join('.');
 }
 /** Rate-limit identity: an IPv6 client usually controls a whole /64, so it counts as one; IPv4 stays per address. */
 export function rateLimitIp(value: string) {
