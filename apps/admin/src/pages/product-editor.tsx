@@ -1,12 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
-import { Archive, ArrowLeft, ImageIcon, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Archive, ArrowLeft, Copy, CopyCheck, ExternalLink, ImageIcon, Pencil, Plus, RotateCcw, SlidersHorizontal, Trash2 } from "lucide-react";
 import { patch, post } from "@/lib/api";
 import { href, Link, useNavigationGuard, useRoute } from "@/lib/router";
-import { money, number, variantMode } from "@/lib/format";
+import { listHref } from "@/lib/list-memory";
+import { money, number, slugify, variantMode } from "@/lib/format";
 import type { Category, Product, Variant } from "@/lib/types";
 import { useMutation } from "@/hooks/use-mutation";
 import { useResource } from "@/hooks/use-resource";
+import { useSaveHotkey } from "@/hooks/use-hotkeys";
 import { PageHeader } from "@/components/page-header";
+import { MoneyInput } from "@/components/money-input";
+import { StockAdjustDialog, type StockTarget } from "@/components/stock-adjust-dialog";
 import { PhotoUpload } from "@/components/photo-upload";
 import { ConflictBanner } from "@/components/conflict-banner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -104,7 +108,16 @@ function VariantFields<T extends Omit<VariantDraft, "active"> & { active?: boole
       <div className="grid gap-3 sm:grid-cols-2">
         <TextField label="SKU" required maxLength={100} value={value.sku} disabled={disabled} onChange={(e) => set("sku", e.target.value)} />
         <TextField label="Nama varian" required maxLength={200} value={value.name} disabled={disabled} onChange={(e) => set("name", e.target.value)} />
-        <NumberField label="Harga (IDR)" required min={0} max={1_000_000_000} value={value.price} disabled={disabled} onValueChange={(v) => set("price", v as T["price"])} />
+        <NumberField
+          label="Harga (IDR)"
+          required
+          min={0}
+          max={1_000_000_000}
+          hint={value.price != null ? money(value.price) : undefined}
+          value={value.price}
+          disabled={disabled}
+          onValueChange={(v) => set("price", v as T["price"])}
+        />
         <NumberField label="Berat (gram)" required min={1} max={1_000_000} value={value.weight} disabled={disabled} onValueChange={(v) => set("weight", v as T["weight"])} />
         <Field label="Mode penjualan">
           {(id) => (
@@ -162,11 +175,16 @@ function GeneralCard({
   onChange,
   categories,
   disabled,
+  autoSlug,
+  onSlugEdited,
 }: {
   draft: ProductDraft;
   onChange: (next: ProductDraft) => void;
   categories: Category[];
   disabled?: boolean;
+  /** New products derive the slug from the name until the slug is edited by hand. */
+  autoSlug?: boolean;
+  onSlugEdited?: () => void;
 }) {
   return (
     <Card>
@@ -174,16 +192,26 @@ function GeneralCard({
         <CardTitle>Umum</CardTitle>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <TextField label="Nama produk" required maxLength={200} value={draft.name} disabled={disabled} onChange={(e) => onChange({ ...draft, name: e.target.value })} />
+        <TextField
+          label="Nama produk"
+          required
+          maxLength={200}
+          value={draft.name}
+          disabled={disabled}
+          onChange={(e) => onChange({ ...draft, name: e.target.value, ...(autoSlug ? { slug: slugify(e.target.value) } : {}) })}
+        />
         <TextField
           label="Slug URL"
           required
           maxLength={100}
           pattern={slugPattern}
-          hint="Huruf kecil, angka, dan tanda hubung. Mengubah slug mengubah URL produk."
+          hint={autoSlug ? "Dibuat otomatis dari nama sampai kamu mengubahnya." : "Huruf kecil, angka, dan tanda hubung. Mengubah slug mengubah URL produk."}
           value={draft.slug}
           disabled={disabled}
-          onChange={(e) => onChange({ ...draft, slug: e.target.value })}
+          onChange={(e) => {
+            onSlugEdited?.();
+            onChange({ ...draft, slug: e.target.value });
+          }}
         />
         <Field label="Deskripsi">
           {(id) => <Textarea id={id} rows={6} maxLength={10000} value={draft.description} disabled={disabled} onChange={(e) => onChange({ ...draft, description: e.target.value })} />}
@@ -240,16 +268,33 @@ function MediaCard({
   );
 }
 
-function SaveBar({ dirty, saving, blocked, onDiscard, form }: { dirty: boolean; saving: boolean; blocked: boolean; onDiscard: () => void; form: string }) {
+type Blocker = { text: string; focus?: () => void };
+
+function SaveBar({ dirty, saving, blocked, blockers = [], onDiscard, form }: { dirty: boolean; saving: boolean; blocked: boolean; blockers?: Blocker[]; onDiscard: () => void; form: string }) {
   if (!dirty && !saving) return null;
   return (
     <div role="region" aria-label="Perubahan belum disimpan" className="sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center gap-2 border-t bg-background p-3 md:-mx-6 lg:-mx-8 print:hidden">
       <span className="text-sm font-medium">{saving ? "Menyimpan perubahan…" : "Perubahan belum disimpan"}</span>
+      {!saving && blockers.length > 0 && (
+        <ul aria-label="Belum bisa disimpan" className="flex flex-wrap gap-x-3 gap-y-1 text-sm text-destructive">
+          {blockers.map((blocker) => (
+            <li key={blocker.text}>
+              {blocker.focus ? (
+                <button type="button" className="underline underline-offset-4" onClick={blocker.focus}>
+                  {blocker.text}
+                </button>
+              ) : (
+                blocker.text
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="ml-auto flex gap-2">
         <Button type="button" variant="outline" disabled={saving} onClick={onDiscard}>
           Buang
         </Button>
-        <Button form={form} disabled={saving || blocked}>
+        <Button form={form} disabled={saving || blocked || blockers.length > 0} title="Ctrl+S">
           {saving ? "Menyimpan…" : "Simpan"}
         </Button>
       </div>
@@ -257,19 +302,65 @@ function SaveBar({ dirty, saving, blocked, onDiscard, form }: { dirty: boolean; 
   );
 }
 
+const focusLabel = (label: string) => (document.querySelector(`[aria-label="${label}"]`) as HTMLElement | null)?.focus();
+
+/** What keeps a new product from saving, each pointing at the first variant row to fix. */
+export function variantBlockers(variants: Pick<NewVariant, "sku" | "price" | "weight">[]): Blocker[] {
+  const rows = (test: (v: (typeof variants)[number], i: number) => boolean) => variants.flatMap((v, i) => (test(v, i) ? [i + 1] : []));
+  const skus = variants.map((v) => v.sku.trim().toLowerCase());
+  const checks: [string, string, number[]][] = [
+    ["Isi SKU", "SKU", rows((v) => !v.sku.trim())],
+    ["SKU ganda", "SKU", rows((v, i) => !!skus[i] && skus.indexOf(skus[i]) !== i)],
+    ["Isi harga", "Harga", rows((v) => v.price == null)],
+    ["Isi berat", "Berat", rows((v) => v.weight == null || v.weight < 1)],
+  ];
+  return checks
+    .filter(([, , list]) => list.length)
+    .map(([text, field, list]) => ({ text: `${text}: varian ${list.join(", ")}`, focus: () => focusLabel(`${field} varian ${list[0]}`) }));
+}
+
 function useCategories() {
   return useResource<{ categories: Category[] }>("/api/admin/categories").data?.categories ?? [];
 }
 
-function NewProductEditor() {
+/** Prefill for "Duplikat produk": same content and variants, but SKUs must be new and stock starts at zero. */
+export function duplicateDraft(source: Product): { draft: ProductDraft; variants: NewVariant[] } {
+  return {
+    draft: {
+      name: `${source.name} (salinan)`.slice(0, 200),
+      slug: slugify(`${source.slug}-salinan`),
+      description: source.description,
+      categoryId: source.categoryId,
+      // The photo stays with the original: media objects are bound to one product.
+      imageUrl: null,
+    },
+    variants: source.variants.map((v) => {
+      const { active: _active, ...fields } = variantDraft(v);
+      return { ...blankVariant(), ...fields, sku: "", stock: 0 };
+    }),
+  };
+}
+
+function NewProductEditor({ duplicateOf }: { duplicateOf: string | null }) {
   const { navigate } = useRoute();
   const categories = useCategories();
+  const source = useResource<{ product: Product }>(duplicateOf ? `/api/admin/products/${encodeURIComponent(duplicateOf)}` : null);
   const empty: ProductDraft = { slug: "", name: "", description: "", categoryId: null, imageUrl: null };
   const [draft, setDraft] = useState<ProductDraft>(empty);
   const [variants, setVariants] = useState<NewVariant[]>(() => [blankVariant()]);
+  const [slugEdited, setSlugEdited] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const dirty = !!(draft.name || draft.slug || draft.description || draft.imageUrl || variants.some((v) => v.sku || v.price != null));
+  const prefilled = useRef(false);
+  useEffect(() => {
+    if (!source.data || prefilled.current) return;
+    prefilled.current = true;
+    const copy = duplicateDraft(source.data.product);
+    setDraft(copy.draft);
+    setVariants(copy.variants);
+    setSlugEdited(true);
+  }, [source.data]);
+  const dirty = !!(draft.name || draft.slug || draft.description || draft.imageUrl || variants.some((v) => v.sku || v.price != null || v.weight != null));
   useNavigationGuard(dirty);
   const create = useMutation(
     () => {
@@ -283,32 +374,39 @@ function NewProductEditor() {
     },
     { key: "product-create", success: "Produk dibuat.", onSuccess: (result) => navigate(href("product-edit", { id: result.product.id }), true, true) },
   );
+  const blockers = [...variantBlockers(variants), ...(uploading ? [{ text: "Foto masih diunggah" }] : [])];
+  useSaveHotkey("product-form", dirty && !create.pending && !blockers.length);
   const editingVariant = variants.find((v) => v.key === editing);
+  const update = (key: string, next: Partial<NewVariant>) => setVariants((list) => list.map((row) => (row.key === key ? { ...row, ...next } : row)));
   return (
     <>
       <div className="print:hidden">
         <Button asChild variant="ghost" size="sm">
-          <Link to={href("products")}>
+          <Link to={listHref("products")}>
             <ArrowLeft />
             Produk
           </Link>
         </Button>
       </div>
-      <PageHeader title="Tambah produk" description="Produk baru langsung aktif setelah disimpan." />
+      <PageHeader
+        title={duplicateOf ? "Duplikat produk" : "Tambah produk"}
+        description={duplicateOf ? "Salinan belum tersimpan. Isi SKU baru untuk setiap varian; stok awal dimulai dari 0." : "Produk baru langsung aktif setelah disimpan."}
+      />
+      {source.error && <LoadError message={source.error} onRetry={() => void source.reload()} />}
       <form
         id="product-form"
         className="grid items-start gap-6 lg:grid-cols-3"
         onSubmit={(e) => {
           e.preventDefault();
-          void create.mutate(undefined);
+          if (!blockers.length) void create.mutate(undefined);
         }}
       >
         <div className="grid gap-6 lg:col-span-2">
-          <GeneralCard draft={draft} onChange={setDraft} categories={categories} disabled={create.pending} />
+          <GeneralCard draft={draft} onChange={setDraft} categories={categories} disabled={create.pending} autoSlug={!slugEdited} onSlugEdited={() => setSlugEdited(true)} />
           <Card>
             <CardHeader>
               <CardTitle>Varian</CardTitle>
-              <CardDescription>Setiap produk memiliki 1–{MAX_VARIANTS} varian (SKU).</CardDescription>
+              <CardDescription>Setiap produk memiliki 1–{MAX_VARIANTS} varian (SKU). Batas pembelian dan dimensi ada di Detail.</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3">
               <div className="overflow-x-auto rounded-md border">
@@ -324,6 +422,9 @@ function NewProductEditor() {
                       <TableHead>
                         Harga<RequiredMark />
                       </TableHead>
+                      <TableHead>
+                        Berat (g)<RequiredMark />
+                      </TableHead>
                       <TableHead>Stok awal</TableHead>
                       <TableHead>
                         <span className="sr-only">Aksi</span>
@@ -331,61 +432,85 @@ function NewProductEditor() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {variants.map((v, i) => {
-                      const update = (next: Partial<NewVariant>) => setVariants((list) => list.map((row) => (row.key === v.key ? { ...row, ...next } : row)));
-                      return (
-                        <TableRow key={v.key}>
-                          <TableCell>
-                            <Input aria-label={`SKU varian ${i + 1}`} required maxLength={100} className="min-w-28" value={v.sku} onChange={(e) => update({ sku: e.target.value })} />
-                          </TableCell>
-                          <TableCell>
-                            <Input aria-label={`Nama varian ${i + 1}`} required maxLength={200} className="min-w-28" value={v.name} onChange={(e) => update({ name: e.target.value })} />
-                          </TableCell>
-                          <TableCell>
-                            <Input
-                              aria-label={`Harga varian ${i + 1}`}
-                              type="number"
-                              required
-                              min={0}
-                              className="min-w-24"
-                              value={v.price ?? ""}
-                              onChange={(e) => update({ price: e.target.value === "" ? null : Number(e.target.value) })}
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Input
-                              aria-label={`Stok awal varian ${i + 1}`}
-                              type="number"
-                              min={0}
-                              className="min-w-20"
-                              value={v.stock ?? ""}
-                              onChange={(e) => update({ stock: e.target.value === "" ? null : Number(e.target.value) })}
-                            />
-                          </TableCell>
-                          <TableCell className="whitespace-nowrap text-right">
-                            <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(v.key)}>
-                              <Pencil />
-                              Detail
-                              {v.weight == null && <span className="sr-only"> (berat belum diisi)</span>}
-                            </Button>
+                    {variants.map((v, i) => (
+                      <TableRow key={v.key}>
+                        <TableCell className="align-top">
+                          <Input aria-label={`SKU varian ${i + 1}`} required maxLength={100} className="min-w-28" value={v.sku} onChange={(e) => update(v.key, { sku: e.target.value })} />
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <Input aria-label={`Nama varian ${i + 1}`} required maxLength={200} className="min-w-28" value={v.name} onChange={(e) => update(v.key, { name: e.target.value })} />
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <MoneyInput aria-label={`Harga varian ${i + 1}`} required max={1_000_000_000} className="min-w-28" value={v.price} onValueChange={(price) => update(v.key, { price })} />
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <Input
+                            aria-label={`Berat varian ${i + 1}`}
+                            type="number"
+                            inputMode="numeric"
+                            required
+                            min={1}
+                            max={1_000_000}
+                            className="min-w-20"
+                            value={v.weight ?? ""}
+                            onChange={(e) => update(v.key, { weight: e.target.value === "" ? null : Number(e.target.value) })}
+                          />
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <Input
+                            aria-label={`Stok awal varian ${i + 1}`}
+                            type="number"
+                            min={0}
+                            className="min-w-20"
+                            value={v.stock ?? ""}
+                            onChange={(e) => update(v.key, { stock: e.target.value === "" ? null : Number(e.target.value) })}
+                          />
+                        </TableCell>
+                        <TableCell className="text-right align-top whitespace-nowrap">
+                          <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(v.key)}>
+                            <Pencil />
+                            Detail<span className="sr-only"> varian {i + 1}</span>
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={`Duplikat varian ${i + 1}`}
+                            title="Duplikat varian"
+                            disabled={variants.length >= MAX_VARIANTS}
+                            onClick={() => setVariants((list) => list.flatMap((row) => (row.key === v.key ? [row, { ...row, key: blankVariant().key, sku: "" }] : [row])))}
+                          >
+                            <Copy />
+                          </Button>
+                          {variants.length > 1 && (
                             <Button
                               type="button"
                               variant="ghost"
                               size="icon-sm"
-                              aria-label={`Hapus varian ${i + 1}`}
-                              disabled={variants.length === 1}
-                              onClick={() => setVariants((list) => list.filter((row) => row.key !== v.key))}
+                              aria-label={`Terapkan harga varian ${i + 1} ke semua`}
+                              title="Terapkan harga ke semua varian"
+                              disabled={v.price == null}
+                              onClick={() => setVariants((list) => list.map((row) => ({ ...row, price: v.price })))}
                             >
-                              <Trash2 />
+                              <CopyCheck />
                             </Button>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
+                          )}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={`Hapus varian ${i + 1}`}
+                            disabled={variants.length === 1}
+                            onClick={() => setVariants((list) => list.filter((row) => row.key !== v.key))}
+                          >
+                            <Trash2 />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
                   </TableBody>
                 </Table>
               </div>
-              {variants.some((v) => v.weight == null) && <p className="text-sm text-muted-foreground">Isi berat setiap varian lewat tombol Detail.</p>}
               <Button
                 type="button"
                 variant="outline"
@@ -431,10 +556,12 @@ function NewProductEditor() {
         form="product-form"
         dirty={dirty}
         saving={create.pending}
-        blocked={uploading || variants.some((v) => v.weight == null || v.price == null)}
+        blocked={false}
+        blockers={blockers}
         onDiscard={() => {
           setDraft(empty);
           setVariants([blankVariant()]);
+          setSlugEdited(false);
         }}
       />
     </>
@@ -488,7 +615,9 @@ function AddVariantDialog({ product, open, onOpenChange, onAdded }: { product: P
 }
 
 function ExistingProductEditor({ id }: { id: string }) {
+  const { navigate } = useRoute();
   const resource = useResource<{ product: Product }>(`/api/admin/products/${encodeURIComponent(id)}`);
+  const [adjusting, setAdjusting] = useState<StockTarget | null>(null);
   const categories = useCategories();
   const [product, setProduct] = useState<Product | null>(null);
   const [draft, setDraft] = useState<ProductDraft | null>(null);
@@ -563,6 +692,8 @@ function ExistingProductEditor({ id }: { id: string }) {
     },
   );
 
+  useSaveHotkey("product-form", dirty && !save.pending && !toggleActive.pending && !uploading && !conflict);
+
   if (!product || !draft) {
     return (
       <>
@@ -585,7 +716,7 @@ function ExistingProductEditor({ id }: { id: string }) {
     <>
       <div className="print:hidden">
         <Button asChild variant="ghost" size="sm">
-          <Link to={href("products")}>
+          <Link to={listHref("products")}>
             <ArrowLeft />
             Produk
           </Link>
@@ -597,6 +728,18 @@ function ExistingProductEditor({ id }: { id: string }) {
         actions={
           <>
             {product.active ? <Badge>Aktif</Badge> : <Badge variant="outline">Diarsipkan</Badge>}
+            {product.active && (
+              <Button asChild variant="ghost">
+                <a href={`/products/${encodeURIComponent(product.slug)}`} target="_blank" rel="noreferrer">
+                  <ExternalLink />
+                  Lihat di toko
+                </a>
+              </Button>
+            )}
+            <Button variant="outline" onClick={() => navigate(href("product-new", {}, { duplicate: product.id }))}>
+              <Copy />
+              Duplikat
+            </Button>
             {product.active ? (
               <ConfirmDialog
                 trigger={
@@ -634,7 +777,11 @@ function ExistingProductEditor({ id }: { id: string }) {
             <CardHeader>
               <CardTitle>Varian</CardTitle>
               <CardDescription>
-                {product.variants.length} dari maksimal {MAX_VARIANTS} varian. Stok diubah dari halaman Inventori.
+                {product.variants.length} dari maksimal {MAX_VARIANTS} varian. Stok ready stock disesuaikan per varian dengan tombol Stok;{" "}
+                <Link to={href("inventory")} className="underline underline-offset-4">
+                  riwayat stok di Inventori
+                </Link>
+                .
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3">
@@ -665,15 +812,14 @@ function ExistingProductEditor({ id }: { id: string }) {
                             <div className="text-xs text-muted-foreground">{d.sku}</div>
                           </TableCell>
                           <TableCell>
-                            <Input
+                            <MoneyInput
                               aria-label={`Harga ${d.sku}`}
-                              type="number"
-                              min={0}
                               required
+                              max={1_000_000_000}
                               className="w-28"
                               disabled={busy}
-                              value={d.price ?? ""}
-                              onChange={(e) => setVariantDrafts((all) => ({ ...all, [v.id]: { ...d, price: e.target.value === "" ? null : Number(e.target.value) } }))}
+                              value={d.price}
+                              onValueChange={(price) => setVariantDrafts((all) => ({ ...all, [v.id]: { ...d, price } }))}
                             />
                           </TableCell>
                           <TableCell>{variantMode[d.mode]}</TableCell>
@@ -681,7 +827,19 @@ function ExistingProductEditor({ id }: { id: string }) {
                             {v.mode === "stock" ? number(v.available ?? 0) : v.campaign ? (v.campaign.quota == null ? "Tanpa kuota" : number(v.campaign.available ?? 0)) : "—"}
                           </TableCell>
                           <TableCell>{d.active ? <Badge variant="secondary">Aktif</Badge> : <Badge variant="outline">Nonaktif</Badge>}</TableCell>
-                          <TableCell className="text-right">
+                          <TableCell className="text-right whitespace-nowrap">
+                            {v.mode === "stock" && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                title="Sesuaikan stok"
+                                onClick={() => setAdjusting({ variantId: v.id, sku: v.sku, name: v.name, productName: product.name })}
+                              >
+                                <SlidersHorizontal />
+                                Stok<span className="sr-only"> {v.sku}</span>
+                              </Button>
+                            )}
                             <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(v.id)}>
                               <Pencil />
                               Edit<span className="sr-only"> {d.sku}</span>
@@ -743,6 +901,13 @@ function ExistingProductEditor({ id }: { id: string }) {
           </SheetFooter>
         </SheetContent>
       </Sheet>
+      <StockAdjustDialog
+        target={adjusting}
+        onClose={() => setAdjusting(null)}
+        onAdjusted={(variantId, inventory) =>
+          setProduct((p) => (p ? { ...p, variants: p.variants.map((v) => (v.id === variantId ? { ...v, ...inventory, available: inventory.onHand - inventory.reserved } : v)) } : p))
+        }
+      />
       <AddVariantDialog
         product={product}
         open={addOpen}
@@ -770,6 +935,7 @@ function ExistingProductEditor({ id }: { id: string }) {
 
 export function ProductEditorPage() {
   const { route } = useRoute();
-  return route.name === "product-new" ? <NewProductEditor /> : <ExistingProductEditor key={route.params.id} id={route.params.id} />;
+  const duplicateOf = route.query.get("duplicate");
+  return route.name === "product-new" ? <NewProductEditor key={duplicateOf ?? "new"} duplicateOf={duplicateOf} /> : <ExistingProductEditor key={route.params.id} id={route.params.id} />;
 }
 

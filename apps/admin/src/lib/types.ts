@@ -151,6 +151,7 @@ export type Campaign = {
   id: string;
   variantId: string;
   sku: string;
+  productId: string;
   productName: string;
   startsAt: number;
   endsAt: number;
@@ -170,6 +171,8 @@ export type Category = {
   position: number;
   active: boolean;
   version: number;
+  /** Products in the category, archived included (admin list only). */
+  productCount?: number;
 };
 
 export type Customer = {

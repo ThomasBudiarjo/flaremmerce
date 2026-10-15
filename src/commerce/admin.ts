@@ -69,7 +69,7 @@ const bool = (row: Record<string, unknown> | null, ...keys: string[]) => row && 
 export const productEntity = async (env: CommerceEnv, target: string) => bool(await s(env, 'SELECT id,slug,name,description,image_url AS imageUrl,active,category_id AS categoryId,version FROM products WHERE id=?', target).first(), 'active');
 export const variantEntity = async (env: CommerceEnv, target: string) => bool(await s(env, `SELECT v.id,v.product_id AS productId,v.sku,v.name,v.price,v.weight,v.mode,v.active,v.max_per_order AS maxPerOrder,v.max_per_customer AS maxPerCustomer,
   v.length_cm AS lengthCm,v.width_cm AS widthCm,v.height_cm AS heightCm,v.low_stock_threshold AS lowStockThreshold,v.version,i.on_hand AS onHand,i.reserved FROM product_variants v LEFT JOIN inventory i ON i.variant_id=v.id WHERE v.id=?`, target).first(), 'active');
-const campaignColumns = 'c.id,c.variant_id AS variantId,v.sku,p.name AS productName,c.starts_at AS startsAt,c.ends_at AS endsAt,c.ship_from AS shipFrom,c.ship_to AS shipTo,c.quota,c.reserved,c.sold,c.active,c.version';
+const campaignColumns = 'c.id,c.variant_id AS variantId,v.sku,p.id AS productId,p.name AS productName,c.starts_at AS startsAt,c.ends_at AS endsAt,c.ship_from AS shipFrom,c.ship_to AS shipTo,c.quota,c.reserved,c.sold,c.active,c.version';
 export const campaignEntity = async (env: CommerceEnv, target: string) => bool(await s(env, `SELECT ${campaignColumns} FROM preorder_campaigns c JOIN product_variants v ON v.id=c.variant_id JOIN products p ON p.id=v.product_id WHERE c.id=?`, target).first(), 'active');
 const categoryEntity = async (env: CommerceEnv, target: string) => bool(await s(env, 'SELECT id,slug,name,position,active,version FROM categories WHERE id=?', target).first(), 'active');
 /** Compare-and-swap UPDATE plus audit in one batch; a lost race returns the current entity so the editor can rebase. */
@@ -89,7 +89,12 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
   if (path === '/api/admin/operations' && request.method === 'GET') return operations(env);
   if (path === '/api/admin/summary' && request.method === 'GET') return summary(env, url);
   if (path === '/api/admin/orders/export.csv' && request.method === 'GET') return exportOrders(env, actor, url.searchParams);
-  if (path === '/api/admin/categories' && request.method === 'GET') return json({ categories: await categoryList(env, true) });
+  if (path === '/api/admin/categories' && request.method === 'GET') {
+    // Counts include archived products: they still block deleting the category.
+    const [list, used] = await Promise.all([categoryList(env, true), s(env, 'SELECT category_id AS id,count(*) AS n FROM products WHERE category_id IS NOT NULL GROUP BY category_id').all<{ id: string; n: number }>()]);
+    const counts = new Map(used.results.map(row => [row.id, row.n]));
+    return json({ categories: list.map(category => ({ ...category, productCount: counts.get(category.id) ?? 0 })) });
+  }
   if (path === '/api/admin/categories' && request.method === 'POST') {
     const input = parse(categoryInput, body), categoryId = id();
     await env.DB.batch([
@@ -135,7 +140,10 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 50)));
   if (!Number.isSafeInteger(before) || !Number.isSafeInteger(limit) || beforeId.length > 100) throw new HttpError(400, 'Invalid pagination');
   if (path === '/api/admin/products' && request.method === 'GET') {
-    const response = await catalog(env,undefined,url.searchParams,true);
+    // Parsed here, outside catalogQuery, so public catalog cache keys never vary by it.
+    const status = url.searchParams.get('status') || 'all';
+    if (!['all', 'active', 'archived'].includes(status)) throw new HttpError(400, 'Invalid status filter');
+    const response = await catalog(env,undefined,url.searchParams,true,status === 'all' ? undefined : status === 'active');
     response.headers.set('Cache-Control','private, no-store');
     return response;
   }

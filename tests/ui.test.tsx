@@ -2,6 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { toast } from 'sonner';
 import { AdminApp } from '../apps/admin/src/main';
 import OrderStatus from '../apps/storefront/src/components/OrderStatus';
 import Checkout from '../apps/storefront/src/components/Checkout';
@@ -23,7 +24,7 @@ beforeEach(() => {
   sessionStorage.clear();
   history.replaceState(null, '', '/order');
 });
-afterEach(async () => { await act(async () => root.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { toast.dismiss(); root.unmount(); }); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function click(text: string) {
   const button = [...document.querySelectorAll('button')].find(b => b.textContent === text)!;
   expect(button).toBeTruthy();
@@ -164,7 +165,8 @@ describe('admin SPA', () => {
     }));
     await act(async () => root.render(<AdminApp />));
   }
-  const text = () => document.body.textContent ?? '';
+  // Intl puts a no-break space after "Rp"; compare money as plain text.
+  const text = () => (document.body.textContent ?? '').replace(/\u00a0/g, ' ');
   const button = (label: string) => [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === label) as HTMLButtonElement;
   async function press(label: string) {
     const target = button(label);
@@ -575,6 +577,129 @@ describe('admin SPA', () => {
     expect(text()).toContain('Disalin');
     expect([...document.querySelectorAll('a')].find(a => a.textContent === 'WhatsApp')!.getAttribute('href')).toBe('https://wa.me/6281234567890');
     expect([...document.querySelectorAll('a')].find(a => a.textContent === 'Pesanan lain dari pembeli ini')!.getAttribute('href')).toBe('/admin/orders?q=budi%40example.com');
+  });
+
+  it('filters products by status on the server, searches live and shows the price range', async () => {
+    const two = { ...product, variants: [product.variants[0], { ...product.variants[0], id: 'v2', sku: 'SKU-2', price: 25000 }] };
+    await renderAdmin('/admin/products', url => {
+      if (url === '/api/admin/categories') return Response.json({ categories: [] });
+      if (url.startsWith('/api/admin/products?')) return Response.json({ products: [two], nextCursor: null });
+    });
+    expect(text()).toContain('Rp 100 – Rp 25.000');
+    const archived = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'Diarsipkan')!;
+    await act(async () => archived.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })));
+    expect(calls.at(-1)!.url).toBe('/api/admin/products?status=archived&limit=30');
+    const search = document.querySelector('[aria-label="Cari produk"]')!;
+    await type(search, 'k');
+    await wait(350);
+    expect(calls.at(-1)!.url).toBe('/api/admin/products?status=archived&limit=30');
+    expect(text()).toContain('Ketik minimal 2 karakter.');
+    await type(search, 'kaos');
+    await wait(150);
+    expect(calls.some(c => c.url.includes('q=kaos'))).toBe(false);
+    await wait(200);
+    expect(calls.at(-1)!.url).toBe('/api/admin/products?q=kaos&status=archived&limit=30');
+  });
+
+  it('derives the slug from the name until edited and names the exact blockers in the save bar', async () => {
+    await renderAdmin('/admin/products/new', url => (url === '/api/admin/categories' ? Response.json({ categories: [] }) : undefined));
+    await type(labelled('Nama produk'), 'Kaos Polos Édisi');
+    expect(labelled('Slug URL').value).toBe('kaos-polos-edisi');
+    await type(labelled('Slug URL'), 'kaos');
+    await type(labelled('Nama produk'), 'Kaos Polos Baru');
+    expect(labelled('Slug URL').value).toBe('kaos');
+    await type(document.querySelector('[aria-label="SKU varian 1"]')!, 'K-1');
+    await type(document.querySelector('[aria-label="Harga varian 1"]')!, '150000');
+    expect(text()).toContain('Rp 150.000');
+    await act(async () => (document.querySelector('[aria-label="Duplikat varian 1"]') as HTMLButtonElement).click());
+    const bar = () => document.querySelector('[aria-label="Belum bisa disimpan"]')?.textContent;
+    expect(bar()).toContain('Isi SKU: varian 2');
+    expect(bar()).toContain('Isi berat: varian 1, 2');
+    expect((document.querySelector('[aria-label="Harga varian 2"]') as HTMLInputElement).value).toBe('150000');
+    expect(button('Simpan').disabled).toBe(true);
+    await act(async () => ([...document.querySelectorAll('[aria-label="Belum bisa disimpan"] button')].find(b => b.textContent?.startsWith('Isi berat')) as HTMLButtonElement).click());
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Berat varian 1');
+    await type(document.querySelector('[aria-label="Harga varian 2"]')!, '99000');
+    await act(async () => (document.querySelector('[aria-label="Terapkan harga varian 2 ke semua"]') as HTMLButtonElement).click());
+    expect((document.querySelector('[aria-label="Harga varian 1"]') as HTMLInputElement).value).toBe('99000');
+  });
+
+  it('duplicates a product into the new-product editor without SKUs or stock', async () => {
+    const source = { ...product, variants: [{ ...product.variants[0], maxPerOrder: 2, lengthCm: 10 }], categoryId: 'c1', category: { slug: 'kaos', name: 'Kaos' } };
+    await renderAdmin('/admin/products/p', (url, init) => {
+      if (url === '/api/admin/categories') return Response.json({ categories: [{ id: 'c1', slug: 'kaos', name: 'Kaos', position: 0, active: true, version: 0 }] });
+      if (url === '/api/admin/products/p') return Response.json({ product: source });
+      if (url === '/api/admin/products' && init.method === 'POST') return Response.json({ product: { ...source, id: 'p2' } }, { status: 201 });
+      if (url === '/api/admin/products/p2') return Response.json({ product: { ...source, id: 'p2' } });
+    });
+    await press('Duplikat');
+    expect(location.pathname + location.search).toBe('/admin/products/new?duplicate=p');
+    expect(document.querySelector('h1')?.textContent).toBe('Duplikat produk');
+    expect(labelled('Nama produk').value).toBe('Produk (salinan)');
+    expect(labelled('Slug URL').value).toBe('produk-salinan');
+    expect((document.querySelector('[aria-label="SKU varian 1"]') as HTMLInputElement).value).toBe('');
+    expect((document.querySelector('[aria-label="Stok awal varian 1"]') as HTMLInputElement).value).toBe('0');
+    expect((document.querySelector('[aria-label="Berat varian 1"]') as HTMLInputElement).value).toBe('10');
+    // Editing the name of a copy keeps its slug.
+    await type(labelled('Nama produk'), 'Produk kedua');
+    expect(labelled('Slug URL').value).toBe('produk-salinan');
+    await type(document.querySelector('[aria-label="SKU varian 1"]')!, 'SKU-COPY');
+    await act(async () => (document.getElementById('product-form') as HTMLFormElement).requestSubmit());
+    const body = calls.find(c => c.method === 'POST')!.body;
+    expect(body).toEqual({ slug: 'produk-salinan', name: 'Produk kedua', description: 'Deskripsi', categoryId: 'c1', variants: [{ sku: 'SKU-COPY', name: 'Varian', price: 100, weight: 10, mode: 'stock', maxPerOrder: 2, maxPerCustomer: null, lengthCm: 10, widthCm: null, heightCm: null, lowStockThreshold: null, stock: 0 }] });
+    expect(location.pathname).toBe('/admin/products/p2');
+    expect(text()).not.toContain('Buang perubahan?');
+  });
+
+  it('converts a stock count (opname) into a ledger delta against fresh stock and previews it', async () => {
+    await renderAdmin('/admin/inventory', (url, init) => {
+      if (url.startsWith('/api/admin/products?')) return Response.json({ products: [product], nextCursor: null });
+      if (url === '/api/admin/inventory?variantId=v&limit=1') return Response.json({ inventory: { variantId: 'v', onHand: 12, reserved: 3, available: 9 }, movements: [], nextCursor: null });
+      if (url === '/api/admin/inventory' && init.method === 'POST') return Response.json({ inventory: { variantId: 'v', onHand: 15, reserved: 3 } });
+    });
+    await press('Sesuaikan SKU');
+    expect(text()).toContain('Fisik 12 · Tersedia 9');
+    await press('Set stok fisik (opname)');
+    await type(labelled('Stok fisik hasil hitung'), '2');
+    expect(text()).toContain('Stok fisik tidak boleh kurang dari 3 unit yang direservasi pesanan.');
+    expect(button('Simpan penyesuaian').disabled).toBe(true);
+    await type(labelled('Stok fisik hasil hitung'), '15');
+    expect(text()).toContain('Fisik 12 → 15 · Tersedia 9 → 12');
+    expect(text()).toContain('Selisih dicatat: +3');
+    await press('Stok opname');
+    expect(labelled('Alasan').value).toBe('Stok opname');
+    await act(async () => (document.getElementById('adjust-form') as HTMLFormElement).requestSubmit());
+    expect(calls.find(c => c.method === 'POST')!.body).toEqual({ variantId: 'v', delta: 3, reason: 'Stok opname' });
+    expect(text()).toContain('15');
+  });
+
+  it('reorders categories with compare-and-swap PATCHes and blocks deleting one in use', async () => {
+    const categories = [
+      { id: 'a', slug: 'a', name: 'Alpha', position: 1, active: true, version: 2, productCount: 3 },
+      { id: 'b', slug: 'b', name: 'Beta', position: 5, active: true, version: 7, productCount: 0 },
+    ];
+    await renderAdmin('/admin/categories', (url, init) => {
+      if (url === '/api/admin/categories') return Response.json({ categories });
+      const match = /^\/api\/admin\/categories\/(\w)$/.exec(url);
+      if (match && init.method === 'PATCH') {
+        const body = JSON.parse(String(init.body));
+        const current = categories.find(c => c.id === match[1])!;
+        return Response.json({ category: { ...current, productCount: undefined, position: body.position, version: current.version + 1 } });
+      }
+    });
+    expect([...document.querySelectorAll('a')].find(a => a.textContent === 'Alpha')!.getAttribute('href')).toBe('/admin/products?category=a');
+    expect(document.querySelector('[aria-label="Hapus Alpha"]')).toBeNull();
+    expect(document.querySelector('[aria-label^="Alpha tidak dapat dihapus"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="Hapus Beta"]')).toBeTruthy();
+    await act(async () => (document.querySelector('[aria-label="Turunkan Alpha"]') as HTMLButtonElement).click());
+    expect(calls.filter(c => c.method === 'PATCH').map(c => [c.url, c.body])).toEqual([
+      ['/api/admin/categories/a', { position: 5, version: 2 }],
+      ['/api/admin/categories/b', { position: 1, version: 7 }],
+    ]);
+    expect([...document.querySelectorAll('tbody a')].map(a => a.textContent)).toEqual(['Beta', 'Alpha']);
+    const { moveChanges } = await import('../apps/admin/src/pages/categories');
+    const tied = ['x', 'y', 'z'].map(id => ({ id, slug: id, name: id, position: 0, active: true, version: 0 }));
+    expect(moveChanges(tied, 1, -1).map(c => [c.category.id, c.position])).toEqual([['x', 1], ['z', 2]]);
   });
 
   it('names the browser tab after the current page', async () => {

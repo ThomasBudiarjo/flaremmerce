@@ -23,6 +23,7 @@ export function PhotoUpload({
   const [preview, setPreview] = useState("");
   const [error, setError] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const id = React.useId();
   useEffect(() => {
@@ -74,8 +75,28 @@ export function PhotoUpload({
   }
   return (
     <div className="grid gap-3">
-      <div className="grid gap-2">
+      <div
+        data-dragging={dragging || undefined}
+        className="grid gap-2 rounded-lg border border-dashed p-3 transition-colors data-dragging:border-primary data-dragging:bg-muted"
+        onDragOver={(e) => {
+          if (disabled || !e.dataTransfer.types.includes("Files")) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+          setDragging(true);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          if (disabled) return;
+          if (input.current) input.current.value = "";
+          void select(e.dataTransfer.files[0]);
+        }}
+      >
         <Label htmlFor={id}>Unggah foto utama (JPEG, PNG, WebP; maksimal 5 MiB)</Label>
+        <p className="text-xs text-muted-foreground">Tarik foto ke sini atau pilih file.</p>
         <Input
           ref={input}
           id={id}

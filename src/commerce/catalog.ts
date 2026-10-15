@@ -18,7 +18,8 @@ export async function publicCategories(env: CommerceEnv) {
   return json({ categories: await categoryList(env) }, 200, publicCache);
 }
 
-export async function catalog(env: CommerceEnv, slug?: string, query = new URLSearchParams(), includeInactive = false) {
+/** `active` narrows the admin list (includeInactive) to active or archived products; the public catalog ignores it. */
+export async function catalog(env: CommerceEnv, slug?: string, query = new URLSearchParams(), includeInactive = false, active?: boolean) {
   const db = drizzle(env.DB);
   if (slug !== undefined && !validSlug(slug)) throw new HttpError(404, 'Product not found');
   // Same normalizers as the shared cache key, so every cacheable query is exactly what is served.
@@ -31,7 +32,7 @@ export async function catalog(env: CommerceEnv, slug?: string, query = new URLSe
   const search = params.q ? sql`${products.name} LIKE ${likePattern(params.q)} ESCAPE '\\'` : undefined;
   // Keep IN parameters below D1's 100-bind limit and avoid one query per product.
   const page = await db.select({ product: products, category: { slug: categories.slug, name: categories.name } }).from(products).leftJoin(categories, eq(categories.id, products.categoryId))
-    .where(and(includeInactive ? undefined : eq(products.active, 1), slug ? eq(products.slug, slug) : undefined, after ? gt(products.slug, after) : undefined, category, search)).orderBy(products.slug).limit(limit + 1);
+    .where(and(includeInactive ? (active === undefined ? undefined : eq(products.active, active ? 1 : 0)) : eq(products.active, 1), slug ? eq(products.slug, slug) : undefined, after ? gt(products.slug, after) : undefined, category, search)).orderBy(products.slug).limit(limit + 1);
   const rows = page.slice(0, limit);
   if (slug && !rows.length) throw new HttpError(404, 'Product not found');
   const now = Date.now(), low = envCount(env.LOW_STOCK_PUBLIC, 5);

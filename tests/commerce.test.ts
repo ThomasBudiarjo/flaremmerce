@@ -1182,6 +1182,31 @@ describe('ecommerce features', () => {
     expect(await sql("SELECT count(*) AS n FROM audit_logs WHERE action LIKE 'category.%'").first('n')).toBe(3);
   });
 
+  it('filters admin products by active/archived status without changing the public catalog', async () => {
+    await sql("INSERT INTO products(id,slug,name,active) VALUES('old','old-stock','Old stock',0),('new','new-stock','New stock',1)").run();
+    const slugs = async (path: string, headers = catalogRole) => ((await (await request(path, undefined, headers)).json() as any).products as any[]).map(p => p.slug);
+    expect(await slugs('/api/admin/products')).toEqual(['new-stock', 'old-stock', 'product']);
+    expect(await slugs('/api/admin/products?status=all')).toEqual(['new-stock', 'old-stock', 'product']);
+    expect(await slugs('/api/admin/products?status=active')).toEqual(['new-stock', 'product']);
+    expect(await slugs('/api/admin/products?status=archived')).toEqual(['old-stock']);
+    expect(await slugs('/api/admin/products?status=archived&q=stock&limit=1')).toEqual(['old-stock']);
+    expect((await request('/api/admin/products?status=deleted', undefined, catalogRole)).status).toBe(400);
+    // The public catalog never shows archived products and ignores the admin-only parameter.
+    const publicSlugs = await slugs('/api/catalog', {});
+    expect(publicSlugs).toEqual(['new-stock', 'product']);
+    expect(await slugs('/api/catalog?status=archived', {})).toEqual(publicSlugs);
+    expect(publicCacheKey(new URL('https://shop.test/api/catalog?status=archived'), catalogParams)!.url).toBe('https://shop.test/api/catalog');
+  });
+
+  it('counts products per category, archived ones included, for the admin list only', async () => {
+    await sql("INSERT INTO categories(id,slug,name,position) VALUES('c1','satu','Satu',0),('c2','dua','Dua',1)").run();
+    await sql("INSERT INTO products(id,slug,name,category_id,active) VALUES('x','x','X','c1',1),('y','y','Y','c1',0)").run();
+    const { categories } = await (await request('/api/admin/categories', undefined, catalogRole)).json() as any;
+    expect(categories.map((c: any) => [c.slug, c.productCount])).toEqual([['satu', 2], ['dua', 0]]);
+    const open = await (await request('/api/categories')).json() as any;
+    expect(open.categories[0]).not.toHaveProperty('productCount');
+  });
+
   it('previews the cart authoritatively without caching or reserving', async () => {
     await sql("UPDATE product_variants SET max_per_order=2 WHERE id='a'").run();
     await db().batch([
