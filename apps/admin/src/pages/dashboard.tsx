@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "@/lib/router";
+import { RefreshCw } from "lucide-react";
+import { href, Link } from "@/lib/router";
 import { get } from "@/lib/api";
-import { money, number, dateWIB } from "@/lib/format";
+import { clockWIB, money, number, dateWIB, rangeWIB } from "@/lib/format";
+import { useSummary } from "@/lib/summary";
 import { useSession } from "@/lib/auth";
 import { useLatestRequest } from "@/hooks/use-latest-request";
 import type { OperationsSnapshot, OrderSummary, Summary } from "@/lib/types";
 import { PageHeader } from "@/components/page-header";
 import { MoneyText } from "@/components/money-text";
 import { OrderStatusBadge, FulfillmentBadge } from "@/components/status-badge";
-import { DataTable } from "@/components/data-table";
+import { DataTable, LinkRow } from "@/components/data-table";
 import { LoadError } from "@/components/field";
-import { TableRow, TableCell } from "@/components/ui/table";
+import { TableCell } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -34,13 +36,17 @@ export function DashboardPage() {
   const [orders, setOrders] = useState<OrderSummary[] | null>(null);
   const [paymentsUnknown, setPaymentsUnknown] = useState<number | null>(null);
   const [error, setError] = useState("");
+  const [loadedAt, setLoadedAt] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
   const begin = useLatestRequest();
   const ops = can("ops");
+  const { lowStock } = useSummary();
 
   const load = useCallback(async () => {
     if (!ops) return;
     const controller = begin();
     setError("");
+    setLoading(true);
     try {
       const [nextSummary, recent, operations] = await Promise.all([
         get<Summary>(`/api/admin/summary?range=${range}`, controller.signal),
@@ -51,8 +57,11 @@ export function DashboardPage() {
       setSummary(nextSummary);
       setOrders(recent.orders);
       setPaymentsUnknown(operations.sections.payments?.items.filter((i) => i.status === "unknown").length ?? 0);
+      setLoadedAt(Date.now());
     } catch (e) {
       if (!controller.signal.aborted) setError((e as Error).message);
+    } finally {
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, [begin, range, ops]);
 
@@ -95,17 +104,41 @@ export function DashboardPage() {
               Peran katalog mengelola produk, kategori, inventori, dan pre-order dari menu di samping.
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-wrap gap-2">
-            <Button asChild variant="outline">
-              <Link to="/products">Kelola produk</Link>
-            </Button>
-            <Button asChild variant="outline">
-              <Link to="/inventory?low=1">Stok menipis</Link>
-            </Button>
+          <CardContent className="grid gap-4">
+            <div className="text-sm" role="status">
+              {lowStock == null ? (
+                <Skeleton className="h-5 w-48" />
+              ) : lowStock === 0 ? (
+                "Tidak ada varian ready stock di bawah ambang."
+              ) : (
+                <>
+                  <span className="text-2xl font-semibold tabular-nums">{lowStock >= 100 ? "100+" : number(lowStock)}</span> varian stok menipis
+                </>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button asChild variant="outline">
+                <Link to={href("products")}>Kelola produk</Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link to={href("inventory", {}, { low: "1" })}>Stok menipis</Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link to={href("inventory")}>Inventori</Link>
+              </Button>
+            </div>
           </CardContent>
         </Card>
       ) : (
         <>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+            {summary ? <span>{rangeWIB(summary.since, summary.now)}</span> : <Skeleton className="h-4 w-36" />}
+            {loadedAt && <span>Diperbarui {clockWIB(loadedAt)}</span>}
+            <Button variant="ghost" size="sm" disabled={loading} onClick={() => void load()}>
+              <RefreshCw className={loading ? "animate-spin motion-reduce:animate-none" : undefined} />
+              {loading ? "Memuat…" : "Perbarui"}
+            </Button>
+          </div>
           {error && <LoadError message={error} onRetry={() => void load()} />}
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {(
@@ -162,16 +195,16 @@ export function DashboardPage() {
               loading={orders === null && !error}
               columns={[
                 { head: "Referensi" },
-                { head: "Tanggal" },
+                { head: "Tanggal", mobileHidden: true },
                 { head: "Pelanggan" },
-                { head: "Pembayaran" },
-                { head: "Pengiriman" },
+                { head: "Pembayaran", mobileHidden: true },
+                { head: "Pengiriman", mobileHidden: true },
                 { head: "Total", className: "text-right" },
               ]}
               empty={{ title: "Belum ada pesanan", description: "Pesanan baru akan muncul di sini." }}
             >
               {(orders ?? []).map((order) => (
-                <TableRow key={order.id}>
+                <LinkRow key={order.id} to={href("order-detail", { id: order.id })}>
                   <TableCell className="p-2 font-medium">
                     <Link to={`/orders/${order.id}`} className="underline-offset-4 hover:underline">
                       {order.reference}
@@ -188,7 +221,7 @@ export function DashboardPage() {
                   <TableCell className="p-2 text-right">
                     <MoneyText value={order.total} currency={order.currency} />
                   </TableCell>
-                </TableRow>
+                </LinkRow>
               ))}
             </DataTable>
           </section>

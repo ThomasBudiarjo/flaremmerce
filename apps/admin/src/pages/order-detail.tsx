@@ -1,28 +1,31 @@
 import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
-import { ArrowLeft, Ban, MoreHorizontal, Printer, ShieldAlert, Truck } from "lucide-react";
+import { ArrowLeft, ArrowRight, Ban, ChevronLeft, ChevronRight, MessageCircle, MoreHorizontal, Printer, ShieldAlert, Truck } from "lucide-react";
 import { patch, post } from "@/lib/api";
 import { useSession } from "@/lib/auth";
-import { href, Link, useRoute } from "@/lib/router";
+import { href, Link, useNavigationGuard, useRoute } from "@/lib/router";
+import { listHref, neighbours } from "@/lib/list-memory";
+import { markSummaryStale } from "@/lib/summary";
 import {
   blocklistKind,
   couriers,
-  dateWIB,
   eventKind,
   label,
   milestoneKind,
-  money,
   number,
   paymentStatus,
   reviewReason,
   timeWIB,
   variantMode,
+  whatsappLink,
 } from "@/lib/format";
 import type { OrderDetail, PaymentAttempt, ReviewItem } from "@/lib/types";
 import { useResource } from "@/hooks/use-resource";
 import { useMutation } from "@/hooks/use-mutation";
+import { useSaveHotkey } from "@/hooks/use-hotkeys";
 import { get } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
+import { CopyButton } from "@/components/copy-button";
+import { addressLines, PrintView, usePrint } from "@/components/print-view";
 import { MoneyText } from "@/components/money-text";
 import { FulfillmentBadge, OrderStatusBadge, PaymentBadge } from "@/components/status-badge";
 import { Field, LoadError, TextField } from "@/components/field";
@@ -63,12 +66,6 @@ const nextStep: Record<string, { status: "processing" | "shipped" | "delivered";
   shipped: { status: "delivered", title: "Konfirmasi diterima", action: "Tandai terkirim", description: "Tandai pesanan sudah diterima pembeli. Pesanan menjadi selesai." },
 };
 
-function addressLines(address: Record<string, any>) {
-  return [address.line, [address.subdistrict, address.district].filter(Boolean).join(", "), [address.city, address.province].filter(Boolean).join(", "), address.postalCode].filter(
-    (line) => line && String(line).trim(),
-  ) as string[];
-}
-
 function FulfillmentCard({ order, onChanged }: { order: OrderDetail; onChanged: (next: Partial<OrderDetail>) => void }) {
   const step = order.status === "paid" ? nextStep[order.fulfillment] : undefined;
   const defaultCourier = (order.shipping.service ?? "").split(":")[0].toLowerCase();
@@ -83,10 +80,14 @@ function FulfillmentCard({ order, onChanged }: { order: OrderDetail; onChanged: 
       onSuccess: (result) => {
         setTracking("");
         setNote("");
+        markSummaryStale();
         onChanged(result.order);
       },
     },
   );
+  useNavigationGuard(!!step && !!(tracking.trim() || note.trim()), "Nomor resi atau catatan pengiriman yang belum disimpan akan hilang.");
+  const blocked = update.pending || order.hold || (step?.status === "shipped" && !tracking.trim());
+  useSaveHotkey("fulfillment-form", !!step && !blocked);
   return (
     <Card>
       <CardHeader>
@@ -95,9 +96,17 @@ function FulfillmentCard({ order, onChanged }: { order: OrderDetail; onChanged: 
           Pengiriman
           <FulfillmentBadge value={order.fulfillment} />
         </CardTitle>
-        <CardDescription>
+        <CardDescription className="flex flex-wrap items-center gap-x-1">
           {order.shipping.service ? `Layanan dibeli: ${order.shipping.service.toUpperCase()}` : "Layanan pengiriman tidak tercatat."}
-          {order.tracking && ` · Resi ${order.tracking.number}${order.tracking.courierName ? ` (${order.tracking.courierName})` : ""}`}
+          {order.tracking && (
+            <>
+              <span>
+                · Resi {order.tracking.number}
+                {order.tracking.courierName ? ` (${order.tracking.courierName})` : ""}
+              </span>
+              <CopyButton value={order.tracking.number} label="nomor resi" />
+            </>
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
@@ -118,6 +127,7 @@ function FulfillmentCard({ order, onChanged }: { order: OrderDetail; onChanged: 
         )}
         {step && (
           <form
+            id="fulfillment-form"
             className="grid gap-3 rounded-lg border p-3"
             aria-label={step.title}
             onSubmit={(e) => {
@@ -155,7 +165,7 @@ function FulfillmentCard({ order, onChanged }: { order: OrderDetail; onChanged: 
             <Field label="Catatan internal (opsional)">
               {(id) => <Textarea id={id} rows={2} maxLength={2000} value={note} onChange={(e) => setNote(e.target.value)} />}
             </Field>
-            <Button className="justify-self-start" disabled={update.pending || order.hold || (step.status === "shipped" && !tracking.trim())}>
+            <Button className="justify-self-start" disabled={blocked} title="Ctrl+S">
               {update.pending ? "Menyimpan…" : step.action}
             </Button>
           </form>
@@ -169,6 +179,7 @@ function TimelineCard({ order, onAdded }: { order: OrderDetail; onAdded: () => v
   const [kind, setKind] = useState("preparing");
   const [note, setNote] = useState("");
   const [estimatedDate, setEstimatedDate] = useState("");
+  useNavigationGuard(order.status === "paid" && !!(note.trim() || estimatedDate), "Milestone yang belum ditambahkan akan hilang.");
   const add = useMutation(
     (body: Record<string, string>) => post(`/api/admin/orders/${encodeURIComponent(order.id)}/timeline`, body),
     {
@@ -385,82 +396,6 @@ function CancelDialog({
   );
 }
 
-function PrintView({ mode, order }: { mode: "invoice" | "packing"; order: OrderDetail }) {
-  const subtotal = order.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  return createPortal(
-    <div className="hidden p-8 text-sm text-black print:block" data-print-view={mode}>
-      <div className="flex justify-between gap-4">
-        <div>
-          <p className="text-xl font-semibold">{mode === "invoice" ? "Invoice" : "Packing slip"}</p>
-          <p>Flaremmerce</p>
-        </div>
-        <div className="text-right">
-          <p className="font-medium">{order.reference}</p>
-          <p>{dateWIB(order.createdAt)}</p>
-        </div>
-      </div>
-      <div className="mt-6 grid grid-cols-2 gap-6">
-        <div>
-          <p className="font-medium">Kirim ke</p>
-          <p>{order.contact.name}</p>
-          {order.contact.phone && <p>{order.contact.phone}</p>}
-          {addressLines(order.address).map((line) => (
-            <p key={line}>{line}</p>
-          ))}
-        </div>
-        <div>
-          <p className="font-medium">Pengiriman</p>
-          <p>{order.shipping.service?.toUpperCase() ?? "—"}</p>
-          {order.tracking && <p>Resi {order.tracking.number}</p>}
-        </div>
-      </div>
-      <table className="mt-6 w-full border-collapse">
-        <thead>
-          <tr className="border-b text-left">
-            <th className="py-1">Produk</th>
-            <th className="py-1">SKU</th>
-            <th className="py-1 text-right">Jumlah</th>
-            {mode === "invoice" && <th className="py-1 text-right">Harga</th>}
-            {mode === "invoice" && <th className="py-1 text-right">Subtotal</th>}
-            {mode === "packing" && <th className="py-1 text-right">Dicek</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {order.items.map((item) => (
-            <tr key={item.id} className="border-b">
-              <td className="py-1">
-                {item.productName} · {item.name}
-              </td>
-              <td className="py-1">{item.sku}</td>
-              <td className="py-1 text-right">{item.quantity}</td>
-              {mode === "invoice" && <td className="py-1 text-right">{money(item.price, order.currency)}</td>}
-              {mode === "invoice" && <td className="py-1 text-right">{money(item.price * item.quantity, order.currency)}</td>}
-              {mode === "packing" && <td className="py-1 text-right">☐</td>}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {mode === "invoice" && (
-        <div className="mt-4 ml-auto grid w-64 gap-1">
-          <p className="flex justify-between">
-            <span>Subtotal</span>
-            <span>{money(subtotal, order.currency)}</span>
-          </p>
-          <p className="flex justify-between">
-            <span>Ongkir</span>
-            <span>{money(order.shipping.amount ?? 0, order.currency)}</span>
-          </p>
-          <p className="flex justify-between font-semibold">
-            <span>Total</span>
-            <span>{money(order.total, order.currency)}</span>
-          </p>
-        </div>
-      )}
-    </div>,
-    document.body,
-  );
-}
-
 function OpenReviews({ order }: { order: OrderDetail }) {
   const [reviews, setReviews] = useState<ReviewItem[] | null>(null);
   useEffect(() => {
@@ -498,23 +433,11 @@ export function OrderDetailPage() {
   const { route } = useRoute();
   const id = route.params.id;
   const resource = useResource<Detail>(`/api/admin/orders/${encodeURIComponent(id)}`);
-  const [print, setPrint] = useState<"invoice" | "packing" | null>(null);
+  const [print, setPrint] = usePrint<"invoice" | "packing">();
   const [cancelOpen, setCancelOpen] = useState(false);
   const [blockOpen, setBlockOpen] = useState(false);
-
-  useEffect(() => {
-    if (!print) return;
-    const root = document.getElementById("root");
-    root?.classList.add("print:hidden");
-    const done = () => setPrint(null);
-    window.addEventListener("afterprint", done);
-    const timer = setTimeout(() => window.print(), 0);
-    return () => {
-      clearTimeout(timer);
-      window.removeEventListener("afterprint", done);
-      root?.classList.remove("print:hidden");
-    };
-  }, [print]);
+  const [advanced, setAdvanced] = useState(false);
+  const around = neighbours("orders", id);
 
   const data = resource.data;
   const order = data?.order;
@@ -537,21 +460,58 @@ export function OrderDetailPage() {
   }
 
   const subtotal = order.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const whatsapp = whatsappLink(order.contact.phone);
+  const lookup = order.contact.email || order.contact.phone;
+  const address = [order.contact.name, order.contact.phone, ...addressLines(order.address)].filter(Boolean).join("\n");
   return (
     <>
-      <div className="print:hidden">
+      <nav aria-label="Navigasi pesanan" className="flex flex-wrap items-center gap-2 print:hidden">
         <Button asChild variant="ghost" size="sm">
-          <Link to={href("orders")}>
+          <Link to={listHref("orders")}>
             <ArrowLeft />
             Pesanan
           </Link>
         </Button>
-      </div>
+        {around.index >= 0 && (
+          <div className="ml-auto flex items-center gap-1">
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {around.index + 1} / {around.total}
+            </span>
+            {around.prev ? (
+              <Button asChild variant="ghost" size="sm">
+                <Link to={href("order-detail", { id: around.prev })}>
+                  <ChevronLeft />
+                  Sebelumnya
+                </Link>
+              </Button>
+            ) : (
+              <Button variant="ghost" size="sm" disabled>
+                <ChevronLeft />
+                Sebelumnya
+              </Button>
+            )}
+            {around.next ? (
+              <Button asChild variant="ghost" size="sm">
+                <Link to={href("order-detail", { id: around.next })}>
+                  Berikutnya
+                  <ChevronRight />
+                </Link>
+              </Button>
+            ) : (
+              <Button variant="ghost" size="sm" disabled>
+                Berikutnya
+                <ChevronRight />
+              </Button>
+            )}
+          </div>
+        )}
+      </nav>
       <PageHeader
         title={`Pesanan ${order.reference}`}
         description={`Dibuat ${timeWIB(order.createdAt)} WIB`}
         actions={
           <>
+            <CopyButton value={order.reference} label="referensi" />
             <OrderStatusBadge value={order.status} />
             <FulfillmentBadge value={order.fulfillment} />
             {order.hold && <Badge variant="destructive">Ditahan</Badge>}
@@ -640,11 +600,26 @@ export function OrderDetailPage() {
               </Table>
             </CardContent>
           </Card>
+          {advanced && around.next && (
+            <Alert>
+              <AlertTitle>Langkah pengiriman tersimpan</AlertTitle>
+              <AlertDescription className="flex flex-wrap items-center gap-2">
+                Pesanan berikutnya di daftar sudah menunggu.
+                <Button asChild size="sm">
+                  <Link to={href("order-detail", { id: around.next })}>
+                    Lanjut ke pesanan berikutnya
+                    <ArrowRight />
+                  </Link>
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
           <FulfillmentCard
             key={`${order.id}:${order.fulfillment}`}
             order={order}
             onChanged={(next) => {
               resource.setData((current) => (current ? { ...current, order: { ...current.order, ...next } } : current));
+              setAdvanced(true);
               refresh();
             }}
           />
@@ -657,13 +632,41 @@ export function OrderDetailPage() {
             </CardHeader>
             <CardContent className="grid gap-1 text-sm">
               <p className="font-medium">{order.contact.name || "Guest"}</p>
-              {order.contact.email && <p className="break-all">{order.contact.email}</p>}
-              {order.contact.phone && <p>{order.contact.phone}</p>}
+              {order.contact.email && (
+                <p className="flex items-center gap-1 break-all">
+                  {order.contact.email}
+                  <CopyButton value={order.contact.email} label="email" />
+                </p>
+              )}
+              {order.contact.phone && (
+                <p className="flex items-center gap-1">
+                  {order.contact.phone}
+                  <CopyButton value={order.contact.phone} label="nomor HP" />
+                </p>
+              )}
+              <div className="mt-2 flex flex-wrap gap-2 print:hidden">
+                {whatsapp && (
+                  <Button asChild variant="outline" size="sm">
+                    <a href={whatsapp} target="_blank" rel="noreferrer">
+                      <MessageCircle />
+                      WhatsApp
+                    </a>
+                  </Button>
+                )}
+                {lookup && (
+                  <Button asChild variant="ghost" size="sm">
+                    <Link to={href("orders", {}, { q: lookup })}>Pesanan lain dari pembeli ini</Link>
+                  </Button>
+                )}
+              </div>
             </CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle>Alamat & layanan</CardTitle>
+              <CardTitle className="flex items-center gap-1">
+                Alamat & layanan
+                <CopyButton value={address} label="alamat lengkap" />
+              </CardTitle>
             </CardHeader>
             <CardContent className="grid gap-1 text-sm">
               {addressLines(order.address).map((line) => (
@@ -733,7 +736,7 @@ export function OrderDetailPage() {
       </div>
       <BlockDialog order={order} open={blockOpen} onOpenChange={setBlockOpen} />
       <CancelDialog order={order} open={cancelOpen} onOpenChange={setCancelOpen} onCancelled={refresh} />
-      {print && <PrintView mode={print} order={order} />}
+      {print && <PrintView mode={print} orders={[order]} />}
     </>
   );
 }

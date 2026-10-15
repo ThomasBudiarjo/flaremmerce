@@ -419,6 +419,164 @@ describe('admin SPA', () => {
     expect(document.querySelector('h1')?.textContent).toBe('Kategori');
   });
 
+  const keydown = (element: Element, key: string) => act(async () => { element.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })); });
+  const listOrder = (id: string, patch: Record<string, unknown> = {}) => ({ ...order({ id, reference: `FL-${id}`, ...patch }).order });
+
+  it('shows live variant results in global search, moves with the arrow keys and closes on Escape', async () => {
+    await renderAdmin('/admin/orders/o1', url => {
+      if (url === '/api/admin/orders/o1') return Response.json(order());
+      if (url.startsWith('/api/admin/variants/search')) return Response.json({ variants: [
+        { id: 'v1', sku: 'KAOS-M', name: 'M', mode: 'stock', price: 1000, active: true, productId: 'p1', productName: 'Kaos' },
+        { id: 'v2', sku: 'KAOS-L', name: 'L', mode: 'stock', price: 1000, active: true, productId: 'p2', productName: 'Kaos' }] });
+      if (url === '/api/admin/products/p2') return Response.json({ product: { ...product, id: 'p2' } });
+      if (url === '/api/admin/categories') return Response.json({ categories: [] });
+      if (url.startsWith('/api/admin/review')) return Response.json({ items: [], nextCursor: null });
+    });
+    const input = document.getElementById('global-search') as HTMLInputElement;
+    expect(input.placeholder).toBe('Referensi lengkap, email, HP, atau SKU…');
+    await type(input, 'KAOS');
+    expect(calls.some(c => c.url.startsWith('/api/admin/variants/search'))).toBe(false);
+    await wait(280);
+    expect(calls.map(c => c.url)).toContain('/api/admin/variants/search?q=KAOS');
+    const listbox = document.querySelector('[role="listbox"]')!;
+    expect([...listbox.querySelectorAll('[role="group"]')].map(g => g.getAttribute('aria-label'))).toEqual(['Pesanan', 'Produk']);
+    expect(listbox.querySelectorAll('[role="option"]')).toHaveLength(2);
+    expect(input.disabled).toBe(false);
+    await keydown(input, 'Escape');
+    expect(document.querySelector('[role="listbox"]')).toBeNull();
+    await keydown(input, 'ArrowDown');
+    await keydown(input, 'ArrowDown');
+    expect(input.getAttribute('aria-activedescendant')).toBe(document.querySelectorAll('[role="option"]')[1].id);
+    await act(async () => input.closest('form')!.requestSubmit());
+    expect(location.pathname).toBe('/admin/products/p2');
+    expect(input.value).toBe('');
+  });
+
+  it('looks up exact orders from global search on Enter and closes on an outside click', async () => {
+    await renderAdmin('/admin', url => {
+      if (url === '/api/admin/orders?q=budi%40example.com&limit=5') return Response.json({ orders: [listOrder('a'), listOrder('b')], nextCursor: null });
+      if (url.startsWith('/api/admin/variants/search')) return Response.json({ variants: [] });
+      if (url.startsWith('/api/admin/orders')) return Response.json({ orders: [], nextCursor: null });
+      if (url === '/api/admin/operations') return Response.json({ sections: {} });
+    });
+    const input = document.getElementById('global-search') as HTMLInputElement;
+    await type(input, 'budi@example.com');
+    await act(async () => input.closest('form')!.requestSubmit());
+    const options = [...document.querySelectorAll('[role="option"]')].map(o => o.textContent);
+    expect(options[0]).toContain('FL-a');
+    expect(options[2]).toBe('Lihat semua di daftar pesanan');
+    await act(async () => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
+    expect(document.querySelector('[role="listbox"]')).toBeNull();
+  });
+
+  it('applies order date presets as WIB from/to filters and explains exact search when nothing matches', async () => {
+    const { presetRange } = await import('../apps/admin/src/pages/orders');
+    await renderAdmin('/admin/orders?q=FL-9', url => url.startsWith('/api/admin/orders?') ? Response.json({ orders: [], nextCursor: null }) : undefined);
+    expect(text()).toContain('Pencarian harus referensi lengkap, email, atau nomor HP');
+    await press('7 hari');
+    const week = presetRange('7d');
+    expect(Object.fromEntries(new URLSearchParams(location.search))).toEqual({ q: 'FL-9', from: week.from, to: week.to });
+    expect(calls.at(-1)!.url).toBe(`/api/admin/orders?q=FL-9&from=${week.from}&to=${week.to}&limit=50`);
+    expect(presetRange('month', '2026-10-15')).toEqual({ from: '2026-10-01', to: '2026-10-15' });
+    expect(presetRange('30d', '2026-10-15')).toEqual({ from: '2026-09-16', to: '2026-10-15' });
+    expect(presetRange('today', '2026-10-15')).toEqual({ from: '2026-10-15', to: '2026-10-15' });
+    // Tab counts come from the shell summary.
+    const tab = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent?.startsWith('Perlu diproses'))!;
+    expect(tab.textContent).toBe('Perlu diproses2');
+  });
+
+  it('bulk-processes selected orders one PATCH at a time, skipping held and already processed ones', async () => {
+    let page = [listOrder('a'), listOrder('b', { hold: true, openReviewReasons: ['risk_velocity'] }), listOrder('c', { fulfillment: 'processing' }), listOrder('d')];
+    await renderAdmin('/admin/orders?status=to_fulfill', (url, init) => {
+      if (url.startsWith('/api/admin/orders?')) return Response.json({ orders: page, nextCursor: null });
+      if (init.method === 'PATCH') return Response.json({ order: { fulfillment: 'processing', status: 'paid' } });
+    });
+    expect(text()).not.toContain('dipilih');
+    await act(async () => (document.querySelector('[aria-label="Pilih semua baris"]') as HTMLButtonElement).click());
+    expect(text()).toContain('4 dipilih');
+    expect(text()).toContain('2 akan dilewati');
+    const lists = calls.filter(c => c.url.startsWith('/api/admin/orders?')).length;
+    const summaries = calls.filter(c => c.url.startsWith('/api/admin/summary')).length;
+    page = [];
+    await press('Mulai proses (4)');
+    expect(calls.filter(c => c.method === 'PATCH').map(c => [c.url, c.body])).toEqual([
+      ['/api/admin/orders/a/fulfillment', { status: 'processing' }],
+      ['/api/admin/orders/d/fulfillment', { status: 'processing' }],
+    ]);
+    await wait(10);
+    expect(text()).toContain('2 diproses, 2 dilewati (ditahan, sudah diproses)');
+    expect(calls.filter(c => c.url.startsWith('/api/admin/orders?')).length).toBe(lists + 1);
+    expect(calls.filter(c => c.url.startsWith('/api/admin/summary')).length).toBe(summaries + 1);
+  });
+
+  it('prints one packing slip page per selected order', async () => {
+    const print = vi.spyOn(window, 'print').mockImplementation(() => {});
+    await renderAdmin('/admin/orders?status=to_fulfill', url => {
+      if (url.startsWith('/api/admin/orders?')) return Response.json({ orders: [listOrder('a'), listOrder('b'), listOrder('c')], nextCursor: null });
+      const match = /^\/api\/admin\/orders\/(\w)$/.exec(url);
+      if (match) return Response.json(order({ id: match[1], reference: `FL-${match[1]}` }));
+    });
+    await act(async () => (document.querySelector('[aria-label="Pilih FL-a"]') as HTMLButtonElement).click());
+    await act(async () => (document.querySelector('[aria-label="Pilih FL-c"]') as HTMLButtonElement).click());
+    await press('Cetak packing slip (2)');
+    await wait(10);
+    expect([...document.querySelectorAll('[data-print-view="packing"] [data-print-order]')].map(s => s.getAttribute('data-print-order'))).toEqual(['FL-a', 'FL-c']);
+    expect(calls.filter(c => /^\/api\/admin\/orders\/\w$/.test(c.url)).map(c => c.url)).toEqual(['/api/admin/orders/a', '/api/admin/orders/c']);
+    expect(print).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns from an order to the filtered list and steps to the next order', async () => {
+    await renderAdmin('/admin/orders?status=shipped&from=2026-10-01', url => {
+      if (url.startsWith('/api/admin/orders?')) return Response.json({ orders: [listOrder('a'), listOrder('b')], nextCursor: null });
+      const match = /^\/api\/admin\/orders\/(\w)$/.exec(url);
+      if (match) return Response.json(order({ id: match[1], reference: `FL-${match[1]}` }));
+      if (url.startsWith('/api/admin/review')) return Response.json({ items: [], nextCursor: null });
+    });
+    const link = [...document.querySelectorAll('a')].find(a => a.textContent === 'FL-a')!;
+    await act(async () => link.click());
+    expect(document.querySelector('h1')?.textContent).toBe('Pesanan FL-a');
+    const anchor = (label: string) => [...document.querySelectorAll('a')].find(a => a.textContent?.trim() === label) as HTMLAnchorElement;
+    expect(anchor('Pesanan').getAttribute('href')).toBe('/admin/orders?status=shipped&from=2026-10-01');
+    expect(sidebar('Pesanan').getAttribute('href')).toBe('/admin/orders?status=shipped&from=2026-10-01');
+    expect(text()).toContain('1 / 2');
+    await act(async () => anchor('Berikutnya').click());
+    expect(document.querySelector('h1')?.textContent).toBe('Pesanan FL-b');
+    expect(button('Berikutnya').disabled).toBe(true);
+    await act(async () => anchor('Pesanan').click());
+    expect(location.search).toBe('?status=shipped&from=2026-10-01');
+  });
+
+  it('offers the next order after a fulfillment step, guards the draft and saves it with Ctrl+S', async () => {
+    sessionStorage.setItem('admin:list:orders', JSON.stringify({ url: '/orders?status=to_fulfill', ids: ['o1', 'o2'] }));
+    let fulfillment = 'processing';
+    await renderAdmin('/admin/orders/o1', (url, init) => {
+      if (url === '/api/admin/orders/o1') return Response.json(order({ fulfillment }));
+      if (init.method === 'PATCH') { fulfillment = 'shipped'; return Response.json({ order: { id: 'o1', fulfillment, status: 'paid' } }); }
+    });
+    await type(labelled('Nomor resi'), 'RESI123');
+    await act(async () => sidebar('Beranda').click());
+    expect(text()).toContain('Nomor resi atau catatan pengiriman yang belum disimpan akan hilang.');
+    await press('Tetap di sini');
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true })); });
+    expect(calls.find(c => c.method === 'PATCH')!.body).toEqual({ status: 'shipped', tracking: 'RESI123', courier: 'jne' });
+    const next = [...document.querySelectorAll('a')].find(a => a.textContent === 'Lanjut ke pesanan berikutnya')!;
+    expect(next.getAttribute('href')).toBe('/admin/orders/o2');
+  });
+
+  it('copies order details with one click and links WhatsApp with the normalized number', async () => {
+    const writeText = vi.fn(async (_value: string) => {});
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    await renderAdmin('/admin/orders/o1', url => url === '/api/admin/orders/o1' ? Response.json(order({ tracking: { number: 'RESI9', courier: 'jne', courierName: 'JNE', url: null } })) : undefined);
+    for (const [name, value] of [['referensi', 'FL-1'], ['email', 'budi@example.com'], ['nomor HP', '081234567890'], ['nomor resi', 'RESI9'], ['alamat lengkap', 'Budi\n081234567890\nJl. Mawar 1\nJAKARTA']]) {
+      await act(async () => (document.querySelector(`[aria-label="Salin ${name}"]`) as HTMLButtonElement).click());
+      expect(writeText).toHaveBeenLastCalledWith(value);
+    }
+    await wait(10);
+    expect(text()).toContain('Disalin');
+    expect([...document.querySelectorAll('a')].find(a => a.textContent === 'WhatsApp')!.getAttribute('href')).toBe('https://wa.me/6281234567890');
+    expect([...document.querySelectorAll('a')].find(a => a.textContent === 'Pesanan lain dari pembeli ini')!.getAttribute('href')).toBe('/admin/orders?q=budi%40example.com');
+  });
+
   it('names the browser tab after the current page', async () => {
     await renderAdmin('/admin/products/p', productRoutes);
     expect(document.title).toBe('Produk · Admin Flaremmerce');

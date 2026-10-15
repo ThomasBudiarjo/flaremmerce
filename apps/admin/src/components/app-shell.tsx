@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   CalendarDays,
   ClipboardList,
   ExternalLink,
   Home,
+  LoaderCircle,
   LogOut,
   Package,
   RefreshCw,
@@ -17,9 +18,13 @@ import {
 } from "lucide-react";
 import { get } from "@/lib/api";
 import { href, Link, useRoute } from "@/lib/router";
-import { useSession, areaAllowed } from "@/lib/auth";
-import { roleLabel } from "@/lib/format";
-import type { OrderSummary, Summary, VariantSearchResult } from "@/lib/types";
+import { useSession } from "@/lib/auth";
+import { money, roleLabel } from "@/lib/format";
+import { useListHref } from "@/lib/list-memory";
+import { SummaryProvider, useSummary } from "@/lib/summary";
+import type { OrderSummary, VariantSearchResult } from "@/lib/types";
+import { useHotkey } from "@/hooks/use-hotkeys";
+import { useLatestRequest } from "@/hooks/use-latest-request";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -107,84 +112,216 @@ const listOf: Record<string, string> = {
   "review-detail": "reviews",
 };
 
+type SearchItem =
+  | { kind: "order"; order: OrderSummary }
+  | { kind: "orders"; q: string; count: number }
+  | { kind: "variant"; variant: VariantSearchResult };
+
+/**
+ * Variants match live (after a pause) because the server searches SKU and names by substring.
+ * Orders only match an exact reference, email or phone, so they are looked up on Enter.
+ */
 function GlobalSearch() {
   const { navigate } = useRoute();
   const { can } = useSession();
+  const ops = can("ops"), catalog = can("catalog");
   const [term, setTerm] = useState("");
+  const [open, setOpen] = useState(false);
   const [variants, setVariants] = useState<VariantSearchResult[] | null>(null);
+  const [orders, setOrders] = useState<{ q: string; items: OrderSummary[] } | null>(null);
+  const [active, setActive] = useState(-1);
   const [busy, setBusy] = useState(false);
+  const beginVariants = useLatestRequest();
+  const beginOrders = useLatestRequest();
+  const box = useRef<HTMLFormElement>(null);
+  const listId = useId();
+  const q = term.trim();
 
-  async function search(event: React.FormEvent) {
+  const fetchVariants = useCallback(
+    async (value: string) => {
+      const controller = beginVariants();
+      try {
+        const data = await get<{ variants: VariantSearchResult[] }>(`/api/admin/variants/search?${new URLSearchParams({ q: value })}`, controller.signal);
+        if (controller.signal.aborted) return null;
+        setVariants(data.variants);
+        setOpen(true);
+        return data.variants;
+      } catch {
+        if (!controller.signal.aborted) setVariants([]);
+        return null;
+      }
+    },
+    [beginVariants],
+  );
+
+  useEffect(() => {
+    if (!catalog || q.length < 2 || q.length > 60) {
+      setVariants(null);
+      return;
+    }
+    const timer = setTimeout(() => void fetchVariants(q), 250);
+    return () => clearTimeout(timer);
+  }, [q, catalog, fetchVariants]);
+
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (box.current && !box.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, []);
+
+  const items: SearchItem[] = [
+    ...(orders?.items.map((order) => ({ kind: "order" as const, order })) ?? []),
+    ...(orders && orders.items.length > 1 ? [{ kind: "orders" as const, q: orders.q, count: orders.items.length }] : []),
+    ...(variants?.map((variant) => ({ kind: "variant" as const, variant })) ?? []),
+  ];
+
+  function reset() {
+    setTerm("");
+    setOpen(false);
+    setVariants(null);
+    setOrders(null);
+    setActive(-1);
+  }
+
+  function choose(item: SearchItem) {
+    reset();
+    if (item.kind === "order") navigate(href("order-detail", { id: item.order.id }));
+    else if (item.kind === "orders") navigate(href("orders", {}, { q: item.q }));
+    else navigate(href("product-edit", { id: item.variant.productId }));
+  }
+
+  async function submit(event: React.FormEvent) {
     event.preventDefault();
-    const q = term.trim();
+    if (active >= 0 && items[active]) return choose(items[active]);
     if (!q || busy) return;
     setBusy(true);
-    setVariants(null);
     try {
-      if (can("ops")) {
-        // An exact reference (or a unique email/phone match) opens the order directly.
-        const data = await get<{ orders: OrderSummary[] }>(`/api/admin/orders?${new URLSearchParams({ q, limit: "5" })}`);
-        if (data.orders.length === 1) {
-          setTerm("");
-          navigate(href("order-detail", { id: data.orders[0].id }));
-          return;
-        }
-        if (data.orders.length > 1) {
-          setTerm("");
-          navigate(href("orders", {}, { q }));
-          return;
-        }
+      if (ops) {
+        const controller = beginOrders();
+        const data = await get<{ orders: OrderSummary[] }>(`/api/admin/orders?${new URLSearchParams({ q, limit: "5" })}`, controller.signal).catch(() => ({ orders: [] }));
+        if (controller.signal.aborted) return;
+        // A unique match (an exact reference, or an email/phone with one order) opens directly.
+        if (data.orders.length === 1 && !variants?.length) return choose({ kind: "order", order: data.orders[0] });
+        setOrders({ q, items: data.orders });
+        setOpen(true);
+        setActive(-1);
+        return;
       }
-      if (can("catalog")) {
-        const data = await get<{ variants: VariantSearchResult[] }>(`/api/admin/variants/search?${new URLSearchParams({ q })}`);
-        if (data.variants.length === 1) {
-          setTerm("");
-          navigate(href("product-edit", { id: data.variants[0].productId }));
-          return;
-        }
-        setVariants(data.variants);
+      if (catalog) {
+        const found = variants ?? (await fetchVariants(q));
+        if (found?.length === 1) choose({ kind: "variant", variant: found[0] });
       }
-    } catch {
-      setVariants([]);
     } finally {
       setBusy(false);
     }
   }
 
+  function onKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (open) setOpen(false);
+      else if (term) reset();
+      else event.currentTarget.blur();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (!items.length) return;
+      event.preventDefault();
+      setOpen(true);
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      // Cycle through the options and back to the input itself (-1).
+      const n = items.length + 1;
+      setActive((i) => ((i + 1 + step + n) % n) - 1);
+    }
+  }
+
+  const showPanel = open && !!q && (variants !== null || orders !== null || ops);
+  const optionId = (i: number) => `${listId}-option-${i}`;
+  let index = -1;
+  const option = (item: SearchItem, content: React.ReactNode) => {
+    const i = ++index;
+    return (
+      <div
+        key={item.kind === "order" ? `o-${item.order.id}` : item.kind === "orders" ? "orders" : `v-${item.variant.id}`}
+        id={optionId(i)}
+        role="option"
+        aria-selected={i === active}
+        className={`flex w-full cursor-pointer flex-wrap items-center gap-2 rounded-md px-2 py-1.5 text-left ${i === active ? "bg-accent" : "hover:bg-accent"}`}
+        onMouseDown={(e) => e.preventDefault()}
+        onMouseEnter={() => setActive(i)}
+        onClick={() => choose(item)}
+      >
+        {content}
+      </div>
+    );
+  };
+
   return (
-    <form className="relative w-full max-w-sm" role="search" onSubmit={search}>
-      <Search className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
+    <form ref={box} className="relative w-full max-w-sm" role="search" onSubmit={submit}>
+      {busy ? (
+        <LoaderCircle className="pointer-events-none absolute top-2.5 left-2.5 size-4 animate-spin text-muted-foreground motion-reduce:animate-none" />
+      ) : (
+        <Search className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
+      )}
       <Input
+        id="global-search"
+        role="combobox"
         aria-label="Pencarian global"
+        aria-expanded={showPanel}
+        aria-controls={listId}
+        aria-autocomplete="list"
+        aria-activedescendant={showPanel && active >= 0 ? optionId(active) : undefined}
+        autoComplete="off"
         className="pl-9"
-        placeholder="Cari referensi pesanan, email, SKU…"
+        placeholder="Referensi lengkap, email, HP, atau SKU…"
         value={term}
         onChange={(e) => {
           setTerm(e.target.value);
-          setVariants(null);
+          setOrders(null);
+          setActive(-1);
+          setOpen(true);
         }}
-        disabled={busy}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKeyDown}
       />
-      {variants && (
-        <div className="absolute z-40 mt-1 w-full rounded-lg bg-popover p-1 text-sm shadow-md ring-1 ring-foreground/10">
-          {variants.length === 0 && <p className="p-2 text-muted-foreground">Tidak ada hasil untuk “{term}”.</p>}
-          {variants.map((variant) => (
-            <button
-              key={variant.id}
-              type="button"
-              className="flex w-full flex-wrap items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent"
-              onClick={() => {
-                setVariants(null);
-                setTerm("");
-                navigate(href("product-edit", { id: variant.productId }));
-              }}
-            >
-              <span className="font-medium">{variant.sku}</span>
-              <span className="min-w-0 flex-1 truncate">
-                {variant.productName} · {variant.name}
-              </span>
-            </button>
-          ))}
+      {showPanel && (
+        <div id={listId} role="listbox" aria-label="Hasil pencarian" className="absolute z-40 mt-1 max-h-96 w-full overflow-y-auto rounded-lg bg-popover p-1 text-sm shadow-md ring-1 ring-foreground/10">
+          {ops && (
+            <div role="group" aria-label="Pesanan">
+              <p className="px-2 pt-1 pb-0.5 text-xs font-medium text-muted-foreground">Pesanan</p>
+              {orders === null && <p className="px-2 py-1.5 text-muted-foreground">Tekan Enter untuk mencari pesanan dengan referensi lengkap, email, atau HP.</p>}
+              {orders?.items.length === 0 && <p className="px-2 py-1.5 text-muted-foreground">Tidak ada pesanan yang persis cocok dengan “{orders.q}”.</p>}
+              {orders?.items.map((order) =>
+                option(
+                  { kind: "order", order },
+                  <>
+                    <span className="font-medium">{order.reference}</span>
+                    <span className="min-w-0 flex-1 truncate">{order.contact?.name || "Guest"}</span>
+                    <span className="text-muted-foreground tabular-nums">{money(order.total, order.currency)}</span>
+                  </>,
+                ),
+              )}
+              {orders && orders.items.length > 1 &&
+                option({ kind: "orders", q: orders.q, count: orders.items.length }, <span className="text-muted-foreground underline underline-offset-4">Lihat semua di daftar pesanan</span>)}
+            </div>
+          )}
+          {catalog && variants !== null && (
+            <div role="group" aria-label="Produk">
+              <p className="px-2 pt-1 pb-0.5 text-xs font-medium text-muted-foreground">Produk</p>
+              {variants.length === 0 && <p className="px-2 py-1.5 text-muted-foreground">Tidak ada SKU atau produk yang cocok dengan “{q}”.</p>}
+              {variants.map((variant) =>
+                option(
+                  { kind: "variant", variant },
+                  <>
+                    <span className="font-medium">{variant.sku}</span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {variant.productName} · {variant.name}
+                    </span>
+                  </>,
+                ),
+              )}
+            </div>
+          )}
         </div>
       )}
     </form>
@@ -236,11 +373,32 @@ function Page({ name }: { name: string }) {
   }
 }
 
+function NavItem({ item, active }: { item: (typeof groups)[number]["items"][number]; active: boolean }) {
+  const to = useListHref(item.name);
+  const { summary, lowStock } = useSummary();
+  const badge = item.name === "orders" ? summary?.toFulfill : item.name === "reviews" ? summary?.openReviews : item.name === "inventory" ? lowStock : null;
+  const titles: Record<string, string> = { orders: "pesanan perlu diproses", reviews: "review terbuka", inventory: "varian stok menipis" };
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton asChild isActive={active} tooltip={item.title}>
+        <Link to={to} aria-current={active ? "page" : undefined}>
+          <item.icon />
+          <span>{item.title}</span>
+        </Link>
+      </SidebarMenuButton>
+      {badge != null && badge > 0 && (
+        <SidebarMenuBadge title={`${badge} ${titles[item.name]}`}>
+          {item.name === "inventory" && badge >= 100 ? "99+" : badge}
+        </SidebarMenuBadge>
+      )}
+    </SidebarMenuItem>
+  );
+}
+
 function Shell() {
   const { route } = useRoute();
   const session = useSession();
   const { setOpenMobile } = useSidebar();
-  const [summary, setSummary] = useState<Summary | null>(null);
   const active = listOf[route.name] ?? route.name;
 
   useEffect(() => {
@@ -248,14 +406,13 @@ function Shell() {
     document.getElementById("page-title")?.focus();
   }, [route, setOpenMobile]);
 
-  useEffect(() => {
-    if (!session.can("ops")) return;
-    const controller = new AbortController();
-    get<Summary>("/api/admin/summary?range=today", controller.signal)
-      .then(setSummary)
-      .catch(() => {});
-    return () => controller.abort();
-  }, [session]);
+  const focusSearch = () => {
+    const input = document.getElementById("global-search") as HTMLInputElement | null;
+    input?.focus();
+    input?.select();
+  };
+  useHotkey("mod+k", focusSearch);
+  useHotkey("/", focusSearch);
 
   return (
     <>
@@ -286,20 +443,7 @@ function Shell() {
                   <nav aria-label={group.label ?? "Beranda"}>
                     <SidebarMenu>
                       {items.map((item) => (
-                        <SidebarMenuItem key={item.name}>
-                          <SidebarMenuButton asChild isActive={active === item.name} tooltip={item.title}>
-                            <Link to={href(item.name)} aria-current={active === item.name ? "page" : undefined}>
-                              <item.icon />
-                              <span>{item.title}</span>
-                            </Link>
-                          </SidebarMenuButton>
-                          {item.name === "reviews" && summary != null && summary.openReviews > 0 && (
-                            <SidebarMenuBadge>{summary.openReviews}</SidebarMenuBadge>
-                          )}
-                          {item.name === "orders" && summary != null && summary.toFulfill > 0 && (
-                            <SidebarMenuBadge>{summary.toFulfill}</SidebarMenuBadge>
-                          )}
-                        </SidebarMenuItem>
+                        <NavItem key={item.name} item={item} active={active === item.name} />
                       ))}
                     </SidebarMenu>
                   </nav>
@@ -373,7 +517,9 @@ export function AppShell() {
   return (
     <TooltipProvider>
       <SidebarProvider>
-        <Shell />
+        <SummaryProvider>
+          <Shell />
+        </SummaryProvider>
         <Toaster position="bottom-right" />
       </SidebarProvider>
     </TooltipProvider>
