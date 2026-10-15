@@ -154,8 +154,8 @@ export function InventoryPage() {
         columns={[
           { head: "Varian" },
           { head: "Tersedia", className: "text-right" },
-          { head: "Direservasi", className: "text-right" },
-          { head: "Fisik", className: "text-right" },
+          { head: "Direservasi", className: "text-right", mobileHidden: true },
+          { head: "Fisik", className: "text-right", mobileHidden: true },
           { head: <span className="sr-only">Aksi</span> },
         ]}
         empty={

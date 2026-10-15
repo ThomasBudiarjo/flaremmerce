@@ -153,9 +153,9 @@ export function ProductsPage() {
       <DataTable
         loading={list.loading}
         columns={[
-          { head: <span className="sr-only">Foto</span>, className: "w-14" },
+          { head: <span className="sr-only">Foto</span>, className: "w-14", mobileHidden: true },
           { head: "Produk" },
-          { head: "Status" },
+          { head: "Status", mobileHidden: true },
           { head: "Kategori", mobileHidden: true },
           { head: "Harga", className: "text-right" },
           { head: "Varian", className: "text-right", mobileHidden: true },
@@ -185,11 +185,12 @@ export function ProductsPage() {
                 <Link to={href("product-edit", { id: product.id })} className="font-medium underline-offset-4 hover:underline">
                   {product.name}
                 </Link>
-                <div className="text-xs text-muted-foreground">/{product.slug}</div>
+                <div className="text-xs break-all text-muted-foreground">/{product.slug}</div>
+                <div className="mt-1 md:hidden">{product.active ? <Badge>Aktif</Badge> : <Badge variant="outline">Diarsipkan</Badge>}</div>
               </TableCell>
               <TableCell>{product.active ? <Badge>Aktif</Badge> : <Badge variant="outline">Diarsipkan</Badge>}</TableCell>
               <TableCell>{product.category?.name ?? <span className="text-muted-foreground">—</span>}</TableCell>
-              <TableCell className="text-right tabular-nums">{priceRange(product)}</TableCell>
+              <TableCell className="min-w-24 text-right whitespace-normal tabular-nums">{priceRange(product)}</TableCell>
               <TableCell className="text-right tabular-nums">{product.variants.length}</TableCell>
               <TableCell className="text-right">
                 <span className="tabular-nums">{number(stock.available)}</span>

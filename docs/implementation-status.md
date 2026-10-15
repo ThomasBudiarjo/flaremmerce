@@ -86,6 +86,18 @@ Pemeriksaan: `npm run check`, `npm test` (**159 tes**: 69 commerce + 90 integrat
 
 Pemeriksaan: `npm run check`, `npm test` (**169 tes**: 69 commerce + 100 integration/storage/checkout/operations/UI/storefront-UI/recovery), `npm run build`, `npm run build:staging`, `npm run deploy:check` lulus; `wrangler deploy --dry-run` atas config staging generated menampilkan binding staging. Binding Rate Limiting diterima saat deploy di akun ini. Production belum diprovision/dideploy.
 
+## Admin UI/UX QoL — 15 Oktober 2026
+
+Lokal, belum dipush/dideploy. Tanpa migration; backend hanya aditif.
+
+- Fondasi: `useNavigationGuard` (link/`navigate`/popstate + `beforeunload`, URL dipulihkan saat tetap di halaman), memori daftar per route (URL + id baris untuk kembali dan Sebelumnya/Berikutnya), `CopyButton`, `RelativeTime`, `MoneyInput`, hotkey (`/`, Ctrl/Cmd+K, Ctrl/Cmd+S), `document.title` per halaman, `DataTable` dengan `mobileHidden`, seleksi dan `LinkRow`, `LoadError` seragam.
+- Pesanan: pencarian global live untuk SKU dan Enter untuk pesanan persis, badge sidebar yang diperbarui, preset tanggal, jumlah di tab, kolom usia, aksi massal proses dan cetak packing slip, salin/WhatsApp/pesanan lain di detail, lanjut ke pesanan berikutnya.
+- Katalog: filter status produk di server, kolom harga, pencarian live, menu baris (edit, lihat di toko, duplikat, arsip/aktifkan), slug otomatis, berat inline dan penghalang simpan per varian, duplikat produk, sesuaikan stok dari editor, unggah foto drag-and-drop, urutan kategori naik/turun dan jumlah produk, opname inventori, tab fase/kuota/validasi/buat ulang pre-order.
+- Pelanggan/risiko/sistem: pencarian pelanggan di server, filter status review di server dengan jumlah, templat catatan dan review berikutnya, tab jenis dan kolom aktor blocklist, auto-refresh operasional 30 detik, pemilih pengguna dan konfirmasi penurunan owner.
+- Backend: `GET /api/admin/products?status=`, `GET /api/admin/review?status=`, `GET /api/admin/customers?q=`, `productCount` di `GET /api/admin/categories`, `productId` di campaign. Ditemukan saat pengujian: D1 menolak pola LIKE di atas 50 byte (503); pencarian pelanggan dan varian admin kini menolak dengan 400. **Belum diubah:** pencarian katalog publik (`searchTerm` 2–60 karakter) masih dapat 503 untuk 49–60 karakter.
+
+Pemeriksaan: `npm run check`, `npm test` (**199 tes**: 73 commerce + 126 integration/storage/checkout/operations/UI/storefront-UI/recovery), `npm run build`, `npm run deploy:check` lulus. Browser Chromium headless 1440 px dan 390 px pada D1 lokal disposable (`.artifacts/ux-round/`, diabaikan git): guard, proses massal 3 pesanan, pratinjau cetak 3 halaman, kirim dengan Ctrl+S, opname (D1 on_hand 12→15, ledger +3), pemberian peran lewat pemilih; console tanpa error/CSP. Belum diuji: clipboard dan dialog print nyata (headless), unggah drag-and-drop dengan media nyata, perangkat sentuh.
+
 ## Gate yang tidak boleh disamarkan
 
 1. Resource, secret dan hostname staging/production nyata + otorisasi provision/deploy/migration. Root Wrangler masih lokal/ID dummy.

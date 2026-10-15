@@ -138,7 +138,8 @@ export function SettingsTeamPage() {
   return (
     <>
       <PageHeader title="Tim & akses" description="Atur siapa yang dapat masuk ke admin dan area yang bisa mereka kelola." />
-      <Card>
+      {/* The user search results drop below the card; the default overflow-hidden would clip them. */}
+      <Card className="overflow-visible">
         <CardHeader>
           <CardTitle>Beri akses admin</CardTitle>
           <CardDescription>Cari pengguna yang sudah pernah login dengan akun Google terverifikasi, lalu pilih perannya.</CardDescription>
