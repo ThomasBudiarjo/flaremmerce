@@ -654,26 +654,54 @@ describe('admin SPA', () => {
     expect(text()).not.toContain('Buang perubahan?');
   });
 
-  it('converts a stock count (opname) into a ledger delta against fresh stock and previews it', async () => {
+  it('previews a stock count (opname) against what should be on the shelf and sends the count with one key', async () => {
+    let attempts = 0;
     await renderAdmin('/admin/inventory', (url, init) => {
       if (url.startsWith('/api/admin/products?')) return Response.json({ products: [product], nextCursor: null });
-      if (url === '/api/admin/inventory?variantId=v&limit=1') return Response.json({ inventory: { variantId: 'v', onHand: 12, reserved: 3, available: 9 }, movements: [], nextCursor: null });
-      if (url === '/api/admin/inventory' && init.method === 'POST') return Response.json({ inventory: { variantId: 'v', onHand: 15, reserved: 3 } });
+      if (url === '/api/admin/inventory?variantId=v&limit=1') return Response.json({ inventory: { variantId: 'v', onHand: 12, reserved: 3, available: 9, awaitingShipment: 2 }, movements: [], nextCursor: null });
+      if (url === '/api/admin/inventory' && init.method === 'POST') {
+        // The first response is lost on the way back; the retry must reuse the same key.
+        if (++attempts === 1) throw new TypeError('Failed to fetch');
+        return Response.json({ inventory: { variantId: 'v', onHand: 15, reserved: 3, awaitingShipment: 2 }, replayed: true });
+      }
     });
     await press('Sesuaikan SKU');
-    expect(text()).toContain('Fisik 12 · Tersedia 9');
+    expect(text()).toContain('Tercatat 12 · Tersedia 9');
+    expect(text()).toContain('Dibayar belum dikirim 2 · Seharusnya di rak 14');
     await press('Set stok fisik (opname)');
-    await type(labelled('Stok fisik hasil hitung'), '2');
-    expect(text()).toContain('Stok fisik tidak boleh kurang dari 3 unit yang direservasi pesanan.');
+    await type(labelled('Stok fisik hasil hitung'), '4');
+    expect(text()).toContain('Stok fisik tidak boleh kurang dari 5 unit (direservasi pesanan dan dibayar belum dikirim).');
     expect(button('Simpan penyesuaian').disabled).toBe(true);
-    await type(labelled('Stok fisik hasil hitung'), '15');
-    expect(text()).toContain('Fisik 12 → 15 · Tersedia 9 → 12');
+    await type(labelled('Stok fisik hasil hitung'), '17');
+    // 17 counted against 12 recorded + 2 awaiting shipment: +3, recorded stock becomes 15.
+    expect(text()).toContain('Tercatat 12 → 15 · Tersedia 9 → 12');
     expect(text()).toContain('Selisih dicatat: +3');
     await press('Stok opname');
     expect(labelled('Alasan').value).toBe('Stok opname');
     await act(async () => (document.getElementById('adjust-form') as HTMLFormElement).requestSubmit());
-    expect(calls.find(c => c.method === 'POST')!.body).toEqual({ variantId: 'v', delta: 3, reason: 'Stok opname' });
-    expect(text()).toContain('15');
+    await act(async () => (document.getElementById('adjust-form') as HTMLFormElement).requestSubmit());
+    const posts = calls.filter(c => c.method === 'POST').map(c => c.body as Record<string, unknown>);
+    expect(posts).toHaveLength(2);
+    expect(posts[0]).toEqual({ variantId: 'v', counted: 17, reason: 'Stok opname', key: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+    expect(posts[1].key).toBe(posts[0].key);
+    expect(text()).toContain('Penyesuaian ini sudah tersimpan sebelumnya.');
+  });
+  it('sends add and remove as a delta and allows a count with no difference', async () => {
+    await renderAdmin('/admin/inventory', (url, init) => {
+      if (url.startsWith('/api/admin/products?')) return Response.json({ products: [product], nextCursor: null });
+      if (url === '/api/admin/inventory?variantId=v&limit=1') return Response.json({ inventory: { variantId: 'v', onHand: 12, reserved: 3, available: 9, awaitingShipment: 2 }, movements: [], nextCursor: null });
+      if (url === '/api/admin/inventory' && init.method === 'POST') return Response.json({ inventory: { variantId: 'v', onHand: 10, reserved: 3, awaitingShipment: 2 } });
+    });
+    await press('Sesuaikan SKU');
+    await press('Set stok fisik (opname)');
+    await type(labelled('Stok fisik hasil hitung'), '14');
+    expect(text()).toContain('opname tetap dicatat tanpa selisih');
+    await press('Kurangi');
+    await type(labelled('Jumlah dikurangi'), '2');
+    await press('Rusak');
+    expect(button('Simpan penyesuaian').disabled).toBe(false);
+    await act(async () => (document.getElementById('adjust-form') as HTMLFormElement).requestSubmit());
+    expect(calls.find(c => c.method === 'POST')!.body).toMatchObject({ variantId: 'v', delta: -2, reason: 'Rusak' });
   });
 
   it('reorders categories with compare-and-swap PATCHes and blocks deleting one in use', async () => {

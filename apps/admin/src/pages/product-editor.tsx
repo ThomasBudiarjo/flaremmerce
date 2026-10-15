@@ -89,6 +89,8 @@ const blankVariant = (): NewVariant => ({
   heightCm: null,
   lowStockThreshold: null,
 });
+/** Pre-order variants sell campaign quota; the server refuses shelf stock on them. */
+const initialStock = (mode: NewVariant["mode"], stock: number | null) => (mode === "stock" ? (stock ?? 0) : 0);
 /** Server variant entity → list shape (the PATCH/POST response has no `available`). */
 const withAvailable = (v: Variant): Variant => ({ ...v, available: v.mode === "stock" ? (v.onHand ?? 0) - (v.reserved ?? 0) : (v.available ?? null) });
 
@@ -127,7 +129,7 @@ function VariantFields<T extends Omit<VariantDraft, "active"> & { active?: boole
             </NativeSelect>
           )}
         </Field>
-        {"stock" in value && (
+        {"stock" in value && value.mode === "stock" && (
           <NumberField label="Stok awal" min={0} max={1_000_000} value={value.stock ?? null} disabled={disabled} onValueChange={(v) => set("stock", v as T["stock"])} />
         )}
       </div>
@@ -371,7 +373,7 @@ function NewProductEditor({ duplicateOf }: { duplicateOf: string | null }) {
         ...rest,
         ...(imageUrl ? { imageUrl } : {}),
         ...(categoryId ? { categoryId } : {}),
-        variants: variants.map(({ key, stock, ...v }) => ({ ...v, stock: stock ?? 0 })),
+        variants: variants.map(({ key, stock, ...v }) => ({ ...v, stock: initialStock(v.mode, stock) })),
       });
     },
     { key: "product-create", success: "Produk dibuat.", onSuccess: (result) => navigate(href("product-edit", { id: result.product.id }), true, true) },
@@ -467,14 +469,20 @@ function NewProductEditor({ duplicateOf }: { duplicateOf: string | null }) {
                           />
                         </TableCell>
                         <TableCell className="align-top">
-                          <Input
-                            aria-label={`Stok awal varian ${i + 1}`}
-                            type="number"
-                            min={0}
-                            className="min-w-20"
-                            value={v.stock ?? ""}
-                            onChange={(e) => update(v.key, { stock: e.target.value === "" ? null : Number(e.target.value) })}
-                          />
+                          {v.mode === "stock" ? (
+                            <Input
+                              aria-label={`Stok awal varian ${i + 1}`}
+                              type="number"
+                              min={0}
+                              className="min-w-20"
+                              value={v.stock ?? ""}
+                              onChange={(e) => update(v.key, { stock: e.target.value === "" ? null : Number(e.target.value) })}
+                            />
+                          ) : (
+                            <span className="text-muted-foreground" title="Pre-order memakai kuota kampanye, bukan stok">
+                              —
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell className="text-right align-top whitespace-nowrap">
                           <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(v.key)}>
@@ -583,7 +591,7 @@ function AddVariantDialog({ product, open, onOpenChange, onAdded }: { product: P
   const add = useMutation(
     () => {
       const { key, stock, ...rest } = value;
-      return post<{ variant: Variant }>(`/api/admin/products/${encodeURIComponent(product.id)}/variants`, { ...rest, stock: stock ?? 0 });
+      return post<{ variant: Variant }>(`/api/admin/products/${encodeURIComponent(product.id)}/variants`, { ...rest, stock: initialStock(rest.mode, stock) });
     },
     {
       key: `variant-add:${product.id}`,

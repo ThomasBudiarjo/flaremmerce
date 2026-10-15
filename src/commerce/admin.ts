@@ -12,11 +12,21 @@ const purchaseLimit = z.number().int().min(1).max(1_000_000).nullable().optional
 const dimension = z.number().int().min(1).max(300).nullable().optional();
 const variantInput = z.object({ sku: z.string().min(1).max(100), name: z.string().min(1).max(200), price: z.number().int().min(0).max(1_000_000_000), weight: z.number().int().min(1).max(1_000_000), mode: z.enum(['stock', 'preorder']).default('stock'), stock: z.number().int().min(0).max(1_000_000).default(0), maxPerOrder: purchaseLimit, maxPerCustomer: purchaseLimit,
   lengthCm: dimension, widthCm: dimension, heightCm: dimension, lowStockThreshold: z.number().int().min(0).max(1_000_000).nullable().optional() }).strict();
-const productInput = z.object({ slug: z.string().refine(validSlug), name: z.string().min(1).max(200), description: z.string().max(10000).default(''), imageUrl: z.string().url().max(2000).optional(), categoryId: z.string().min(1).max(100).nullable().optional(), variants: z.array(variantInput).min(1).max(30) }).strict();
+// Pre-order variants sell campaign quota, never shelf stock: units recorded on them would become sellable on a later switch to stock mode.
+const newVariant = variantInput.refine(v => v.mode === 'stock' || v.stock === 0, { message: 'Varian pre-order tidak memakai stok', path: ['stock'] });
+const productInput = z.object({ slug: z.string().refine(validSlug), name: z.string().min(1).max(200), description: z.string().max(10000).default(''), imageUrl: z.string().url().max(2000).optional(), categoryId: z.string().min(1).max(100).nullable().optional(), variants: z.array(newVariant).min(1).max(30) }).strict();
 const version = z.number().int().min(0);
 const categoryInput = z.object({ slug: z.string().refine(validSlug), name: z.string().trim().min(1).max(100), position: z.number().int().min(0).max(100_000).default(0), active: z.boolean().default(true) }).strict();
 const categoryUpdate = z.object({ slug: z.string().refine(validSlug), name: z.string().trim().min(1).max(100), position: z.number().int().min(0).max(100_000), active: z.boolean() }).strict().partial().extend({ version });
-const inventoryInput = z.object({ variantId: z.string().min(1).max(100), delta: z.number().int().min(-1_000_000).max(1_000_000).refine(v => v !== 0), reason: z.string().min(1).max(500) }).strict();
+// `delta` adds or removes units; `counted` is a shelf count (opname) the server turns into a delta. `key` makes a retry apply once.
+const inventoryInput = z.object({ variantId: z.string().min(1).max(100), reason: z.string().min(1).max(500), key: z.uuid(),
+  delta: z.number().int().min(-1_000_000).max(1_000_000).refine(v => v !== 0).optional(), counted: z.number().int().min(0).max(1_000_000).optional() }).strict()
+  .refine(v => (v.delta === undefined) !== (v.counted === undefined), { message: 'Exactly one of delta and counted' });
+// on_hand drops when an order is paid, not when it ships: paid ready-stock units still waiting to ship are on the shelf
+// but no longer in on_hand. CROSS JOIN keeps the scan on in-flight paid orders (orders_status_page) rather than every order item.
+const AWAITING_SHIPMENT = `(SELECT coalesce(sum(i.quantity),0) FROM orders o CROSS JOIN order_items i ON i.order_id=o.id
+  WHERE o.status='paid' AND o.fulfillment IN ('unfulfilled','processing') AND i.variant_id=inventory.variant_id AND i.campaign_id IS NULL)`;
+const inventoryColumns = `variant_id AS variantId,on_hand AS onHand,reserved,${AWAITING_SHIPMENT} AS awaitingShipment`;
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v => !Number.isNaN(Date.parse(v)) && new Date(v).toISOString().slice(0, 10) === v);
 const campaignInput = z.object({ variantId: z.string().min(1).max(100), startsAt: z.number().int().min(0), endsAt: z.number().int().min(0), shipFrom: date, shipTo: date, quota: z.number().int().min(0).max(1_000_000).nullable() }).strict().refine(v => v.endsAt > v.startsAt && v.shipTo >= v.shipFrom);
 const fulfillmentInput = z.object({ status: z.enum(['processing', 'shipped', 'delivered']), tracking: z.string().trim().min(1).max(200).optional(), courier: z.string().trim().toLowerCase().regex(/^[a-z0-9-]{1,30}$/).optional(), note: z.string().max(2000).optional() }).strict();
@@ -173,7 +183,7 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
   if (path === '/api/admin/inventory' && request.method === 'GET') {
     const target = url.searchParams.get('variantId');
     if (!target || target.length>100) throw new HttpError(400,'variantId required');
-    const inventory = await s(env,'SELECT variant_id AS variantId,on_hand AS onHand,reserved,on_hand-reserved AS available FROM inventory WHERE variant_id=?',target).first();
+    const inventory = await s(env,`SELECT variant_id AS variantId,on_hand AS onHand,reserved,on_hand-reserved AS available,${AWAITING_SHIPMENT} AS awaitingShipment FROM inventory WHERE variant_id=?`,target).first();
     if (!inventory) throw new HttpError(404,'Variant not found');
     const rows = await s(env,'SELECT id,variant_id AS variantId,delta,reason,order_id AS orderId,actor,created_at AS createdAt FROM inventory_movements WHERE variant_id=? AND (created_at,id)<(?,?) ORDER BY created_at DESC,id DESC LIMIT ?',target,before,beforeId,limit+1).all();
     const { items: movements, nextCursor } = page(rows.results,limit,last=>({before:last.createdAt,beforeId:last.id}));
@@ -217,11 +227,11 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
   }
   const addVariant=path.match(/^\/api\/admin\/products\/([^/]+)\/variants$/);
   if (addVariant && request.method === 'POST') {
-    const input=parse(variantInput,body),target=decodeURIComponent(addVariant[1]),variantId=id();
+    const input=parse(newVariant,body),target=decodeURIComponent(addVariant[1]),variantId=id();
     const result=await env.DB.batch([
       s(env,'INSERT INTO product_variants(id,product_id,sku,name,price,weight,mode,max_per_order,max_per_customer,length_cm,width_cm,height_cm,low_stock_threshold) SELECT ?,id,?,?,?,?,?,?,?,?,?,?,? FROM products WHERE id=? AND (SELECT count(*) FROM product_variants WHERE product_id=products.id)<30',variantId,input.sku,input.name,input.price,input.weight,input.mode,input.maxPerOrder ?? null,input.maxPerCustomer ?? null,input.lengthCm ?? null,input.widthCm ?? null,input.heightCm ?? null,input.lowStockThreshold ?? null,target),
       s(env,'INSERT INTO inventory(variant_id,on_hand) SELECT id,? FROM product_variants WHERE id=?',input.stock,variantId),
-      s(env,"INSERT INTO inventory_movements(id,variant_id,delta,reason,actor,created_at) SELECT ?,id,?,'initial stock',?,? FROM product_variants WHERE id=?",id(),input.stock,actor,Date.now(),variantId),
+      s(env,"INSERT INTO inventory_movements(id,variant_id,delta,reason,actor,created_at) SELECT ?,id,?,'initial stock',?,? FROM product_variants WHERE id=? AND ?>0",id(),input.stock,actor,Date.now(),variantId,input.stock),
       s(env,"INSERT INTO audit_logs(id,actor,action,target,details_json,created_at) SELECT ?,?,'variant.create',id,?,? FROM product_variants WHERE id=?",id(),actor,JSON.stringify(input),Date.now(),variantId),
     ]);
     if (!result[0].meta.changes) {
@@ -319,14 +329,35 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     return json({ product: { ...await productEntity(env, productId), variants: await Promise.all(variants.map(v => variantEntity(env, v.id))) } }, 201);
   }
   if (path === '/api/admin/inventory' && request.method === 'POST') {
-    const v = parse(inventoryInput, body);
-    // CHECK(on_hand >= reserved) aborts subtraction below held stock; missing variant aborts via ledger FK.
-    await env.DB.batch([
-      s(env, 'UPDATE inventory SET on_hand=on_hand+? WHERE variant_id=?', v.delta, v.variantId),
-      s(env, 'INSERT INTO inventory_movements(id,variant_id,delta,reason,actor,created_at) VALUES(?,?,?,?,?,?)', id(), v.variantId, v.delta, v.reason, actor, Date.now()),
-      audit(env, actor, 'inventory.adjust', v.variantId, v),
-    ]);
-    return json({ inventory: await s(env, 'SELECT variant_id AS variantId,on_hand AS onHand,reserved FROM inventory WHERE variant_id=?', v.variantId).first() });
+    const v = parse(inventoryInput, body), movementId = `adjust:${v.key}`, now = Date.now(), counting = v.counted !== undefined;
+    const current = () => s(env, `SELECT ${inventoryColumns} FROM inventory WHERE variant_id=?`, v.variantId).first();
+    // One atomic batch. The ledger row keyed by the client key is written first and only its insert moves stock and
+    // audits, so a retried request applies once. A count's delta is computed here from live numbers, never from
+    // what the dialog read when it opened. CHECK(on_hand >= reserved) aborts the whole batch.
+    let results: D1Result[];
+    try {
+      results = await env.DB.batch([
+        s(env, `INSERT INTO inventory_movements(id,variant_id,delta,reason,actor,created_at)
+          SELECT ?,inventory.variant_id,${counting ? `?-${AWAITING_SHIPMENT}-inventory.on_hand` : '?'},?,?,? FROM inventory JOIN product_variants v ON v.id=inventory.variant_id
+          WHERE inventory.variant_id=? AND v.mode='stock' ON CONFLICT(id) DO NOTHING`, movementId, counting ? v.counted! : v.delta!, v.reason, actor, now, v.variantId),
+        s(env, 'UPDATE inventory SET on_hand=on_hand+(SELECT delta FROM inventory_movements WHERE id=?) WHERE variant_id=? AND changes()=1', movementId, v.variantId),
+        s(env, `INSERT INTO audit_logs(id,actor,action,target,details_json,created_at)
+          SELECT ?,?,'inventory.adjust',m.variant_id,json_object('variantId',m.variant_id,'reason',m.reason,'key',?,'delta',m.delta${counting ? `,'counted',?,'awaitingShipment',${AWAITING_SHIPMENT}` : ''}),?
+          FROM inventory_movements m JOIN inventory ON inventory.variant_id=m.variant_id WHERE m.id=? AND changes()=1`, id(), actor, v.key, ...(counting ? [v.counted!] : []), now, movementId),
+      ]);
+    } catch (error) {
+      if (/CHECK constraint failed/.test(String(error))) throw new HttpError(409, 'Stok di bawah jumlah yang dipesan atau menunggu kirim', { inventory: await current() });
+      throw error;
+    }
+    if (!results[0].meta.changes) {
+      const used = await s(env, 'SELECT variant_id FROM inventory_movements WHERE id=?', movementId).first<string>('variant_id');
+      if (used !== null && used !== v.variantId) throw new HttpError(409, 'Kunci penyesuaian sudah dipakai untuk varian lain');
+      const stock = await current();
+      if (used !== null) return json({ inventory: stock, replayed: true });
+      if (!stock) throw new HttpError(404, 'Variant not found');
+      throw new HttpError(409, 'Varian pre-order tidak memakai stok');
+    }
+    return json({ inventory: await current() });
   }
   if (path === '/api/admin/campaigns' && request.method === 'POST') {
     const c = parse(campaignInput, body), campaignId = id();

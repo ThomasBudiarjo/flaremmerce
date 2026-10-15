@@ -483,9 +483,9 @@ describe('commerce public API with real D1', () => {
     const catalog = await request('/api/catalog/new-product');
     const preorder = (await catalog.json() as any).product.variants[0];
     expect(preorder.stockLevel).toBe('in_stock'); expect(preorder.campaign.available).toBeUndefined(); expect(preorder.campaign.quota).toBeUndefined();
-    expect((await request('/api/admin/inventory', { variantId: 'b', delta: 2, reason: 'receipt' }, headers)).status).toBe(200);
+    expect((await request('/api/admin/inventory', { variantId: 'b', delta: 2, reason: 'receipt', key: crypto.randomUUID() }, headers)).status).toBe(200);
     const { order } = await (await place()).json() as any;
-    expect((await request('/api/admin/inventory', { variantId: 'a', delta: -1, reason: 'shrinkage' }, headers)).status).toBe(409);
+    expect((await request('/api/admin/inventory', { variantId: 'a', delta: -1, reason: 'shrinkage', key: crypto.randomUUID() }, headers)).status).toBe(409);
     expect(await sql("SELECT on_hand,reserved FROM inventory WHERE variant_id='a'").first()).toEqual({ on_hand: 1, reserved: 1 });
     await expect(sql('UPDATE orders SET total=0 WHERE id=?', order.id).run()).rejects.toThrow('commercial_snapshot_immutable');
   });
@@ -534,7 +534,7 @@ describe('commerce public API with real D1', () => {
   });
 
   it('admin mutations require authorization and enforce fulfillment progression with audit', async () => {
-    expect((await request('/api/admin/inventory', { variantId: 'a', delta: 1, reason: 'restock' })).status).toBe(403);
+    expect((await request('/api/admin/inventory', { variantId: 'a', delta: 1, reason: 'restock', key: crypto.randomUUID() })).status).toBe(403);
     const { order } = await (await place()).json() as any;
     const route = `/api/admin/orders/${order.id}/fulfillment`, headers = { 'X-Test-Admin': 'admin' };
     expect((await request(route, { status: 'processing' }, headers, 'PATCH')).status).toBe(409);
@@ -571,7 +571,7 @@ describe('local baseline admin contracts',()=>{
     const {stock:_stock,...fields}=variant;
     expect(created.variant).toMatchObject({...fields,mode:'stock',productId:'p',onHand:3,reserved:0,version:0,active:true});
     const ledger=await (await request(`/api/admin/inventory?variantId=${created.variant.id}`,undefined,headers)).json() as any;
-    expect(ledger.inventory).toEqual({variantId:created.variant.id,onHand:3,reserved:0,available:3});
+    expect(ledger.inventory).toEqual({variantId:created.variant.id,onHand:3,reserved:0,available:3,awaitingShipment:0});
     expect(ledger.movements[0]).toMatchObject({delta:3,reason:'initial stock',actor:'admin',orderId:null});
     expect(ledger.nextCursor).toBeNull();
     const counts=await Promise.all(['product_variants','inventory','inventory_movements','audit_logs'].map(count));
@@ -596,6 +596,84 @@ describe('local baseline admin contracts',()=>{
     expect(last.movements.map((m:any)=>m.id)).toEqual(['a','y']);
     expect(last.nextCursor).toBeNull();
     expect((await request('/api/admin/inventory?variantId=missing',undefined,headers)).status).toBe(404);
+  });
+  const adjust=(input:Record<string,unknown>)=>request('/api/admin/inventory',{reason:'Stok opname',key:crypto.randomUUID(),variantId:'a',...input},headers);
+  const stockOf=(variant='a')=>sql('SELECT on_hand AS onHand,reserved FROM inventory WHERE variant_id=?',variant).first();
+  const ship=async(orderId:string)=>{for(const status of ['processing','shipped']) expect((await request(`/api/admin/orders/${orderId}/fulfillment`,{status,tracking:'RESI'},headers,'PATCH')).status).toBe(200);};
+  it('counts paid but unshipped units as shelf stock so an opname never inflates on_hand',async()=>{
+    await sql("UPDATE inventory SET on_hand=10 WHERE variant_id='a'").run();
+    const {order}=await (await place()).json() as any;
+    await notify(order.reference);
+    // 9 recorded, 1 paid and still on the shelf waiting to be packed: the shelf really holds 10.
+    const view=await (await request('/api/admin/inventory?variantId=a',undefined,headers)).json() as any;
+    expect(view.inventory).toEqual({variantId:'a',onHand:9,reserved:0,available:9,awaitingShipment:1});
+    const counted=await adjust({counted:12});
+    expect(counted.status).toBe(200);
+    expect((await counted.json() as any).inventory).toEqual({variantId:'a',onHand:11,reserved:0,awaitingShipment:1});
+    const ledger=await (await request('/api/admin/inventory?variantId=a&limit=1',undefined,headers)).json() as any;
+    expect(ledger.movements[0]).toMatchObject({delta:2,reason:'Stok opname',actor:'admin'});
+    const details=JSON.parse((await sql("SELECT details_json FROM audit_logs WHERE action='inventory.adjust'").first<string>('details_json'))!);
+    expect(details).toMatchObject({variantId:'a',delta:2,counted:12,awaitingShipment:1});
+    // A count with no difference is still recorded; a zero add/remove is not a change.
+    expect((await adjust({counted:12})).status).toBe(200);
+    expect(await stockOf()).toEqual({onHand:11,reserved:0});
+    expect(await sql("SELECT count(*) AS n FROM inventory_movements WHERE variant_id='a'").first('n')).toBe(3);
+    for (const input of [{delta:0},{delta:1,counted:1},{},{delta:1,key:'not-a-uuid'}]) expect((await adjust(input)).status).toBe(400);
+    await ship(order.id);
+    expect((await (await request('/api/admin/inventory?variantId=a',undefined,headers)).json() as any).inventory.awaitingShipment).toBe(0);
+  });
+  it('computes an opname delta from live stock, so a sale after the dialog opened is not lost',async()=>{
+    await sql("UPDATE inventory SET on_hand=10 WHERE variant_id='a'").run();
+    expect((await (await request('/api/admin/inventory?variantId=a&limit=1',undefined,headers)).json() as any).inventory.onHand).toBe(10);
+    const {order}=await (await place()).json() as any;
+    await notify(order.reference); await ship(order.id);
+    // The shelf now holds 9; staff count 8. The old client delta (8-10) would have recorded 7.
+    expect((await adjust({counted:8})).status).toBe(200);
+    expect(await stockOf()).toEqual({onHand:8,reserved:0});
+    // A count below what is reserved or awaiting shipment aborts the whole batch with the current numbers.
+    await place('held-order');
+    const refused=await adjust({counted:0});
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({error:'Stok di bawah jumlah yang dipesan atau menunggu kirim',details:{inventory:{onHand:8,reserved:1,awaitingShipment:0}}});
+    expect(await stockOf()).toEqual({onHand:8,reserved:1});
+    expect(await sql("SELECT count(*) AS n FROM audit_logs WHERE action='inventory.adjust'").first('n')).toBe(1);
+  });
+  it('applies an adjustment key once and refuses the same key on another variant',async()=>{
+    const key=crypto.randomUUID();
+    expect((await (await adjust({variantId:'b',delta:5,key})).json() as any)).toEqual({inventory:{variantId:'b',onHand:5,reserved:0,awaitingShipment:0}});
+    const replay=await (await adjust({variantId:'b',delta:5,key})).json() as any;
+    expect(replay).toEqual({inventory:{variantId:'b',onHand:5,reserved:0,awaitingShipment:0},replayed:true});
+    const racing=crypto.randomUUID();
+    const both=await Promise.all([adjust({variantId:'b',delta:2,key:racing}),adjust({variantId:'b',delta:2,key:racing})]);
+    expect(both.map(r=>r.status)).toEqual([200,200]);
+    expect(await stockOf('b')).toEqual({onHand:7,reserved:0});
+    const elsewhere=await adjust({variantId:'a',delta:5,key});
+    expect(elsewhere.status).toBe(409);
+    expect(await stockOf('a')).toEqual({onHand:1,reserved:0});
+    expect(await sql("SELECT count(*) AS n FROM inventory_movements WHERE variant_id='b'").first('n')).toBe(2);
+    expect(await sql("SELECT count(*) AS n FROM audit_logs WHERE action='inventory.adjust'").first('n')).toBe(2);
+    expect((await adjust({variantId:'missing',delta:1})).status).toBe(404);
+  });
+  it('keeps stock off pre-order variants and writes no empty initial-stock rows',async()=>{
+    const preorder={sku:'PO-1',name:'PO',price:1000,weight:100,mode:'preorder'};
+    expect((await request('/api/admin/products',{slug:'po',name:'PO',variants:[{...preorder,stock:5}]},headers)).status).toBe(400);
+    expect((await request('/api/admin/products/p/variants',{...preorder,stock:2},headers)).status).toBe(400);
+    const {variant}=await (await request('/api/admin/products/p/variants',preorder,headers)).json() as any;
+    expect(await sql('SELECT count(*) AS n FROM inventory_movements WHERE variant_id=?',variant.id).first('n')).toBe(0);
+    const refused=await adjust({variantId:variant.id,delta:3});
+    expect(refused.status).toBe(409);
+    expect((await refused.json() as any).error).toBe('Varian pre-order tidak memakai stok');
+    expect((await adjust({variantId:variant.id,counted:3})).status).toBe(409);
+    expect(await stockOf(variant.id)).toEqual({onHand:0,reserved:0});
+    const {variant:empty}=await (await request('/api/admin/products/p/variants',{...preorder,sku:'S-0',mode:'stock',stock:0},headers)).json() as any;
+    expect(await sql('SELECT count(*) AS n FROM inventory_movements WHERE variant_id=?',empty.id).first('n')).toBe(0);
+  });
+  it('sums awaiting shipment from in-flight paid orders, not from every order item',async()=>{
+    const {results}=await sql(`EXPLAIN QUERY PLAN SELECT (SELECT coalesce(sum(i.quantity),0) FROM orders o CROSS JOIN order_items i ON i.order_id=o.id
+      WHERE o.status='paid' AND o.fulfillment IN ('unfulfilled','processing') AND i.variant_id=inventory.variant_id AND i.campaign_id IS NULL) FROM inventory WHERE variant_id='a'`).all<{detail:string}>();
+    const plan=results.map(r=>r.detail).join('\n');
+    expect(plan).toMatch(/SEARCH o USING INDEX orders_status_page \(status=\?\)/);
+    expect(plan).toMatch(/SEARCH i USING INDEX items_order \(order_id=\?\)/);
   });
   it('uses immutable snapshots and projects payment metadata and sale ledger only',async()=>{
     const placed=await (await place()).json() as any;
@@ -1090,7 +1168,7 @@ describe('anti-fraud and abuse controls', () => {
     ];
     for (const [role, method, path] of matrix) expect((await request(path, undefined, as(role), method)).status, `${role} ${path}`).toBe(200);
     const denied: [string, string, string, unknown?][] = [
-      ['ops', 'GET', '/api/admin/products'], ['ops', 'POST', '/api/admin/products', { slug: 'x', name: 'x', variants: [{ sku: 'x', name: 'x', price: 1, weight: 1 }] }], ['ops', 'POST', '/api/admin/inventory', { variantId: 'a', delta: 1, reason: 'x' }],
+      ['ops', 'GET', '/api/admin/products'], ['ops', 'POST', '/api/admin/products', { slug: 'x', name: 'x', variants: [{ sku: 'x', name: 'x', price: 1, weight: 1 }] }], ['ops', 'POST', '/api/admin/inventory', { variantId: 'a', delta: 1, reason: 'x', key: crypto.randomUUID() }],
       ['catalog', 'GET', '/api/admin/orders'], ['catalog', 'GET', '/api/admin/review'], ['catalog', 'GET', '/api/admin/blocklist'], ['catalog', 'GET', '/api/admin/operations'],
       ['ops', 'GET', '/api/admin/unlisted'], ['catalog', 'GET', '/api/admin/unlisted'],
     ];
