@@ -103,7 +103,7 @@ Pemeriksaan: `npm run check`, `npm test` (**199 tes**: 73 commerce + 126 integra
 ## Gate yang tidak boleh disamarkan
 
 1. Resource, secret dan hostname staging/production nyata + otorisasi provision/deploy/migration. Root Wrangler masih lokal/ID dummy.
-2. DOKU live sandbox: metode merchant yang aktif, original request identity pada notifikasi Checkout, retry/ack, response format dan inquiry eligibility. Checkout-wide expiry/grace belum terbukti; reservasi ambigu ditahan dan diangkat ke manual review.
+2. DOKU live sandbox: metode merchant yang aktif, original request identity pada notifikasi Checkout, retry/ack, response format dan inquiry eligibility. Checkout-wide expiry/grace belum terbukti; reservasi ambigu ditahan dan diangkat ke manual review. **Gate 404:** order tanpa link pembayaran kini kedaluwarsa (dan dapat dibatalkan pembeli) bila status API DOKU menjawab HTTP 404. Perilaku 404 itu belum terkonfirmasi dari dokumentasi publik: catat hasil checklist sandbox di `docs/integrations.md` (invoice tidak pernah dibuat, link dibuat tapi tidak dibuka, VA terbit tapi belum dibayar, invoice lewat jatuh tempo) sebelum production.
 3. Komerce paket/key, origin ID dan pencarian wilayah nyata. UI/API pencarian wilayah sudah ada; eligibility paket, cakupan wilayah dan kuota/rate limiting tetap perlu verifikasi provider/staging.
 4. Google OAuth redirect/cookie propagation/state pada HTTPS staging dan Turnstile token invalid/replay nyata. Tes provider lokal tidak menggantikan ini.
 5. WAF exception tepat path/method webhook, Free rule quota, public R2 custom domain dan private bucket nonpublic, DNS Email Routing.
