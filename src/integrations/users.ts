@@ -36,10 +36,13 @@ export async function adminUsers(request: Request, env: IntegrationEnv): Promise
     const current = await env.DB.prepare('SELECT role FROM admin_roles WHERE user_id=?').bind(input.userId).first<AdminRole>('role');
     if (current === role) return { ok: true, changed: false };
     if (current) {
+      // Like revoke, a demotion can never take owner away from the installation owner: the guard is in the same statement.
+      const keepInstaller = role === 'owner' ? '' : ' AND user_id NOT IN (SELECT owner_id FROM installation)';
       const [result] = await env.DB.batch([
-        env.DB.prepare(`UPDATE admin_roles SET role=? WHERE user_id=? AND role=? AND (role<>'owner' OR ${otherOwner})`).bind(role, input.userId, current),
+        env.DB.prepare(`UPDATE admin_roles SET role=? WHERE user_id=? AND role=? AND (role<>'owner' OR ${otherOwner})${keepInstaller}`).bind(role, input.userId, current),
         audit(env, actor.id, 'role.change', input.userId, { fromRole: current, role }),
       ]);
+      if (result.meta.changes !== 1 && keepInstaller) demand(!await env.DB.prepare('SELECT 1 AS owner FROM installation WHERE owner_id=?').bind(input.userId).first('owner'), 409, 'Installation owner cannot be demoted');
       demand(result.meta.changes === 1, 409, 'The last owner cannot be demoted');
       return { ok: true, changed: true };
     }

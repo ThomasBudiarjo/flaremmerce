@@ -12,6 +12,7 @@ import { DataTable } from "@/components/data-table";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ConflictBanner } from "@/components/conflict-banner";
 import { LoadError, NumberField, TextField } from "@/components/field";
+import { hasInvalidNumber } from "@/hooks/use-whole-number";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -99,7 +100,7 @@ function CategoryDialog({ category, open, onOpenChange, onSaved }: { category: C
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Batal
           </Button>
-          <Button form="category-form" disabled={save.pending || !!conflict || (!!base && !Object.keys(changes).length)}>
+          <Button form="category-form" disabled={save.pending || !!conflict || hasInvalidNumber(draft) || (!!base && !Object.keys(changes).length)}>
             {save.pending ? "Menyimpan…" : "Simpan"}
           </Button>
         </DialogFooter>

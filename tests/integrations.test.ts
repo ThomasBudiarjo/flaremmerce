@@ -403,6 +403,11 @@ describe('anti-abuse integration boundaries', () => {
     expect((await call('POST','/api/admin/roles',owner,{userId:'owner',role:'ops'}))?.status).toBe(409);
     expect((await call('DELETE','/api/admin/roles/owner',owner))?.status).toBe(409);
     expect((await call('POST','/api/admin/roles',owner,{userId:'other',role:'owner'}))?.status).toBe(200);
+    // A second owner can never demote the installation owner, even though another owner would remain.
+    const demoted = await call('POST','/api/admin/roles',other,{userId:'owner',role:'catalog'});
+    expect(demoted?.status).toBe(409);
+    expect(await demoted!.json()).toMatchObject({error:'Installation owner cannot be demoted'});
+    expect(await env.DB.prepare("SELECT role FROM admin_roles WHERE user_id='owner'").first('role')).toBe('owner');
     expect((await call('POST','/api/admin/roles',other,{userId:'other',role:'catalog'}))?.status).toBe(200);
     expect((await call('POST','/api/admin/roles',other,{userId:'staff',role:'owner'}))?.status).toBe(403);
     expect((await call('DELETE','/api/admin/roles/owner',owner))?.status).toBe(409);

@@ -86,21 +86,26 @@ export async function exportOrders(env: CommerceEnv, actor: string, params: URLS
   return new Response(stream, { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="orders-${day}.csv"`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' } });
 }
 
-/** Dashboard counters from indexed ranges; revenue is by order creation date (WIB) for paid and completed orders. */
+/**
+ * Dashboard counters from indexed ranges. Sales count paid and completed orders by payment time; 7d and 30d are WIB
+ * calendar days ending today, like the order list presets. `revenue` is gross (items + shipping), split in the response.
+ */
 export async function summary(env: CommerceEnv, url: URL) {
-  const range = url.searchParams.get('range') ?? 'today', now = Date.now();
-  const since = range === 'today' ? wibMidnight(now) : range === '7d' ? now - 7 * DAY : range === '30d' ? now - 30 * DAY : null;
-  if (since === null) throw new HttpError(400, 'Invalid range');
+  const range = url.searchParams.get('range') ?? 'today', now = Date.now(), days: Record<string, number> = { today: 1, '7d': 7, '30d': 30 };
+  if (!Object.hasOwn(days, range)) throw new HttpError(400, 'Invalid range');
+  const since = wibMidnight(now) - (days[range] - 1) * DAY;
+  // CROSS JOIN keeps the scan on the range's paid events instead of every paid and completed order ever.
   const [paid, pending, toFulfill, reviews, low] = await env.DB.batch([
-    s(env, "SELECT count(*) AS n,coalesce(sum(total),0) AS revenue FROM orders WHERE status IN ('paid','completed') AND created_at>=?", since),
+    s(env, `SELECT count(*) AS n,coalesce(sum(o.total),0) AS revenue,coalesce(sum(json_extract(o.shipping_json,'$.amount')),0) AS shipping
+      FROM order_events e CROSS JOIN orders o ON o.id=e.order_id WHERE e.kind='paid' AND e.created_at>=? AND o.status IN ('paid','completed')`, since),
     s(env, "SELECT count(*) AS n FROM orders WHERE status='pending_payment'"),
     s(env, `SELECT count(*) AS n FROM orders WHERE status='paid' AND fulfillment IN ('unfulfilled','processing') AND NOT ${HELD}`),
     s(env, "SELECT count(*) AS n FROM manual_review WHERE status='open'"),
     s(env, `SELECT count(*) AS n FROM product_variants v JOIN inventory i ON i.variant_id=v.id JOIN products p ON p.id=v.product_id WHERE ${LOW_STOCK}`, envCount(env.LOW_STOCK_DEFAULT, 5)),
   ]);
-  const first = (r: D1Result) => r.results[0] as { n: number; revenue?: number };
-  const count = first(paid).n, revenue = first(paid).revenue ?? 0;
-  return json({ range, since, now, revenue, paidOrders: count, averageOrderValue: count ? Math.round(revenue / count) : 0,
+  const first = (r: D1Result) => r.results[0] as { n: number; revenue?: number; shipping?: number };
+  const count = first(paid).n, revenue = first(paid).revenue ?? 0, shipping = first(paid).shipping ?? 0;
+  return json({ range, since, now, revenue, itemsRevenue: revenue - shipping, shipping, paidOrders: count, averageOrderValue: count ? Math.round(revenue / count) : 0,
     pendingPayment: first(pending).n, toFulfill: first(toFulfill).n, openReviews: first(reviews).n, lowStock: first(low).n });
 }
 /** Active ready-stock variants at or below their threshold (per-variant, else LOW_STOCK_DEFAULT bound as the only parameter). */

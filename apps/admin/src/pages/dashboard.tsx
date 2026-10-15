@@ -145,16 +145,21 @@ export function DashboardPage() {
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {(
               [
-                ["Penjualan", summary ? money(summary.revenue) : null],
-                ["Pesanan dibayar", summary ? number(summary.paidOrders) : null],
-                ["Rata-rata pesanan", summary ? money(summary.averageOrderValue) : null],
-                ["Menunggu pembayaran", summary ? number(summary.pendingPayment) : null],
+                [
+                  "Penjualan (barang + ongkir)",
+                  summary ? money(summary.revenue) : null,
+                  summary ? `Barang ${money(summary.itemsRevenue)} · Ongkir ${money(summary.shipping)} · berdasarkan waktu pembayaran` : null,
+                ],
+                ["Pesanan dibayar", summary ? number(summary.paidOrders) : null, null],
+                ["Rata-rata pesanan", summary ? money(summary.averageOrderValue) : null, null],
+                ["Menunggu pembayaran", summary ? number(summary.pendingPayment) : null, null],
               ] as const
-            ).map(([title, value]) => (
+            ).map(([title, value, note]) => (
               <Card key={title}>
                 <CardHeader>
                   <CardDescription>{title}</CardDescription>
                   <CardTitle className={cn("text-2xl tabular-nums", stale)}>{value ?? placeholder("h-7 w-24")}</CardTitle>
+                  {note && <p className={cn("text-xs text-muted-foreground tabular-nums", stale)}>{note}</p>}
                 </CardHeader>
               </Card>
             ))}

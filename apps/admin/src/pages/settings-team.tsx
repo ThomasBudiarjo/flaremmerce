@@ -38,7 +38,7 @@ const roleHelp: Record<Role, string> = {
 // The server words last-owner refusals in English; operators see them in Indonesian.
 function explain(error: HttpError) {
   if (/last owner/i.test(error.message)) return "Owner terakhir tidak dapat diturunkan atau dicabut. Tambahkan owner lain terlebih dahulu.";
-  if (/installation owner/i.test(error.message)) return "Pemilik instalasi tidak dapat dicabut.";
+  if (/installation owner/i.test(error.message)) return "Pemilik instalasi tidak dapat dicabut atau diturunkan.";
   if (/Verified Google/i.test(error.message)) return "Pengguna harus login dengan akun Google terverifikasi dan tidak diblokir.";
   return error.message;
 }
@@ -89,7 +89,13 @@ function RoleSelect({ admin, self, onChanged }: { admin: AdminUser; self: boolea
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <NativeSelect aria-label={`Peran ${admin.name}`} value={admin.role} disabled={change.pending} onChange={(e) => pick(e.target.value as Role)}>
+      <NativeSelect
+        aria-label={`Peran ${admin.name}`}
+        value={admin.role}
+        disabled={change.pending || (admin.installationOwner && admin.role === "owner")}
+        title={admin.installationOwner && admin.role === "owner" ? "Pemilik instalasi selalu owner" : undefined}
+        onChange={(e) => pick(e.target.value as Role)}
+      >
         {(Object.keys(roleLabel) as Role[]).map((role) => (
           <NativeSelectOption key={role} value={role}>
             {roleLabel[role]}

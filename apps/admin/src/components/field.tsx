@@ -4,6 +4,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useWholeNumber } from "@/hooks/use-whole-number";
 
 /** Visual required marker; hidden from assistive tech because the control's `required` already announces it. */
 export function RequiredMark() {
@@ -54,24 +55,58 @@ export function TextField({
   );
 }
 
-/** Integer input bound to `number | null`; an empty box is null. */
+/** Whole-number input bound to `number | null`; an empty box is null, text that is not a whole number is NaN. */
 export function NumberField({
   value,
   onValueChange,
+  label,
+  hint,
+  className,
+  min,
+  max,
   ...props
-}: Omit<React.ComponentProps<typeof TextField>, "value" | "onChange"> & {
+}: Omit<React.ComponentProps<typeof TextField>, "value" | "onChange" | "type" | "min" | "max"> & {
   value: number | null;
   onValueChange: (value: number | null) => void;
+  min?: number;
+  max?: number;
 }) {
+  const { error, inputProps } = useWholeNumber(value, onValueChange, { min, max });
   return (
-    <TextField
-      type="number"
-      inputMode="numeric"
-      step={1}
-      value={value ?? ""}
-      onChange={(e) => onValueChange(e.target.value === "" ? null : Number(e.target.value))}
-      {...props}
-    />
+    <Field label={label} hint={error ? undefined : hint} required={props.required} className={className}>
+      {(id) => (
+        <>
+          <Input id={id} {...props} {...inputProps} aria-describedby={error ? `${id}-error` : undefined} />
+          {error && (
+            <p id={`${id}-error`} className="text-xs text-destructive">
+              {error}
+            </p>
+          )}
+        </>
+      )}
+    </Field>
+  );
+}
+
+/** Label-less whole-number input for table cells; shows its own error under the box. */
+export function WholeNumberInput({
+  value,
+  onValueChange,
+  min,
+  max,
+  ...props
+}: Omit<React.ComponentProps<typeof Input>, "value" | "onChange" | "type" | "min" | "max"> & {
+  value: number | null;
+  onValueChange: (value: number | null) => void;
+  min?: number;
+  max?: number;
+}) {
+  const { error, inputProps } = useWholeNumber(value, onValueChange, { min, max });
+  return (
+    <div className="grid gap-1">
+      <Input {...props} {...inputProps} />
+      {error && <span className="text-xs text-destructive">{error}</span>}
+    </div>
   );
 }
 

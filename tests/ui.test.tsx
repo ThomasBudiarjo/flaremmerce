@@ -7,6 +7,7 @@ import { AdminApp } from '../apps/admin/src/main';
 import OrderStatus from '../apps/storefront/src/components/OrderStatus';
 import Checkout from '../apps/storefront/src/components/Checkout';
 import { money } from '../apps/storefront/src/lib/catalog';
+import { parseWholeNumber } from '../apps/admin/src/lib/format';
 
 // Turnstile is a third-party widget; the double issues a fresh token whenever the checkout resets it.
 vi.mock('../apps/storefront/src/components/Turnstile', async () => {
@@ -151,7 +152,7 @@ it('does not mistake an invalid nonempty token for verified guest access', async
 describe('admin SPA', () => {
   type Handler = (url: string, init: RequestInit) => Response | Promise<Response> | undefined;
   const me = (role = 'owner') => ({ user: { id: 'admin', name: 'Admin', email: 'admin@example.com' }, role, areas: role === 'owner' ? ['owner', 'ops', 'catalog'] : [role] });
-  const summaryBody = { range: 'today', since: 0, now: 1, revenue: 0, paidOrders: 0, averageOrderValue: 0, pendingPayment: 0, toFulfill: 2, openReviews: 1, lowStock: 0 };
+  const summaryBody = { range: 'today', since: 0, now: 1, revenue: 0, itemsRevenue: 0, shipping: 0, paidOrders: 0, averageOrderValue: 0, pendingPayment: 0, toFulfill: 2, openReviews: 1, lowStock: 0 };
   let calls: { url: string; method: string; body: any }[] = [];
   async function renderAdmin(path: string, handler: Handler, options: { role?: string; signedIn?: boolean; config?: Record<string, unknown> } = {}) {
     calls = [];
@@ -640,6 +641,36 @@ describe('admin SPA', () => {
     expect((document.querySelector('[aria-label="Harga varian 1"]') as HTMLInputElement).value).toBe('99000');
   });
 
+  it('parses whole numbers with "." or space thousands separators and rejects decimals', () => {
+    for (const [input, expected] of [['150000', 150000], ['150.000', 150000], ['1.250.000', 1250000], ['150 000', 150000], ['  42 ', 42], ['', null], ['   ', null]] as const) expect(parseWholeNumber(input)).toBe(expected);
+    for (const input of ['1,5', '150,000', '1.5', '1.50', '1.0000', '.500', '12.', '-5', '1e3', 'abc', '9'.repeat(20)]) expect(parseWholeNumber(input)).toBeNaN();
+  });
+
+  it('keeps "150.000" as typed, saves it as 150000 and blocks saving a decimal', async () => {
+    await renderAdmin('/admin/products/new', (url, init) => {
+      if (url === '/api/admin/categories') return Response.json({ categories: [] });
+      if (url === '/api/admin/products' && init.method === 'POST') return Response.json({ product: { ...product, id: 'p9' } }, { status: 201 });
+      if (url === '/api/admin/products/p9') return Response.json({ product: { ...product, id: 'p9' } });
+    });
+    await type(labelled('Nama produk'), 'Kaos');
+    await type(document.querySelector('[aria-label="SKU varian 1"]')!, 'K-1');
+    const price = document.querySelector('[aria-label="Harga varian 1"]') as HTMLInputElement;
+    const weight = document.querySelector('[aria-label="Berat varian 1"]') as HTMLInputElement;
+    expect([price.type, price.inputMode, weight.type]).toEqual(['text', 'numeric', 'text']);
+    await type(price, '150.000');
+    expect(price.value).toBe('150.000');
+    expect(text()).toContain('Rp 150.000');
+    await type(weight, '1,5');
+    expect(text()).toContain('Isi angka bulat. Pemisah ribuan memakai titik, mis. 150.000');
+    expect(weight.validity.valid).toBe(false);
+    expect(document.querySelector('[aria-label="Belum bisa disimpan"]')?.textContent).toContain('Angka tidak valid: varian 1');
+    expect(button('Simpan').disabled).toBe(true);
+    await type(weight, '1.000');
+    expect(weight.validity.valid).toBe(true);
+    await act(async () => (document.getElementById('product-form') as HTMLFormElement).requestSubmit());
+    expect(calls.find(c => c.method === 'POST')!.body).toMatchObject({ variants: [{ sku: 'K-1', price: 150000, weight: 1000, stock: 0 }] });
+  });
+
   it('duplicates a product into the new-product editor without SKUs or stock', async () => {
     const source = { ...product, variants: [{ ...product.variants[0], maxPerOrder: 2, lengthCm: 10 }], categoryId: 'c1', category: { slug: 'kaos', name: 'Kaos' } };
     await renderAdmin('/admin/products/p', (url, init) => {
@@ -839,6 +870,18 @@ describe('admin SPA', () => {
     expect(assign).toHaveBeenCalledWith('/admin/');
   });
 
+  it('locks the installation owner\'s role select', async () => {
+    await renderAdmin('/admin/settings/team', url => {
+      if (url === '/api/admin/roles') return Response.json({ admins: [
+        { userId: 'admin', name: 'Admin', email: 'admin@example.com', role: 'owner', grantedBy: 'admin', createdAt: 1, installationOwner: true },
+        { userId: 'o2', name: 'Owner Dua', email: 'o2@example.com', role: 'owner', grantedBy: 'admin', createdAt: 2, installationOwner: false }] });
+    });
+    const select = (name: string) => document.querySelector(`[aria-label="Peran ${name}"]`) as HTMLSelectElement;
+    expect(select('Admin').disabled).toBe(true);
+    expect(select('Admin').title).toBe('Pemilik instalasi selalu owner');
+    expect(select('Owner Dua').disabled).toBe(false);
+  });
+
   it('shows the normalized phone before blocking and filters entries by kind on the server', async () => {
     const entries = [{ id: 'b1', kind: 'email', reason: 'Spam', actor: 'ops-1', createdAt: 1 }, { id: 'b2', kind: 'ip', reason: 'Bot', actor: 'ops-2', createdAt: 2 }];
     await renderAdmin('/admin/blocklist', url => {
@@ -922,9 +965,10 @@ describe('admin SPA', () => {
     const revenue = [...document.querySelectorAll('[data-slot="card-title"]')].find(t => t.closest('[data-slot="card"]')?.textContent?.startsWith('Penjualan'))!;
     expect(revenue.classList.contains('is-stale')).toBe(true);
     expect(revenue.querySelector('[data-slot="skeleton"]')).toBeNull();
-    await act(async () => week.resolve(Response.json({ ...summaryBody, range: '7d', revenue: 5000 })));
+    await act(async () => week.resolve(Response.json({ ...summaryBody, range: '7d', revenue: 5000, itemsRevenue: 4000, shipping: 1000 })));
     expect(revenue.classList.contains('is-stale')).toBe(false);
-    expect(text()).toContain('Rp 5.000');
+    expect(text()).toContain('Penjualan (barang + ongkir)Rp 5.000');
+    expect(text()).toContain('Barang Rp 4.000 · Ongkir Rp 1.000 · berdasarkan waktu pembayaran');
   });
 
   it('pages products by number with a total and keeps the chosen page size in the URL', async () => {

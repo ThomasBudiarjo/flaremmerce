@@ -4,6 +4,19 @@ export const money = (n: number, currency = "IDR") =>
 
 export const number = (n: number) => new Intl.NumberFormat("id-ID").format(n);
 
+/**
+ * Whole number as an Indonesian admin types it: plain digits, or digits grouped in threes by "." or a space
+ * ("150.000"). Empty is null. Anything else, such as a "," decimal or a partial group ("1.5", "1.50"), is NaN:
+ * a number input would read "150.000" as 150.
+ */
+export function parseWholeNumber(text: string): number | null {
+  const value = text.trim();
+  if (!value) return null;
+  if (!/^\d+$/.test(value) && !/^\d{1,3}(?:[. ]\d{3})+$/.test(value)) return NaN;
+  const parsed = Number(value.replace(/[. ]/g, ""));
+  return Number.isSafeInteger(parsed) ? parsed : NaN;
+}
+
 export const dateWIB = (n: number | null | undefined) =>
   n == null ? "—" : new Date(n).toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", day: "numeric", month: "short", year: "numeric" });
 

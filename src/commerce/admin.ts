@@ -267,9 +267,10 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     return json({recorded:true});
   }
   if (path === '/api/admin/orders' && request.method === 'GET') {
-    const rows = await orderPage(env, await orderFilter(env, url.searchParams), `id,reference,status,fulfillment,total,currency,created_at AS createdAt,contact_json,address_json,shipping_json,${openReasons}`, before, beforeId, limit+1);
+    // Lists are not audited, so they carry no contact or address PII; the audited detail read returns the rest.
+    const rows = await orderPage(env, await orderFilter(env, url.searchParams), `id,reference,status,fulfillment,total,currency,created_at AS createdAt,json_extract(contact_json,'$.name') AS contactName,json_extract(shipping_json,'$.service') AS shippingService,${openReasons}`, before, beforeId, limit+1);
     const { items, nextCursor } = page(rows.results, limit, last => ({ before: last.createdAt, beforeId: last.id }));
-    return json({ orders: items.map(hold).map(({ contact_json, address_json, shipping_json, ...row }) => ({ ...row, contact: JSON.parse(String(contact_json)), address: JSON.parse(String(address_json)), shipping: JSON.parse(String(shipping_json)) })), nextCursor });
+    return json({ orders: items.map(hold).map(({ contactName, shippingService, ...row }) => ({ ...row, contact: { name: contactName ?? null }, shipping: { service: shippingService ?? null } })), nextCursor });
   }
   if (path === '/api/admin/review' && request.method === 'GET') {
     const status = url.searchParams.get('status') || null;

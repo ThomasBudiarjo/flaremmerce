@@ -7,6 +7,7 @@ import pagesMigration from '../migrations/0006_admin_pages.sql?raw';
 import lifecycleMigration from '../migrations/0008_lifecycle.sql?raw';
 import riskMigration from '../migrations/0010_risk.sql?raw';
 import ecommerceMigration from '../migrations/0012_ecommerce.sql?raw';
+import reportingMigration from '../migrations/0014_reporting.sql?raw';
 import worker, { housekeepingDue, type Env } from '../src/worker';
 import { chargeableWeight, publicCacheKey, catalogParams, riskHash, tracking } from '../src/shared';
 import { csvCell } from '../src/commerce/reports';
@@ -101,6 +102,7 @@ beforeAll(async () => {
   await applyD1Migrations(db(), [{ name: '0008_lifecycle.sql', queries: statements(lifecycleMigration) }]);
   await applyD1Migrations(db(), [{ name: '0010_risk.sql', queries: statements(riskMigration) }]);
   await applyD1Migrations(db(), [{ name: '0012_ecommerce.sql', queries: statements(ecommerceMigration) }]);
+  await applyD1Migrations(db(), [{ name: '0014_reporting.sql', queries: statements(reportingMigration) }]);
   // Shipping-owned quote/destination contract. Real integration migrations are applied by the integration suite.
   await sql('CREATE TABLE IF NOT EXISTS shipping_quotes(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,destination TEXT NOT NULL,service TEXT NOT NULL,amount INTEGER NOT NULL,weight INTEGER NOT NULL,expires_at INTEGER NOT NULL,details_json TEXT NOT NULL)').run();
   await sql('CREATE TABLE IF NOT EXISTS shipping_destinations(id TEXT PRIMARY KEY,label TEXT NOT NULL,province TEXT NOT NULL,city TEXT NOT NULL,district TEXT NOT NULL,subdistrict TEXT NOT NULL,postal_code TEXT NOT NULL,updated_at INTEGER NOT NULL)').run();
@@ -1623,6 +1625,33 @@ describe('ecommerce features', () => {
     expect(await sql("SELECT count(*) AS n FROM orders WHERE pii_redacted_at IS NULL").first('n')).toBe(2);
   });
 
+  it('counts sales on the WIB day they were paid and uses calendar-day ranges', async () => {
+    const now = Date.now(), midnight = Math.floor((now + 7 * 3_600_000) / 86_400_000) * 86_400_000 - 7 * 3_600_000, day = 86_400_000;
+    const order = (id: string, created: number, paid: number | null, total: number, status = 'paid') => [
+      sql('INSERT INTO orders(id,reference,guest_token_hash,total,contact_json,address_json,shipping_json,created_at,status) VALUES(?,?,?,?,?,?,?,?,?)', id, `FL-${id}`, 'h', total, '{}', '{}', JSON.stringify({ amount: 500 }), created, status),
+      ...(paid === null ? [] : [sql("INSERT INTO order_events(id,order_id,kind,created_at) VALUES(?,?,'paid',?)", `${id}:paid`, id, paid)]),
+    ];
+    await db().batch([
+      // Created before midnight, paid after it: today's sale.
+      ...order('overnight', midnight - 60_000, midnight + 60_000, 10_000),
+      // Created today but never paid.
+      ...order('unpaid', now - 1000, null, 99_000, 'pending_payment'),
+      // First and last minute of the 7-day WIB window.
+      ...order('week-start', midnight - 6 * day - 1, midnight - 6 * day, 20_000, 'completed'),
+      ...order('week-before', midnight - 7 * day, midnight - 6 * day - 1, 40_000, 'completed'),
+      ...order('month-start', midnight - 29 * day, midnight - 29 * day, 80_000, 'completed'),
+      ...order('month-before', midnight - 30 * day, midnight - 29 * day - 1, 160_000, 'completed'),
+    ]);
+    const summary = async (range: string) => (await (await request(`/api/admin/summary?range=${range}`, undefined, ops)).json() as any);
+    expect(await summary('today')).toMatchObject({ since: midnight, paidOrders: 1, revenue: 10_000, shipping: 500, itemsRevenue: 9_500 });
+    expect(await summary('7d')).toMatchObject({ since: midnight - 6 * day, paidOrders: 2, revenue: 30_000, shipping: 1000, itemsRevenue: 29_000 });
+    expect(await summary('30d')).toMatchObject({ since: midnight - 29 * day, paidOrders: 4, revenue: 150_000 });
+    for (const range of ['constructor', '__proto__', '']) expect((await request(`/api/admin/summary?range=${range}`, undefined, ops)).status).toBe(400);
+    const plan = (await sql("EXPLAIN QUERY PLAN SELECT count(*) FROM order_events e CROSS JOIN orders o ON o.id=e.order_id WHERE e.kind='paid' AND e.created_at>=? AND o.status IN ('paid','completed')", 0).all<{ detail: string }>()).results.map(r => r.detail).join('\n');
+    expect(plan).toMatch(/SEARCH e USING INDEX order_events_paid \(created_at>\?\)/);
+    expect(plan).toMatch(/SEARCH o USING INDEX sqlite_autoindex_orders_1 \(id=\?\)/);
+  });
+
   it('summarizes sales, filters and exports orders with CSV injection protection and audit', async () => {
     const secret = e.RISK_HASH_SECRET!, now = Date.now();
     const insert = (id: string, status: string, fulfillment: string, total: number, created: number, contact: Record<string, string>) =>
@@ -1639,13 +1668,20 @@ describe('ecommerce features', () => {
       now - 500, await riskHash(secret, 'email', 'find@example.com'), await riskHash(secret, 'phone', '+62812345678')).run();
     await sql("INSERT INTO manual_review(id,event_key,order_id,reason,created_at) VALUES('r','r','hashed','risk_velocity',0)").run();
     await sql("INSERT INTO inventory(variant_id,on_hand) VALUES('c',0)").run().catch(() => {});
+    for (const [orderId, at] of [['paid1', now - 1000], ['paid2', now - 2000], ['done', now - 10 * 86_400_000], ['hashed', now - 500]] as const) await sql("INSERT INTO order_events(id,order_id,kind,created_at) VALUES(?,?,'paid',?)", `${orderId}:paid`, orderId, at).run();
     const summary = async (range: string) => (await (await request(`/api/admin/summary?range=${range}`, undefined, ops)).json() as any);
-    expect(await summary('today')).toMatchObject({ paidOrders: 3, revenue: 37000, averageOrderValue: 12333, pendingPayment: 1, toFulfill: 1, openReviews: 1, lowStock: 2 });
+    expect(await summary('today')).toMatchObject({ paidOrders: 3, revenue: 37000, shipping: 200, itemsRevenue: 36800, averageOrderValue: 12333, pendingPayment: 1, toFulfill: 1, openReviews: 1, lowStock: 2 });
     expect(await summary('30d')).toMatchObject({ paidOrders: 4, revenue: 67000 });
     expect((await request('/api/admin/summary?range=1y', undefined, ops)).status).toBe(400);
     expect((await request('/api/admin/summary', undefined, catalogRole)).status).toBe(403);
     const ids = async (query: string) => ((await (await request(`/api/admin/orders?${query}`, undefined, ops)).json() as any).orders as any[]).map(o => o.id);
     expect(await ids('status=paid')).toEqual(['hashed', 'paid1', 'paid2']);
+    // The unaudited list carries the name and shipping service only; email, phone and address stay in the audited detail.
+    const listed = (await (await request('/api/admin/orders?status=paid', undefined, ops)).json() as any).orders as any[];
+    expect(listed.find(o => o.id === 'paid1')).toEqual({ id: 'paid1', reference: 'FL-paid1', status: 'paid', fulfillment: 'unfulfilled', total: 10000, currency: 'IDR', createdAt: now - 1000, contact: { name: '=HYPERLINK("http://evil")' }, shipping: { service: 'jne:REG' }, hold: false, openReviewReasons: [] });
+    expect(listed.find(o => o.id === 'hashed')).toMatchObject({ contact: { name: null }, shipping: { service: null }, hold: true });
+    expect(JSON.stringify(listed)).not.toMatch(/example\.com|\+6281|Jl\. 1|Bandung/);
+    expect(await sql("SELECT count(*) AS n FROM audit_logs WHERE action='order.view'").first('n')).toBe(0);
     expect(await ids('status=to_fulfill')).toEqual(['paid1']);
     expect(await ids('status=held')).toEqual(['hashed']);
     expect(await ids('status=shipped')).toEqual(['paid2']);

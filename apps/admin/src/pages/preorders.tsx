@@ -10,6 +10,7 @@ import { PageHeader } from "@/components/page-header";
 import { DataTable } from "@/components/data-table";
 import { ConflictBanner } from "@/components/conflict-banner";
 import { LoadError, NumberField, TextField } from "@/components/field";
+import { hasInvalidNumber } from "@/hooks/use-whole-number";
 import { Paginator } from "@/components/paginator";
 import { VariantPicker } from "@/components/variant-picker";
 import { Badge } from "@/components/ui/badge";
@@ -168,7 +169,7 @@ function CampaignSheet({
     },
   );
   const valid =
-    !!draft.startsAt && !!draft.endsAt && !!draft.shipFrom && !!draft.shipTo && !Object.keys(campaignErrors(draft)).length && (base ? Object.keys(changes).length > 0 : !!variant);
+    !!draft.startsAt && !!draft.endsAt && !!draft.shipFrom && !!draft.shipTo && !Object.keys(campaignErrors(draft)).length && !hasInvalidNumber(draft) && (base ? Object.keys(changes).length > 0 : !!variant);
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-lg">

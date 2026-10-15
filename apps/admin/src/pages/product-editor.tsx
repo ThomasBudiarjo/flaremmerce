@@ -14,7 +14,8 @@ import { StockAdjustDialog, type StockTarget } from "@/components/stock-adjust-d
 import { PhotoUpload } from "@/components/photo-upload";
 import { ConflictBanner } from "@/components/conflict-banner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { Field, LoadError, NumberField, RequiredMark, TextField } from "@/components/field";
+import { Field, LoadError, NumberField, RequiredMark, TextField, WholeNumberInput } from "@/components/field";
+import { hasInvalidNumber } from "@/hooks/use-whole-number";
 import { DetailSkeleton, Reveal, Spinner } from "@/components/loading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -308,7 +309,7 @@ function SaveBar({ dirty, saving, blocked, blockers = [], onDiscard, form }: { d
 const focusLabel = (label: string) => (document.querySelector(`[aria-label="${label}"]`) as HTMLElement | null)?.focus();
 
 /** What keeps a new product from saving, each pointing at the first variant row to fix. */
-export function variantBlockers(variants: Pick<NewVariant, "sku" | "price" | "weight">[]): Blocker[] {
+export function variantBlockers(variants: (Pick<NewVariant, "sku" | "price" | "weight"> & Partial<NewVariant>)[]): Blocker[] {
   const rows = (test: (v: (typeof variants)[number], i: number) => boolean) => variants.flatMap((v, i) => (test(v, i) ? [i + 1] : []));
   const skus = variants.map((v) => v.sku.trim().toLowerCase());
   const checks: [string, string, number[]][] = [
@@ -316,6 +317,7 @@ export function variantBlockers(variants: Pick<NewVariant, "sku" | "price" | "we
     ["SKU ganda", "SKU", rows((v, i) => !!skus[i] && skus.indexOf(skus[i]) !== i)],
     ["Isi harga", "Harga", rows((v) => v.price == null)],
     ["Isi berat", "Berat", rows((v) => v.weight == null || v.weight < 1)],
+    ["Angka tidak valid", "Harga", rows((v) => hasInvalidNumber(v))],
   ];
   return checks
     .filter(([, , list]) => list.length)
@@ -456,27 +458,25 @@ function NewProductEditor({ duplicateOf }: { duplicateOf: string | null }) {
                           <MoneyInput aria-label={`Harga varian ${i + 1}`} required max={1_000_000_000} className="min-w-28" value={v.price} onValueChange={(price) => update(v.key, { price })} />
                         </TableCell>
                         <TableCell className="align-top">
-                          <Input
+                          <WholeNumberInput
                             aria-label={`Berat varian ${i + 1}`}
-                            type="number"
-                            inputMode="numeric"
                             required
                             min={1}
                             max={1_000_000}
                             className="min-w-20"
-                            value={v.weight ?? ""}
-                            onChange={(e) => update(v.key, { weight: e.target.value === "" ? null : Number(e.target.value) })}
+                            value={v.weight}
+                            onValueChange={(weight) => update(v.key, { weight })}
                           />
                         </TableCell>
                         <TableCell className="align-top">
                           {v.mode === "stock" ? (
-                            <Input
+                            <WholeNumberInput
                               aria-label={`Stok awal varian ${i + 1}`}
-                              type="number"
                               min={0}
+                              max={1_000_000}
                               className="min-w-20"
-                              value={v.stock ?? ""}
-                              onChange={(e) => update(v.key, { stock: e.target.value === "" ? null : Number(e.target.value) })}
+                              value={v.stock}
+                              onValueChange={(stock) => update(v.key, { stock })}
                             />
                           ) : (
                             <span className="text-muted-foreground" title="Pre-order memakai kuota kampanye, bukan stok">
@@ -614,7 +614,7 @@ function AddVariantDialog({ product, open, onOpenChange, onAdded }: { product: P
           id="add-variant-form"
           onSubmit={(e) => {
             e.preventDefault();
-            void add.mutate(undefined);
+            if (!hasInvalidNumber(value)) void add.mutate(undefined);
           }}
         >
           <VariantFields value={value} onChange={setValue} disabled={add.pending} />
@@ -710,7 +710,9 @@ function ExistingProductEditor({ id }: { id: string }) {
     },
   );
 
-  useSaveHotkey("product-form", dirty && !save.pending && !toggleActive.pending && !uploading && !conflict);
+  // Detail fields live in a sheet outside the form, so their custom validity cannot stop the submit on its own.
+  const invalidNumbers = Object.values(variantDrafts).some(hasInvalidNumber);
+  useSaveHotkey("product-form", dirty && !save.pending && !toggleActive.pending && !uploading && !conflict && !invalidNumbers);
 
   if (!product || !draft) {
     return (
@@ -783,7 +785,7 @@ function ExistingProductEditor({ id }: { id: string }) {
         className="grid items-start gap-6 lg:grid-cols-3"
         onSubmit={(e) => {
           e.preventDefault();
-          void save.mutate(undefined);
+          if (!invalidNumbers) void save.mutate(undefined);
         }}
       >
         <div className="grid gap-6 lg:col-span-2">
@@ -937,7 +939,7 @@ function ExistingProductEditor({ id }: { id: string }) {
         form="product-form"
         dirty={dirty}
         saving={save.pending}
-        blocked={uploading || conflict}
+        blocked={uploading || conflict || invalidNumbers}
         onDiscard={() => {
           setDraft(productDraft(product));
           setVariantDrafts(Object.fromEntries(product.variants.map((v) => [v.id, variantDraft(v)])));

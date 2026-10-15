@@ -11,7 +11,10 @@ export type Summary = {
   range: string;
   since: number;
   now: number;
+  /** Gross sales (items + shipping) of orders paid in the range, by payment time. */
   revenue: number;
+  itemsRevenue: number;
+  shipping: number;
   paidOrders: number;
   averageOrderValue: number;
   pendingPayment: number;
@@ -49,14 +52,17 @@ export type OrderSummary = {
   total: number;
   currency: string;
   createdAt: number;
-  contact: { name?: string; email?: string; phone?: string };
-  address: Record<string, any>;
-  shipping: { service?: string; amount?: number; weight?: number; shipFrom?: string | null; shipTo?: string | null };
+  /** Lists carry no contact or address PII: only the name and the shipping service. The audited detail read has the rest. */
+  contact: { name?: string | null };
+  shipping: { service?: string | null };
   hold: boolean;
   openReviewReasons: string[];
 };
 
-export type OrderDetail = OrderSummary & {
+export type OrderDetail = Omit<OrderSummary, "contact" | "shipping"> & {
+  contact: { name?: string; email?: string; phone?: string };
+  address: Record<string, any>;
+  shipping: { service?: string; amount?: number; weight?: number; shipFrom?: string | null; shipTo?: string | null };
   items: OrderItem[];
   timeline: OrderTimelineEvent[];
   tracking: { number: string; courier: string | null; courierName: string | null; url: string | null } | null;
