@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { cartWeightMessage, chargeableWeight, envCount, MAX_CART_LINES, maxCartWeight, volumetricDivisor } from '../shared';
+import { cartWeightMessage, chargeableWeight, envCount, MAX_CART_LINES, MAX_LINE_QUANTITY, maxCartWeight, volumetricDivisor } from '../shared';
 import { stockLevel } from './catalog';
 import { type CommerceEnv, HttpError, json, statement as s } from './types';
 
-export const cartItems = z.array(z.object({ variantId: z.string().min(1).max(100), quantity: z.number().int().min(1).max(100) }).strict()).min(1).max(MAX_CART_LINES);
+export const cartItems = z.array(z.object({ variantId: z.string().min(1).max(100), quantity: z.number().int().min(1).max(MAX_LINE_QUANTITY) }).strict()).min(1).max(MAX_CART_LINES);
 const previewInput = z.object({ items: cartItems }).strict();
 type PreviewRow = { id: string; sku: string; name: string; product_name: string; product_slug: string; price: number; weight: number; length_cm: number | null; width_cm: number | null; height_cm: number | null;
   mode: string; max_per_order: number | null; max_per_customer: number | null; on_hand: number | null; reserved: number | null; campaign_id: string | null; quota: number | null; c_reserved: number | null; sold: number | null; ship_from: string | null; ship_to: string | null; ends_at: number | null };

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { type Product, type Variant, money, date } from "../lib/catalog";
-import { MAX_CART_LINES, readCart, syncCartCount, writeCart } from "../lib/cart";
+import { MAX_CART_LINES, MAX_LINE_QUANTITY, readCart, syncCartCount, writeCart } from "../lib/cart";
 
 const stockText = (v: Variant) =>
   v.stockLevel === "out" ? "Habis" : v.stockLevel === "low" ? "Stok terbatas" : v.mode === "preorder" ? "Kuota tersedia" : "Ready stock";
@@ -12,9 +12,10 @@ export default function ProductPicker({ product }: { product: Product }) {
   useEffect(() => syncCartCount(), []);
   const v = product.variants.find((v) => v.id === id);
   if (!v) return <p className="notice">Varian belum tersedia.</p>;
-  const max = v.maxPerOrder ?? 99;
-  const overLimit = v.maxPerOrder != null && quantity > v.maxPerOrder;
-  const unavailable = v.stockLevel === "out" || overLimit;
+  const max = Math.min(v.maxPerOrder ?? MAX_LINE_QUANTITY, MAX_LINE_QUANTITY);
+  // Switching to a variant with a lower limit keeps the typed number within that limit.
+  const units = Math.min(quantity, max);
+  const unavailable = v.stockLevel === "out";
   const tone = v.stockLevel === "out" ? "out" : v.stockLevel === "low" ? "low" : v.mode === "preorder" ? "preorder" : "stock";
   return (
     <div className="picker">
@@ -72,10 +73,9 @@ export default function ProductPicker({ product }: { product: Product }) {
           type="number"
           min="1"
           max={max}
-          value={quantity}
+          value={units}
           aria-describedby="quantity-help"
-          aria-invalid={overLimit || undefined}
-          onChange={(e) => setQuantity(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+          onChange={(e) => setQuantity(Math.min(max, Math.max(1, Math.floor(Number(e.target.value) || 1))))}
         />
         <button
           className="cta"
@@ -84,11 +84,23 @@ export default function ProductPicker({ product }: { product: Product }) {
             try {
               const cart = readCart();
               const existing = cart.find((i) => i.variantId === id);
-              if (existing) existing.quantity += quantity;
-              else if (cart.length >= MAX_CART_LINES) {
+              if (existing) {
+                // Over 100 units the cart preview refuses the whole cart; over the per-order limit checkout refuses it.
+                if (existing.quantity >= max) {
+                  setMessage(`Keranjang sudah berisi ${max} unit, jumlah maksimal untuk varian ini.`);
+                  return;
+                }
+                const added = Math.min(units, max - existing.quantity);
+                existing.quantity += added;
+                if (added < units) {
+                  writeCart(cart);
+                  setMessage(`Ditambahkan ${added} unit; keranjang kini berisi jumlah maksimal ${max}.`);
+                  return;
+                }
+              } else if (cart.length >= MAX_CART_LINES) {
                 setMessage(`Keranjang maksimal ${MAX_CART_LINES} varian berbeda.`);
                 return;
-              } else cart.push({ variantId: v.id, quantity });
+              } else cart.push({ variantId: v.id, quantity: units });
               writeCart(cart);
               setMessage("Ditambahkan ke keranjang.");
             } catch {
@@ -96,10 +108,10 @@ export default function ProductPicker({ product }: { product: Product }) {
             }
           }}
         >
-          {v.stockLevel === "out" ? "Habis" : overLimit ? "Melebihi batas per pesanan" : "Tambah ke keranjang"}
+          {v.stockLevel === "out" ? "Habis" : "Tambah ke keranjang"}
         </button>
       </div>
-      <p id="quantity-help" className={overLimit ? "field-hint error-text" : "field-hint"}>
+      <p id="quantity-help" className="field-hint">
         {v.maxPerOrder != null ? `Maksimal ${v.maxPerOrder} per pesanan.` : "Jumlah akhir diperiksa saat checkout."}
       </p>
       <p role="status" className="picker-status">

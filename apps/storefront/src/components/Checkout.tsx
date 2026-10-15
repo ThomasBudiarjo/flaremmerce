@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, confirmationText, definiteRefusal, downloadText, google, readCart, syncCartCount, writeCart, type ApiError, type CartItem } from "../lib/cart";
+import { api, confirmationText, definiteRefusal, downloadText, google, MAX_LINE_QUANTITY, readCart, syncCartCount, writeCart, type ApiError, type CartItem } from "../lib/cart";
 import { money, date } from "../lib/catalog";
 import Turnstile from "./Turnstile";
 import RequiredMark from "./RequiredMark";
@@ -78,7 +78,8 @@ export default function Checkout() {
     return () => clearInterval(timer);
   }, []);
 
-  const lines = view?.lines ?? [];
+  // Without a preview the stored lines are still listed, so the shopper can always change or remove what blocks it.
+  const lines: Line[] = view?.lines ?? items.map((i) => ({ variantId: i.variantId, quantity: i.quantity, available: false }));
   const subtotal = view?.subtotal ?? 0;
   const liveQuotes = quotes.filter((q) => expiry(q) > now);
   const quote = liveQuotes.find((q) => q.id === quoteId);
@@ -308,12 +309,12 @@ export default function Checkout() {
         <div className="checkout-main">
           <section className="panel" aria-labelledby="cart-heading">
             <h2 id="cart-heading">Isi keranjang</h2>
-            {!view && <p role="alert">Harga dan stok terbaru belum dapat diperiksa. Muat ulang halaman.</p>}
+            {!view && <p role="alert">Harga dan stok terbaru belum dapat diperiksa. Ubah jumlah atau hapus barang di bawah, atau muat ulang halaman.</p>}
             {lines.map((l) => (
               <div className="line" key={l.variantId}>
                 <div className="row">
                   <div>
-                    <strong>{l.available ? l.productName : "Produk tidak tersedia"}</strong>
+                    <strong>{l.available ? l.productName : view ? "Produk tidak tersedia" : "Barang di keranjang"}</strong>
                     {l.available && (
                       <p className="muted">
                         {l.name} · {l.sku} · {l.mode === "preorder" ? "Pre-order" : "Ready stock"}
@@ -330,10 +331,10 @@ export default function Checkout() {
                     aria-label={"Jumlah " + (l.available ? l.productName : l.variantId)}
                     type="number"
                     min="1"
-                    max={(l.available && l.maxPerOrder) || 99}
+                    max={Math.min((l.available && l.maxPerOrder) || MAX_LINE_QUANTITY, MAX_LINE_QUANTITY)}
                     value={l.quantity}
                     disabled={frozenInputs}
-                    onChange={(e) => changeCart(items.map((i) => i.variantId === l.variantId ? { ...i, quantity: Math.max(1, Math.min(100, Math.floor(Number(e.target.value) || 1))) } : i))}
+                    onChange={(e) => changeCart(items.map((i) => i.variantId === l.variantId ? { ...i, quantity: Math.max(1, Math.min(MAX_LINE_QUANTITY, Math.floor(Number(e.target.value) || 1))) } : i))}
                   />
                   {l.available && l.maxPerOrder != null && <span className="field-hint">Maks. {l.maxPerOrder} per pesanan</span>}
                   <button type="button" disabled={frozenInputs} onClick={() => changeCart(items.filter((i) => i.variantId !== l.variantId))}>Hapus</button>

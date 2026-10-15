@@ -1,7 +1,7 @@
 ---
 import Layout from "../layouts/Layout.astro";
 import { catalog, money, type Product } from "../lib/catalog";
-import { catalogParams, DEFAULT_PAGE_SIZE, PAGE_SIZES, pageNumber, pageWindow, searchTerm } from "../../../../src/shared";
+import { catalogParams, DEFAULT_PAGE_SIZE, MAX_SEARCH_LENGTH, PAGE_SIZES, pageNumber, pageWindow, searchTerm } from "../../../../src/shared";
 type Category = { id: string; slug: string; name: string };
 let products: Product[] = [];
 let categories: Category[] = [];
@@ -16,7 +16,7 @@ const category = rawCategory && catalogParams.category(rawCategory) ? rawCategor
 const rawLimit = Number(Astro.url.searchParams.get("limit"));
 const pageSize = (PAGE_SIZES as readonly number[]).includes(rawLimit) ? rawLimit : DEFAULT_PAGE_SIZE;
 const page = pageNumber(Astro.url.searchParams.get("page") ?? "") ?? 1;
-if (q === null) invalid = "Kata kunci pencarian harus 2–60 karakter.";
+if (q === null) invalid = `Kata kunci pencarian harus 2–${MAX_SEARCH_LENGTH} karakter.`;
 else if (rawCategory && !category) invalid = "Kategori tidak dikenal.";
 try {
   categories = (await catalog(Astro.locals, "/api/categories")).categories;
@@ -111,7 +111,7 @@ function summary(p: Product) {
       <form class="catalog-search" method="get" action={Astro.url.pathname} role="search">
         <label class="sr-only" for="catalog-q">Cari produk</label>
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
-        <input id="catalog-q" name="q" type="search" minlength="2" maxlength="60" placeholder="Cari nama board game" value={q ?? rawQ.slice(0, 60)} aria-describedby="catalog-q-help" />
+        <input id="catalog-q" name="q" type="search" minlength="2" maxlength={MAX_SEARCH_LENGTH} placeholder="Cari nama board game" value={q ?? rawQ.slice(0, MAX_SEARCH_LENGTH)} aria-describedby="catalog-q-help" />
         {category && <input type="hidden" name="category" value={category} />}
         {pageSize !== DEFAULT_PAGE_SIZE && <input type="hidden" name="limit" value={pageSize} />}
         <button type="submit">Cari</button>

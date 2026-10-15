@@ -42,11 +42,14 @@ export function envMinutes(value: string | undefined, fallback: number, max: num
 
 /** Normalized value, null for invalid (never cached, handler rejects), undefined for "same as absent". */
 type Normalizer = (value: string) => string | null | undefined;
-/** Name search: whitespace-collapsed lowercase, 2–60 characters; blank is no search (an empty GET form field). */
+/** Longest public catalog search: `%term%` must stay within D1's 50-byte LIKE pattern limit. */
+export const MAX_SEARCH_LENGTH = 48;
+/** Name search: whitespace-collapsed lowercase, 2–48 characters that fit a LIKE pattern; blank is no search (an empty GET form field). */
 export function searchTerm(value: string) {
   const term = value.trim().replace(/\s+/g, ' ').toLowerCase();
   if (!term) return undefined;
-  return term.length >= 2 && term.length <= 60 ? term : null;
+  // Multi-byte text and escaped `%`/`_` take more pattern bytes than characters, so the length cap alone is not enough.
+  return term.length >= 2 && term.length <= MAX_SEARCH_LENGTH && likeFits(term) ? term : null;
 }
 /** Page sizes the list paginators offer; APIs accept any size up to their own limit. */
 export const PAGE_SIZES = [10, 25, 50] as const;
@@ -147,6 +150,8 @@ export function orderTracking(events: Record<string, unknown>[], shipping: { ser
 
 /** Distinct cart lines accepted by the storefront cart, shipping quote and checkout. */
 export const MAX_CART_LINES = 30;
+/** Units per cart line accepted by the cart preview and checkout. */
+export const MAX_LINE_QUANTITY = 100;
 
 /** Positive integer from an optional env var; anything unparsable falls back. */
 export function envCount(value: string | undefined, fallback: number) {

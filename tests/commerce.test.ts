@@ -1401,6 +1401,15 @@ describe('ecommerce features', () => {
     expect(await slugs('q=%25%25')).toEqual([]);
     expect(await slugs('q=')).toEqual(['catan', 'product']);
     for (const query of ['q=a', `q=${'x'.repeat(61)}`, 'category=Bad_Slug']) expect((await request(`/api/catalog?${query}`)).status).toBe(400);
+    // D1 refuses LIKE patterns over 50 bytes: longer, multi-byte or heavily escaped searches are a 400, never a 503.
+    const pasted = 'Ticket to Ride Europe 15th Anniversary Edition Bonus';
+    expect(pasted).toHaveLength(52);
+    for (const term of [pasted, '%'.repeat(30), 'é'.repeat(30)]) {
+      const response = await request(`/api/catalog?q=${encodeURIComponent(term)}`);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: 'Invalid catalog query' });
+    }
+    expect((await request(`/api/catalog?q=${'x'.repeat(48)}`)).status).toBe(200);
     const key = publicCacheKey(new URL('https://shop.test/api/catalog?q=%20%20Catan%20%20%20Base%20&category=strategi&utm_source=x'), catalogParams)!;
     expect(key.url).toBe('https://shop.test/api/catalog?category=strategi&q=catan+base');
     expect(publicCacheKey(new URL('https://shop.test/catalog?q=a'), catalogParams)).toBeNull();

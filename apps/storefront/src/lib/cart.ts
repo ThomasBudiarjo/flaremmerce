@@ -1,20 +1,22 @@
-import { MAX_CART_LINES } from "../../../../src/shared";
-export { MAX_CART_LINES };
+import { MAX_CART_LINES, MAX_LINE_QUANTITY } from "../../../../src/shared";
+export { MAX_CART_LINES, MAX_LINE_QUANTITY };
 export type CartItem = { variantId: string; quantity: number };
 const key = "flaremmerce-cart";
+/**
+ * Stored cart, repaired to what the cart preview accepts: one line per variant and 1–100 units each. A bad
+ * entry is dropped on its own; a cart the server refuses would otherwise stay stuck in localStorage.
+ */
 export function readCart(): CartItem[] {
   try {
     const value = JSON.parse(localStorage.getItem(key) || "[]");
-    return Array.isArray(value)
-      ? value
-          .filter(
-            (v) =>
-              typeof v.variantId === "string" &&
-              Number.isInteger(v.quantity) &&
-              v.quantity > 0,
-          )
-          .slice(0, MAX_CART_LINES)
-      : [];
+    if (!Array.isArray(value)) return [];
+    const lines = new Map<string, number>();
+    for (const v of value) {
+      if (!v || typeof v !== "object" || typeof v.variantId !== "string" || !v.variantId || !Number.isInteger(v.quantity) || v.quantity < 1) continue;
+      if (!lines.has(v.variantId) && lines.size >= MAX_CART_LINES) continue;
+      lines.set(v.variantId, Math.min(MAX_LINE_QUANTITY, (lines.get(v.variantId) ?? 0) + v.quantity));
+    }
+    return [...lines].map(([variantId, quantity]) => ({ variantId, quantity }));
   } catch {
     return [];
   }

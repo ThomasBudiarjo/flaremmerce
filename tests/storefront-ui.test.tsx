@@ -6,6 +6,7 @@ import Checkout from '../apps/storefront/src/components/Checkout';
 import OrderStatus from '../apps/storefront/src/components/OrderStatus';
 import ProductPicker from '../apps/storefront/src/components/ProductPicker';
 import { money } from '../apps/storefront/src/lib/catalog';
+import { readCart } from '../apps/storefront/src/lib/cart';
 
 vi.mock('../apps/storefront/src/components/Turnstile', async () => {
   const { useEffect } = await vi.importActual<typeof import('react')>('react');
@@ -161,6 +162,40 @@ describe('checkout steps', () => {
     expect(document.body.textContent).toContain('Referensi FL-REF');
   });
 
+  it('recovers a corrupt stored cart: bad entries dropped, duplicates merged, quantities clamped', async () => {
+    localStorage.setItem('flaremmerce-cart', JSON.stringify([null, 'x', { variantId: 'a', quantity: 60 }, { variantId: 'a', quantity: 70 }, { variantId: 'b', quantity: 0 }, { variantId: 'c', quantity: 1.5 }, { quantity: 2 }, { variantId: 'd', quantity: 500 }]));
+    expect(readCart()).toEqual([{ variantId: 'a', quantity: 100 }, { variantId: 'd', quantity: 100 }]);
+    const calls = server(placed);
+    await act(async () => root.render(<Checkout />));
+    expect(calls.find(c => c.path === '/api/cart/preview')!.body).toEqual({ items: [{ variantId: 'a', quantity: 100 }, { variantId: 'd', quantity: 100 }] });
+  });
+
+  it('still lists stored lines with quantity and remove controls when the preview fails', async () => {
+    localStorage.setItem('flaremmerce-cart', JSON.stringify([{ variantId: 'a', quantity: 2 }, { variantId: 'gone', quantity: 1 }]));
+    const previews: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string, init: RequestInit = {}) => {
+      if (input === '/api/cart/preview') {
+        const body = JSON.parse(String(init.body));
+        previews.push(body);
+        if (body.items.length > 1) return Response.json({ error: 'Invalid cart' }, { status: 400 });
+        return Response.json({ lines: [line], subtotal: 2000, shipPromise: { shipFrom: null, shipTo: null }, problems: [] });
+      }
+      if (input === '/api/config') return Response.json({ turnstileSiteKey: 'site-key' });
+      return Response.json({}, { status: 401 });
+    }));
+    await act(async () => root.render(<Checkout />));
+    expect(document.body.textContent).toContain('Ubah jumlah atau hapus barang di bawah');
+    const rows = [...document.querySelectorAll('[aria-labelledby="cart-heading"] .line')];
+    expect(rows).toHaveLength(2);
+    expect(rows[1].textContent).toContain('Barang di keranjang');
+    expect(rows[1].querySelector<HTMLInputElement>('input')!.value).toBe('1');
+    await act(async () => [...rows[1].querySelectorAll('button')].find(b => b.textContent === 'Hapus')!.click());
+    expect(JSON.parse(localStorage.getItem('flaremmerce-cart')!)).toEqual([{ variantId: 'a', quantity: 2 }]);
+    expect(previews.at(-1)).toEqual({ items: [{ variantId: 'a', quantity: 2 }] });
+    expect(document.body.textContent).toContain('Catan');
+    expect(document.body.textContent).not.toContain('Barang di keranjang');
+  });
+
   it('shows an empty state when the cart is empty', async () => {
     server(placed);
     await act(async () => root.render(<Checkout />));
@@ -184,13 +219,34 @@ describe('product picker', () => {
     expect(document.getElementById('quantity')!.getAttribute('aria-describedby')).toBe('quantity-help');
     expect(document.body.textContent).toContain('Stok terbatas');
     await type('quantity', '3');
-    expect(buttons().find(b => b.textContent === 'Melebihi batas per pesanan')!.disabled).toBe(true);
-    expect(document.getElementById('quantity')!.getAttribute('aria-invalid')).toBe('true');
-    await type('quantity', '2');
+    expect((document.getElementById('quantity') as HTMLInputElement).value).toBe('2');
     await click('Tambah ke keranjang');
     expect(document.body.textContent).toContain('Ditambahkan ke keranjang.');
     expect(badge().textContent).toBe('3');
     expect(badge().closest('a')!.getAttribute('aria-label')).toBe('Keranjang, 3 barang');
+  });
+
+  it('clamps a repeated add to the line limit instead of storing a cart the server refuses', async () => {
+    await act(async () => root.render(<ProductPicker product={product(null)} />));
+    await type('quantity', '500');
+    expect((document.getElementById('quantity') as HTMLInputElement).value).toBe('100');
+    await type('quantity', '60');
+    await click('Tambah ke keranjang');
+    await click('Tambah ke keranjang');
+    expect(document.body.textContent).toContain('Ditambahkan 40 unit; keranjang kini berisi jumlah maksimal 100.');
+    expect(JSON.parse(localStorage.getItem('flaremmerce-cart')!)).toEqual([{ variantId: 'v1', quantity: 100 }]);
+    await click('Tambah ke keranjang');
+    expect(document.body.textContent).toContain('Keranjang sudah berisi 100 unit, jumlah maksimal untuk varian ini.');
+    expect(badge().textContent).toBe('100');
+  });
+
+  it('keeps a typed quantity within the per-order limit when switching variants', async () => {
+    await act(async () => root.render(<ProductPicker product={{ ...product(null), variants: [product(null).variants[1], product(2).variants[0]] }} />));
+    await type('quantity', '7');
+    await act(async () => buttons().find(b => b.textContent?.startsWith('Base'))!.click());
+    expect((document.getElementById('quantity') as HTMLInputElement).value).toBe('2');
+    await click('Tambah ke keranjang');
+    expect(JSON.parse(localStorage.getItem('flaremmerce-cart')!)).toEqual([{ variantId: 'v1', quantity: 2 }]);
   });
 
   it('shows the pre-order ship window for the selected variant', async () => {
