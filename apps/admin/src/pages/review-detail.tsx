@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import { patch } from "@/lib/api";
-import { href, Link, useRoute } from "@/lib/router";
+import { href, Link, useNavigationGuard, useRoute } from "@/lib/router";
+import { listHref, neighbours } from "@/lib/list-memory";
+import { markSummaryStale } from "@/lib/summary";
 import { label, money, orderStatus, paymentStatus, reviewReason, timeWIB } from "@/lib/format";
 import type { ReviewItem } from "@/lib/types";
 import { useMutation } from "@/hooks/use-mutation";
@@ -11,6 +13,7 @@ import { ConflictBanner } from "@/components/conflict-banner";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, LoadError } from "@/components/field";
 import { OrderStatusBadge, ReviewStatusBadge } from "@/components/status-badge";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,6 +30,10 @@ type Evidence = {
   history: { actor: string; createdAt: number; details: { status: string; note: string; action?: string } }[];
 };
 type Change = { status: "open" | "resolved"; action?: "cancel_order" };
+
+const templates = ["Dicek di dashboard DOKU", "Konfirmasi pembeli", "Duplikat"];
+/** Adds a template on its own line, keeping what the operator already wrote. */
+export const withTemplate = (note: string, template: string) => (note.trim() ? `${note.trimEnd()}\n${template}` : template);
 
 function Facts({ rows }: { rows: [string, React.ReactNode][] }) {
   return (
@@ -47,17 +54,23 @@ export function ReviewDetailPage() {
   const resource = useResource<Evidence>(`/api/admin/review/${encodeURIComponent(id)}`);
   const [note, setNote] = useState("");
   const [conflict, setConflict] = useState(false);
+  const [resolved, setResolved] = useState(false);
   const data = resource.data;
   useEffect(() => {
     if (data) setNote(data.item.note ?? "");
   }, [data]);
+  useNavigationGuard(!!data && note.trim() !== (data.item.note ?? "").trim(), "Catatan review yang belum disimpan akan hilang.");
+  const next = neighbours("reviews", id).next;
 
   const save = useMutation(
     ({ status, action }: Change) => patch(`/api/admin/review/${encodeURIComponent(id)}`, { version: data!.item.version, status, note: note.trim(), ...(action ? { action } : {}) }),
     {
       key: `review:${id}`,
       success: "Review diperbarui.",
-      onSuccess: () => void resource.reload({ keep: true }),
+      onSuccess: () => {
+        markSummaryStale();
+        void resource.reload({ keep: true });
+      },
       // The review CAS reports a stale version without an entity; reload the evidence first.
       onError: (error) => error.status === 409 && setConflict(true),
     },
@@ -78,13 +91,27 @@ export function ReviewDetailPage() {
     <>
       <div className="print:hidden">
         <Button asChild variant="ghost" size="sm">
-          <Link to={href("reviews")}>
+          <Link to={listHref("reviews")}>
             <ArrowLeft />
             Review
           </Link>
         </Button>
       </div>
       <PageHeader title={label(reviewReason, item.reason)} description={`Dicatat ${timeWIB(item.createdAt)} WIB`} actions={<ReviewStatusBadge value={item.status} />} />
+      {resolved && item.status === "resolved" && (
+        <Alert>
+          <AlertTitle>Review ditandai selesai</AlertTitle>
+          <AlertDescription className="flex flex-wrap items-center gap-2">
+            {next ? "Kasus berikutnya dari antrean siap diperiksa." : "Tidak ada kasus berikutnya di daftar yang dimuat."}
+            <Button asChild size="sm" variant={next ? "default" : "outline"}>
+              <Link to={next ? href("review-detail", { id: next }) : listHref("reviews")}>
+                {next ? "Review berikutnya" : "Kembali ke antrean"}
+                {next && <ArrowRight />}
+              </Link>
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
       {conflict && (
         <ConflictBanner
           onReload={() => {
@@ -190,9 +217,26 @@ export function ReviewDetailPage() {
           </CardHeader>
           <CardContent className="grid gap-3">
             <Field label="Catatan operator (wajib)">
-              {(fieldId) => <Textarea id={fieldId} rows={5} maxLength={2000} value={note} onChange={(e) => setNote(e.target.value)} />}
+              {(fieldId) => (
+                <div className="grid gap-2">
+                  <div className="flex flex-wrap gap-1" role="group" aria-label="Templat catatan">
+                    {templates.map((template) => (
+                      <Button key={template} type="button" size="xs" variant="outline" onClick={() => setNote((current) => withTemplate(current, template).slice(0, 2000))}>
+                        {template}
+                      </Button>
+                    ))}
+                  </div>
+                  <Textarea id={fieldId} rows={5} maxLength={2000} value={note} onChange={(e) => setNote(e.target.value)} />
+                </div>
+              )}
             </Field>
-            <Button disabled={disabled} onClick={() => void save.mutate({ status: item.status === "open" ? "resolved" : "open" })}>
+            <Button
+              disabled={disabled}
+              onClick={() => {
+                const status = item.status === "open" ? "resolved" : "open";
+                void save.mutate({ status }).then((result) => result !== undefined && setResolved(status === "resolved"));
+              }}
+            >
               {item.status === "open" ? "Tandai selesai" : "Buka kembali"}
             </Button>
             <Button variant="outline" disabled={disabled} onClick={() => void save.mutate({ status: item.status })}>
@@ -208,7 +252,7 @@ export function ReviewDetailPage() {
                 title={`Batalkan pesanan ${order!.reference}?`}
                 description={`Review ditandai selesai dan pesanan (${label(orderStatus, order!.status)}) dibatalkan dalam satu langkah, setelah status pembayaran dicek ke penyedia.`}
                 confirmLabel="Batalkan pesanan"
-                onConfirm={() => void save.mutate({ status: "resolved", action: "cancel_order" })}
+                onConfirm={() => void save.mutate({ status: "resolved", action: "cancel_order" }).then((result) => result !== undefined && setResolved(true))}
               />
             )}
           </CardContent>

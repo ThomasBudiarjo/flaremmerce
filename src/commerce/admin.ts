@@ -4,7 +4,7 @@ import { catalog } from './catalog';
 import { operations } from './operations';
 import { cancelOrder } from './cancel';
 import { EXHAUSTED } from './payments';
-import { type AdminRole, envCount, likePattern, orderTracking, validSlug, normalizeEmail, normalizePhone, riskHash, riskSecret } from '../shared';
+import { type AdminRole, envCount, likeFits, likePattern, orderTracking, validSlug, normalizeEmail, normalizePhone, riskHash, riskSecret } from '../shared';
 import { categoryList } from './catalog';
 import { exportOrders, LOW_STOCK, orderFilter, orderPage, summary } from './reports';
 
@@ -121,7 +121,7 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
   }
   if (path === '/api/admin/variants/search' && request.method === 'GET') {
     const q = (url.searchParams.get('q') ?? '').trim(), mode = url.searchParams.get('mode');
-    if (!q || q.length > 60) throw new HttpError(400, 'Search term must be 1–60 characters');
+    if (!q || q.length > 60 || !likeFits(q.toLowerCase())) throw new HttpError(400, 'Search term must be 1–60 characters and fit a 50-byte pattern');
     if (mode !== null && mode !== 'stock' && mode !== 'preorder') throw new HttpError(400, 'Invalid mode');
     const like = likePattern(q.toLowerCase());
     // Exact SKU first; bounded scan otherwise (LIMIT 20) over a catalog capped at 30 variants per product.
@@ -252,7 +252,9 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     return json({ orders: items.map(hold).map(({ contact_json, address_json, shipping_json, ...row }) => ({ ...row, contact: JSON.parse(String(contact_json)), address: JSON.parse(String(address_json)), shipping: JSON.parse(String(shipping_json)) })), nextCursor });
   }
   if (path === '/api/admin/review' && request.method === 'GET') {
-    const rows = await s(env, 'SELECT r.id,r.order_id AS orderId,r.reason,r.event_key AS eventKey,r.created_at AS createdAt,r.status,r.note,r.version,r.updated_at AS updatedAt,r.updated_by AS updatedBy,o.reference FROM manual_review r LEFT JOIN orders o ON o.id=r.order_id WHERE r.created_at<? OR (r.created_at=? AND r.id<?) ORDER BY r.created_at DESC,r.id DESC LIMIT ?', before, before, beforeId, limit+1).all();
+    const status = url.searchParams.get('status') || null;
+    if (status !== null && status !== 'open' && status !== 'resolved') throw new HttpError(400, 'Invalid status filter');
+    const rows = await s(env, `SELECT r.id,r.order_id AS orderId,r.reason,r.event_key AS eventKey,r.created_at AS createdAt,r.status,r.note,r.version,r.updated_at AS updatedAt,r.updated_by AS updatedBy,o.reference FROM manual_review r LEFT JOIN orders o ON o.id=r.order_id WHERE ${status ? 'r.status=? AND ' : ''}(r.created_at<? OR (r.created_at=? AND r.id<?)) ORDER BY r.created_at DESC,r.id DESC LIMIT ?`, ...(status ? [status] : []), before, before, beforeId, limit+1).all();
     return json(page(rows.results, limit, last => ({ before: last.createdAt, beforeId: last.id })));
   }
   const reviewMatch = path.match(/^\/api\/admin\/review\/([^/]+)$/);

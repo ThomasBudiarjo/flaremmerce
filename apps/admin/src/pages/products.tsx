@@ -48,8 +48,8 @@ export function priceRange(product: Product) {
   return min === max ? money(min) : `${money(min)} – ${money(max)}`;
 }
 
-/** The catalog search accepts 2–60 characters; a single character would be rejected. */
-const searchable = (term: string) => term.length === 0 || (term.length >= 2 && term.length <= 60);
+/** The catalog search needs at least 2 characters; the input's maxLength keeps it inside D1's LIKE limit. */
+const searchable = (term: string) => term.length === 0 || (term.length >= 2 && term.length <= 48);
 
 export function ProductsPage() {
   const { route, navigate } = useRoute();
@@ -124,7 +124,7 @@ export function ProductsPage() {
         >
           <div className="relative">
             <SearchIcon className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
-            <Input aria-label="Cari produk" className="w-full pl-9 sm:w-64" placeholder="Cari nama produk…" maxLength={60} value={search} onChange={(e) => setSearch(e.target.value)} />
+            <Input aria-label="Cari produk" className="w-full pl-9 sm:w-64" placeholder="Cari nama produk…" maxLength={48} value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
           {term.length === 1 && <p className="text-xs text-muted-foreground">Ketik minimal 2 karakter.</p>}
         </form>

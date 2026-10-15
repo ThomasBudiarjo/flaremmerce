@@ -401,8 +401,8 @@ function OpenReviews({ order }: { order: OrderDetail }) {
   useEffect(() => {
     if (!order.hold) return;
     const controller = new AbortController();
-    // The review list has no order filter; the newest 100 cases cover any realistic open hold.
-    get<{ items: ReviewItem[] }>("/api/admin/review?limit=100", controller.signal)
+    // The review list has no order filter; the newest 100 open cases cover any realistic hold.
+    get<{ items: ReviewItem[] }>("/api/admin/review?status=open&limit=100", controller.signal)
       .then((data) => setReviews(data.items.filter((item) => item.orderId === order.id && item.status === "open")))
       .catch(() => setReviews([]));
     return () => controller.abort();

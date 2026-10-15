@@ -56,6 +56,8 @@ export const catalogParams: Record<string, Normalizer> = {
 };
 /** LIKE pattern matching `term` literally anywhere; pair with ESCAPE '\'. */
 export const likePattern = (term: string) => `%${term.replace(/[\\%_]/g, c => `\\${c}`)}%`;
+/** D1 rejects LIKE/GLOB patterns longer than 50 bytes with an internal error; check before querying. */
+export const likeFits = (term: string) => new TextEncoder().encode(likePattern(term)).length <= 50;
 /** Shared-cache key from path plus normalized allowlisted params. Null means "do not cache": the handler rejects or serves uncached. */
 export function publicCacheKey(url: URL, allowed: Record<string, Normalizer> = {}): Request | null {
   const key = new URL(`${url.origin}${url.pathname}`);

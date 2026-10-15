@@ -702,6 +702,112 @@ describe('admin SPA', () => {
     expect(moveChanges(tied, 1, -1).map(c => [c.category.id, c.position])).toEqual([['x', 1], ['z', 2]]);
   });
 
+  const customer = (id: string, patch: Record<string, unknown> = {}) => ({ id, name: `Nama ${id}`, email: `${id}@mail.id`, createdAt: 1, orders: 2, banned: false, admin: false, ...patch });
+
+  it('searches customers on the server after a pause and links their orders', async () => {
+    const writeText = vi.fn(async (_value: string) => {});
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    await renderAdmin('/admin/customers', url => url.startsWith('/api/admin/customers?') ? Response.json({ customers: [customer('u1')], nextCursor: null }) : undefined);
+    expect(calls.map(c => c.url)).toContain('/api/admin/customers?limit=50');
+    expect([...document.querySelectorAll('a')].find(a => a.textContent === '2')!.getAttribute('href')).toBe('/admin/orders?q=u1%40mail.id');
+    await act(async () => (document.querySelector('[aria-label="Salin ID pengguna Nama u1"]') as HTMLButtonElement).click());
+    expect(writeText).toHaveBeenCalledWith('u1');
+    await type(document.querySelector('[aria-label="Cari pelanggan"]')!, 'budi');
+    await wait(150);
+    expect(calls.some(c => c.url.includes('q=budi'))).toBe(false);
+    await wait(200);
+    expect(location.search).toBe('?q=budi');
+    expect(calls.at(-1)!.url).toBe('/api/admin/customers?q=budi&limit=50');
+  });
+
+  it('filters reviews by status on the server and shows the open count on its tab', async () => {
+    await renderAdmin('/admin/reviews', url => url.startsWith('/api/admin/review?') ? Response.json({ items: [{ id: 'r1', orderId: null, reason: 'risk_velocity', status: 'open', note: '', createdAt: Date.now() - 3 * 3_600_000, reference: null }], nextCursor: null }) : undefined);
+    expect(calls.map(c => c.url)).toContain('/api/admin/review?status=open&limit=50');
+    expect(text()).toContain('3 jam lalu');
+    const tab = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent?.startsWith('Terbuka'))!;
+    expect(tab.textContent).toBe('Terbuka1');
+    const resolved = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'Selesai')!;
+    await act(async () => resolved.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })));
+    expect(calls.at(-1)!.url).toBe('/api/admin/review?status=resolved&limit=50');
+  });
+
+  it('inserts note templates, guards the note and offers the next open case after resolving', async () => {
+    sessionStorage.setItem('admin:list:reviews', JSON.stringify({ url: '/reviews', ids: ['r1', 'r2'] }));
+    let item = { id: 'r1', orderId: null, reason: 'risk_velocity', eventKey: null, createdAt: 1, status: 'open', note: '', version: 0, updatedAt: null, updatedBy: null, reference: null };
+    await renderAdmin('/admin/reviews/r1', (url, init) => {
+      if (url === '/api/admin/review/r1' && init.method === 'PATCH') { item = { ...item, status: 'resolved', note: JSON.parse(String(init.body)).note, version: 1 }; return Response.json({ updated: true, version: 1 }); }
+      if (url === '/api/admin/review/r1') return Response.json({ item, order: null, attempt: null, triggeringEvent: null, events: [], history: [] });
+    });
+    await press('Dicek di dashboard DOKU');
+    await press('Duplikat');
+    expect(labelled('Catatan operator').value).toBe('Dicek di dashboard DOKU\nDuplikat');
+    await act(async () => sidebar('Pesanan').click());
+    expect(text()).toContain('Catatan review yang belum disimpan akan hilang.');
+    await press('Tetap di sini');
+    await press('Tandai selesai');
+    expect(calls.find(c => c.method === 'PATCH')!.body).toEqual({ version: 0, status: 'resolved', note: 'Dicek di dashboard DOKU\nDuplikat' });
+    const next = [...document.querySelectorAll('a')].find(a => a.textContent === 'Review berikutnya')!;
+    expect(next.getAttribute('href')).toBe('/admin/reviews/r2');
+  });
+
+  it('grants admin access to a customer picked by email search', async () => {
+    await renderAdmin('/admin/settings/team', (url, init) => {
+      if (url === '/api/admin/roles' && init.method === 'POST') return Response.json({ ok: true, changed: true });
+      if (url === '/api/admin/roles') return Response.json({ admins: [{ userId: 'admin', name: 'Admin', email: 'admin@example.com', role: 'owner', grantedBy: 'admin', createdAt: 1, installationOwner: true }] });
+      if (url.startsWith('/api/admin/customers?')) return Response.json({ customers: [customer('staff', { admin: true }), customer('sari')], nextCursor: null });
+    });
+    expect(text()).not.toContain('Salin ID pengguna');
+    expect(document.querySelector('label[for="grant-user"]')?.textContent).toBe('Pengguna');
+    await type(document.getElementById('grant-user')!, 'mail.id');
+    await wait(300);
+    expect(calls.map(c => c.url)).toContain('/api/admin/customers?q=mail.id&limit=10');
+    const options = [...document.querySelectorAll('[role="option"]')];
+    expect(options[0].getAttribute('aria-disabled')).toBe('true');
+    await act(async () => (options[0] as HTMLElement).click());
+    expect(button('Beri akses').disabled).toBe(true);
+    await act(async () => (options[1] as HTMLElement).click());
+    expect(text()).toContain('sari@mail.id');
+    await type(labelled('Peran'), 'catalog');
+    await act(async () => button('Beri akses').closest('form')!.requestSubmit());
+    expect(calls.find(c => c.method === 'POST')!.body).toEqual({ userId: 'sari', role: 'catalog' });
+  });
+
+  it('asks before an owner demotes themselves or another owner', async () => {
+    await renderAdmin('/admin/settings/team', (url, init) => {
+      if (url === '/api/admin/roles' && init.method === 'POST') return Response.json({ ok: true, changed: true });
+      if (url === '/api/admin/roles') return Response.json({ admins: [
+        { userId: 'admin', name: 'Admin', email: 'admin@example.com', role: 'owner', grantedBy: 'admin', createdAt: 1, installationOwner: false },
+        { userId: 'o2', name: 'Owner Dua', email: 'o2@example.com', role: 'owner', grantedBy: 'admin', createdAt: 2, installationOwner: false },
+        { userId: 's', name: 'Staf', email: 's@example.com', role: 'ops', grantedBy: 'admin', createdAt: 3, installationOwner: false }] });
+    });
+    await type(document.querySelector('[aria-label="Peran Staf"]')!, 'catalog');
+    expect(calls.filter(c => c.method === 'POST').map(c => c.body)).toEqual([{ userId: 's', role: 'catalog' }]);
+    await type(document.querySelector('[aria-label="Peran Owner Dua"]')!, 'ops');
+    expect(text()).toContain('Turunkan Owner Dua dari owner?');
+    await inDialog('Batal');
+    expect(calls.filter(c => c.method === 'POST')).toHaveLength(1);
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...location, assign });
+    await type(document.querySelector('[aria-label="Peran Admin"]')!, 'ops');
+    expect(text()).toContain('Turunkan peranmu sendiri?');
+    await inDialog('Turunkan peran');
+    expect(calls.filter(c => c.method === 'POST').at(-1)!.body).toEqual({ userId: 'admin', role: 'ops' });
+    expect(assign).toHaveBeenCalledWith('/admin/');
+  });
+
+  it('shows the normalized phone before blocking and filters loaded entries by kind', async () => {
+    await renderAdmin('/admin/blocklist', url => url.startsWith('/api/admin/blocklist?') ? Response.json({ items: [
+      { id: 'b1', kind: 'email', reason: 'Spam', actor: 'ops-1', createdAt: 1 }, { id: 'b2', kind: 'ip', reason: 'Bot', actor: 'ops-2', createdAt: 2 }], nextCursor: null }) : undefined);
+    expect(text()).toContain('ops-1');
+    const ip = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'IP')!;
+    await act(async () => ip.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })));
+    expect(text()).not.toContain('Spam');
+    expect(text()).toContain('Bot');
+    const { phoneHint } = await import('../apps/admin/src/pages/blocklist');
+    expect(phoneHint('0812-3456-789')).toBe('Disimpan sebagai +62812345678' + '9');
+    expect(phoneHint('12345')).toContain('Bukan nomor HP Indonesia');
+  });
+
   it('names the browser tab after the current page', async () => {
     await renderAdmin('/admin/products/p', productRoutes);
     expect(document.title).toBe('Produk · Admin Flaremmerce');

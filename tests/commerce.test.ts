@@ -200,6 +200,18 @@ describe('commerce public API with real D1', () => {
     expect(second.items.map((item:any) => item.id)).toEqual(['case-01','case-00']);
     expect(second.items.every((item:any) => item.status === 'open')).toBe(true);
   });
+  it('filters review cases by status on the server with the same keyset', async () => {
+    await db().batch(Array.from({length:6}, (_,i) => sql("INSERT INTO manual_review(id,reason,created_at,status) VALUES(?,'reconciliation_exhausted',?,?)", `case-${i}`, i < 4 ? 10 : 20 + i, i % 2 ? 'resolved' : 'open')));
+    const headers = {'X-Test-Admin':'ops'};
+    const ids = async (query: string) => ((await (await request(`/api/admin/review?${query}`,undefined,headers)).json() as any).items as any[]).map(item => item.id);
+    expect(await ids('status=open')).toEqual(['case-4','case-2','case-0']);
+    expect(await ids('status=resolved')).toEqual(['case-5','case-3','case-1']);
+    expect(await ids('')).toEqual(['case-5','case-4','case-3','case-2','case-1','case-0']);
+    const first = await (await request('/api/admin/review?status=open&limit=2',undefined,headers)).json() as any;
+    expect(first.items.map((item:any) => item.id)).toEqual(['case-4','case-2']);
+    expect(await ids(`status=open&limit=2&before=${first.nextCursor.before}&beforeId=${first.nextCursor.beforeId}`)).toEqual(['case-0']);
+    expect((await request('/api/admin/review?status=closed',undefined,headers)).status).toBe(400);
+  });
   it('supports late-payment and reconciliation cases without events or reviving cancelled orders', async () => {
     const { order } = await (await place()).json() as any;
     await notify(order.reference,'expired','expiry');
@@ -1205,6 +1217,12 @@ describe('ecommerce features', () => {
     expect(categories.map((c: any) => [c.slug, c.productCount])).toEqual([['satu', 2], ['dua', 0]]);
     const open = await (await request('/api/categories')).json() as any;
     expect(open.categories[0]).not.toHaveProperty('productCount');
+  });
+
+  it('rejects variant search terms whose LIKE pattern exceeds D1 limits instead of failing in D1', async () => {
+    expect((await request(`/api/admin/variants/search?q=${'x'.repeat(48)}`, undefined, catalogRole)).status).toBe(200);
+    expect((await request(`/api/admin/variants/search?q=${'x'.repeat(49)}`, undefined, catalogRole)).status).toBe(400);
+    expect((await request(`/api/admin/variants/search?q=${'_'.repeat(25)}`, undefined, catalogRole)).status).toBe(400);
   });
 
   it('previews the cart authoritatively without caching or reserving', async () => {

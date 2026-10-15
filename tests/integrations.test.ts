@@ -441,6 +441,30 @@ describe('anti-abuse integration boundaries', () => {
     await env.DB.prepare("UPDATE admin_roles SET role='catalog' WHERE user_id='staff'").run();
     expect((await call('/api/admin/customers',staff))?.status).toBe(403);
   });
+  it('searches customers by name or email with escaped, bounded LIKE and keeps the cursor', async () => {
+    await env.DB.exec(readFileSync(new URL('../migrations/0001_commerce.sql',import.meta.url),'utf8').replace(/--[^\n]*/g,'').replace(/\s+/g,' '));
+    const staff = await identity('staff');
+    await env.DB.prepare("INSERT INTO admin_roles(user_id,granted_by,created_at,role) VALUES('staff','staff',1,'ops')").run();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO user (id,name,email,email_verified,created_at,updated_at) VALUES ('u1','Budi Santoso','budi@toko.id',1,10,10),('u2','Sari','sari.budi@mail.id',1,20,20),('u3','Ani 100%','ani@mail.id',1,30,30),('u4','Anita','anita@mail.id',1,40,40)"),
+    ]);
+    const call = (query: string) => handleIntegrationRequest(new Request(`https://shop.example/api/admin/customers?${query}`,{headers:{Origin:'https://shop.example',Cookie:staff}}),env);
+    const ids = async (query: string) => ((await (await call(query))!.json() as any).customers as any[]).map(c => c.id);
+    expect(await ids('q=BUDI')).toEqual(['u2','u1']);
+    expect(await ids('q=toko.id')).toEqual(['u1']);
+    expect(await ids('q=100%25')).toEqual(['u3']);
+    expect(await ids('q=%25')).toEqual(['u3']);
+    expect(await ids('q=ani_')).toEqual([]);
+    expect(await ids('q=%20%20')).toEqual(['staff','u4','u3','u2','u1']);
+    const first = await (await call('q=an&limit=1'))!.json() as any;
+    expect(first.customers.map((c: any) => c.id)).toEqual(['u4']);
+    expect(await ids(`q=an&limit=1&before=${first.nextCursor.before}&beforeId=${first.nextCursor.beforeId}`)).toEqual(['u3']);
+    expect((await call(`q=${'x'.repeat(61)}`))?.status).toBe(400);
+    // D1 caps a LIKE pattern at 50 bytes; longer (or escape-expanded) terms are a 400, not a D1 error.
+    expect((await call(`q=${'x'.repeat(48)}`))?.status).toBe(200);
+    expect((await call(`q=${'x'.repeat(49)}`))?.status).toBe(400);
+    expect((await call(`q=${'%'.repeat(25)}`))?.status).toBe(400);
+  });
   it('refuses development login on a non-local HTTPS origin without the remote opt-in', async () => {
     const dev = {...env, APP_ENV:'development', DEV_LOGIN_ENABLED:'true', GOOGLE_CLIENT_ID:undefined, GOOGLE_CLIENT_SECRET:undefined};
     const { devLoginEnabled } = await import('../src/integrations/auth');

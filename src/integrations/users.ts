@@ -1,7 +1,7 @@
 import type { IntegrationEnv } from './index';
 import { requireAdmin } from './auth';
 import { demand, json, origin } from './security';
-import { ADMIN_ROLES, type AdminRole, adminPermits } from '../shared';
+import { ADMIN_ROLES, type AdminRole, adminPermits, likeFits, likePattern } from '../shared';
 
 const audit = (env: IntegrationEnv, actor: string, action: string, target: string, details: unknown, when = 'WHERE changes()=1') =>
   env.DB.prepare(`INSERT INTO audit_logs(id,actor,action,target,details_json,created_at) SELECT ?,?,?,?,?,? ${when}`).bind(crypto.randomUUID(), actor, action, target, JSON.stringify(details), Date.now());
@@ -66,9 +66,13 @@ export async function adminUsers(request: Request, env: IntegrationEnv): Promise
   }
   if (path === '/api/admin/customers' && method === 'GET') {
     const { before, beforeId, limit } = cursor(url);
+    // Name or email substring, escaped and bounded; the keyset cursor is unchanged by the filter.
+    const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+    demand(q.length <= 60 && likeFits(q), 400, 'Search term too long');
+    const search = q ? " AND (lower(u.name) LIKE ? ESCAPE '\\' OR lower(u.email) LIKE ? ESCAPE '\\')" : '';
     const { results } = await env.DB.prepare(`SELECT u.id,u.name,u.email,u.created_at AS createdAt,(SELECT count(*) FROM orders o WHERE o.customer_id=u.id) AS orders,
       EXISTS(SELECT 1 FROM customer_bans b WHERE b.user_id=u.id) AS banned,EXISTS(SELECT 1 FROM admin_roles r WHERE r.user_id=u.id) AS admin
-      FROM user u WHERE u.created_at<? OR (u.created_at=? AND u.id<?) ORDER BY u.created_at DESC,u.id DESC LIMIT ?`).bind(before, before, beforeId, limit + 1).all<Record<string, unknown> & { createdAt: number; id: string }>();
+      FROM user u WHERE (u.created_at<? OR (u.created_at=? AND u.id<?))${search} ORDER BY u.created_at DESC,u.id DESC LIMIT ?`).bind(before, before, beforeId, ...(q ? [likePattern(q), likePattern(q)] : []), limit + 1).all<Record<string, unknown> & { createdAt: number; id: string }>();
     const items = results.slice(0, limit), last = items.at(-1);
     return { customers: items.map(row => ({ ...row, banned: !!row.banned, admin: !!row.admin })), nextCursor: results.length > limit && last ? { before: last.createdAt, beforeId: last.id } : null };
   }

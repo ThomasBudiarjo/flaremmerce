@@ -10,8 +10,19 @@ import { useResource } from "@/hooks/use-resource";
 import { PageHeader } from "@/components/page-header";
 import { DataTable } from "@/components/data-table";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { Field, LoadError, TextField } from "@/components/field";
+import { Field, LoadError } from "@/components/field";
+import { CustomerPicker, type PickedCustomer } from "@/components/customer-picker";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,20 +43,53 @@ function explain(error: HttpError) {
   return error.message;
 }
 
-function RoleSelect({ admin, onChanged }: { admin: AdminUser; onChanged: (role: Role) => void }) {
+function RoleSelect({ admin, self, onChanged }: { admin: AdminUser; self: boolean; onChanged: (role: Role) => void }) {
   const [message, setMessage] = useState("");
+  const [confirm, setConfirm] = useState<Role | null>(null);
   const change = useMutation((role: Role) => post("/api/admin/roles", { userId: admin.userId, role }).then(() => role), {
     key: `role:${admin.userId}`,
     success: (role) => `Peran ${admin.name} menjadi ${roleLabel[role]}.`,
     onSuccess: (role) => {
       setMessage("");
-      onChanged(role);
+      // Your own session no longer has owner access; start over with the new role.
+      if (self) location.assign("/admin/");
+      else onChanged(role);
     },
     onError: (error) => setMessage(explain(error)),
   });
+  const pick = (role: Role) => {
+    if (role === admin.role) return;
+    // Taking owner away (from yourself or anyone else) is confirmed first; other changes apply directly.
+    if (admin.role === "owner" || self) setConfirm(role);
+    else void change.mutate(role);
+  };
   return (
     <div className="grid gap-1">
-      <NativeSelect aria-label={`Peran ${admin.name}`} value={admin.role} disabled={change.pending} onChange={(e) => void change.mutate(e.target.value as Role)}>
+      <AlertDialog open={!!confirm} onOpenChange={(open) => !open && setConfirm(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{self ? "Turunkan peranmu sendiri?" : `Turunkan ${admin.name} dari owner?`}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {self
+                ? `Kamu akan menjadi ${roleLabel[confirm ?? "ops"]} dan langsung kehilangan akses ke Tim & akses. Hanya owner lain yang dapat mengembalikannya.`
+                : `${admin.name} akan menjadi ${roleLabel[confirm ?? "ops"]} dan kehilangan akses ke Tim & akses.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Batal</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                if (confirm) void change.mutate(confirm);
+                setConfirm(null);
+              }}
+            >
+              Turunkan peran
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <NativeSelect aria-label={`Peran ${admin.name}`} value={admin.role} disabled={change.pending} onChange={(e) => pick(e.target.value as Role)}>
         {(Object.keys(roleLabel) as Role[]).map((role) => (
           <NativeSelectOption key={role} value={role}>
             {roleLabel[role]}
@@ -65,15 +109,18 @@ export function SettingsTeamPage() {
   const { me } = useSession();
   const { route } = useRoute();
   const resource = useResource<{ admins: AdminUser[] }>("/api/admin/roles");
-  const [userId, setUserId] = useState(route.query.get("userId") ?? "");
+  const prefill = route.query.get("userId");
+  const [picked, setPicked] = useState<PickedCustomer | null>(
+    prefill ? { id: prefill, name: route.query.get("name") ?? prefill, email: route.query.get("email") ?? "" } : null,
+  );
   const [role, setRole] = useState<Role>("ops");
   const [grantError, setGrantError] = useState("");
   const admins = resource.data?.admins ?? [];
-  const grant = useMutation(() => post<{ changed: boolean }>("/api/admin/roles", { userId: userId.trim(), role }), {
+  const grant = useMutation(() => post<{ changed: boolean }>("/api/admin/roles", { userId: picked!.id, role }), {
     key: "role-grant",
     success: (result) => (result.changed ? "Akses admin diberikan." : "Tidak ada perubahan."),
     onSuccess: () => {
-      setUserId("");
+      setPicked(null);
       setGrantError("");
       void resource.reload({ keep: true });
     },
@@ -94,9 +141,7 @@ export function SettingsTeamPage() {
       <Card>
         <CardHeader>
           <CardTitle>Beri akses admin</CardTitle>
-          <CardDescription>
-            Pengguna harus sudah login sekali dengan Google terverifikasi. Salin ID pengguna dari halaman Pelanggan (menu aksi → Beri akses admin).
-          </CardDescription>
+          <CardDescription>Cari pengguna yang sudah pernah login dengan akun Google terverifikasi, lalu pilih perannya.</CardDescription>
         </CardHeader>
         <CardContent>
           <form
@@ -106,7 +151,7 @@ export function SettingsTeamPage() {
               void grant.mutate(undefined);
             }}
           >
-            <TextField label="ID pengguna" required maxLength={128} value={userId} onChange={(e) => setUserId(e.target.value)} />
+            <CustomerPicker id="grant-user" label="Pengguna" selected={picked} onSelect={setPicked} disabled={grant.pending} />
             <Field label="Peran">
               {(id) => (
                 <NativeSelect id={id} className="w-full" value={role} onChange={(e) => setRole(e.target.value as Role)}>
@@ -118,7 +163,7 @@ export function SettingsTeamPage() {
                 </NativeSelect>
               )}
             </Field>
-            <Button disabled={grant.pending || !userId.trim()}>
+            <Button disabled={grant.pending || !picked}>
               <UserPlus />
               Beri akses
             </Button>
@@ -148,7 +193,7 @@ export function SettingsTeamPage() {
                 {admin.installationOwner && <Badge variant="outline">Pemilik instalasi</Badge>}
               </TableCell>
               <TableCell>
-                <RoleSelect admin={admin} onChanged={(next) => setRoleOf(admin.userId, next)} />
+                <RoleSelect admin={admin} self={self} onChanged={(next) => setRoleOf(admin.userId, next)} />
               </TableCell>
               <TableCell className="whitespace-nowrap">{dateWIB(admin.createdAt)}</TableCell>
               <TableCell className="text-right">

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { href, Link } from "@/lib/router";
 import { age, label, number, operationSection, outboxStatus, paymentStatus, timeWIB } from "@/lib/format";
@@ -5,6 +6,9 @@ import type { OperationsSnapshot } from "@/lib/types";
 import { useResource } from "@/hooks/use-resource";
 import { PageHeader } from "@/components/page-header";
 import { LoadError } from "@/components/field";
+import { RelativeTime } from "@/components/relative-time";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,21 +20,46 @@ const statusMaps: Record<string, Record<string, string>> = { payments: paymentSt
 export function OperationsPage() {
   const resource = useResource<OperationsSnapshot>("/api/admin/operations");
   const data = resource.data;
+  const [auto, setAuto] = useState(false);
+  const { reload } = resource;
+  useEffect(() => {
+    if (!auto) return;
+    // A hidden tab skips its refresh; the next visible tick (or becoming visible) catches up.
+    const tick = () => {
+      if (document.visibilityState === "visible") void reload({ keep: true });
+    };
+    const timer = setInterval(tick, 30_000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [auto, reload]);
   return (
     <>
       <PageHeader
         title="Operasional"
         description="Sampel tertua (maks. 20 per bagian), bukan jumlah total. Ambiguitas tidak membuktikan pembayaran gagal; halaman ini tidak menjalankan pemulihan."
         actions={
-          <Button variant="outline" disabled={resource.loading} onClick={() => void resource.reload()}>
-            <RefreshCw className={resource.loading ? "animate-spin motion-reduce:animate-none" : undefined} />
-            {resource.loading ? "Memuat…" : "Perbarui status"}
-          </Button>
+          <>
+            <Label className="font-normal">
+              <Checkbox checked={auto} onCheckedChange={(checked) => setAuto(checked === true)} />
+              Perbarui otomatis tiap 30 detik
+            </Label>
+            <Button variant="outline" disabled={resource.loading} onClick={() => void resource.reload({ keep: true })}>
+              <RefreshCw className={resource.loading ? "animate-spin motion-reduce:animate-none" : undefined} />
+              {resource.loading ? "Memuat…" : "Perbarui status"}
+            </Button>
+          </>
         }
       />
       {resource.error && <LoadError message="Status tidak tersedia. Periksa akses admin lalu coba lagi." onRetry={() => void resource.reload()} />}
       {resource.loading && !data && <Skeleton className="h-48" role="status" aria-label="Memuat status" />}
-      {data && <p className="text-sm text-muted-foreground">Snapshot {timeWIB(data.now)} WIB. Umur dihitung server saat snapshot.</p>}
+      {data && (
+        <p className="text-sm text-muted-foreground">
+          Snapshot <RelativeTime value={data.now} /> ({timeWIB(data.now)} WIB). Umur dihitung server saat snapshot.
+        </p>
+      )}
       {data && (
         <div className="grid gap-6 xl:grid-cols-2">
           {Object.entries(data.sections).map(([name, section]) => (

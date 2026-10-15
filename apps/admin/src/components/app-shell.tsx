@@ -155,7 +155,8 @@ function GlobalSearch() {
   );
 
   useEffect(() => {
-    if (!catalog || q.length < 2 || q.length > 60) {
+    // The server caps the LIKE pattern at 50 bytes (48 plus wildcards); longer terms cannot match anyway.
+    if (!catalog || q.length < 2 || new TextEncoder().encode(q).length > 48) {
       setVariants(null);
       return;
     }
