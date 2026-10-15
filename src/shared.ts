@@ -48,9 +48,31 @@ export function searchTerm(value: string) {
   if (!term) return undefined;
   return term.length >= 2 && term.length <= 60 ? term : null;
 }
+/** Page sizes the list paginators offer; APIs accept any size up to their own limit. */
+export const PAGE_SIZES = [10, 25, 50] as const;
+export const DEFAULT_PAGE_SIZE = 25;
+/** Numbered pages skip rows with OFFSET, which D1 still reads and bills; the cap bounds that scan. */
+export const MAX_PAGE = 1000;
+/** 1-based ?page= value, null when invalid. */
+export const pageNumber = (value: string) => /^\d{1,4}$/.test(value) && Number(value) >= 1 && Number(value) <= MAX_PAGE ? Number(value) : null;
+/** Page numbers around `page`: always the first, the last and the neighbours; null marks a gap. */
+export function pageWindow(page: number, pages: number): (number | null)[] {
+  const shown = [...new Set([1, page - 1, page, page + 1, pages])].filter(n => n >= 1 && n <= pages).sort((a, b) => a - b);
+  const out: (number | null)[] = [];
+  let previous = 0;
+  for (const n of shown) {
+    // A gap of one page shows that page: "…" would take the same space and hide it.
+    if (n - previous === 2) out.push(n - 1);
+    else if (n - previous > 2) out.push(null);
+    out.push(n);
+    previous = n;
+  }
+  return out;
+}
 export const catalogParams: Record<string, Normalizer> = {
   after: value => validSlug(value) ? value : null,
   limit: value => /^\d{1,2}$/.test(value) && Number(value) >= 1 && Number(value) <= 90 ? String(Number(value)) : null,
+  page: value => { const page = pageNumber(value); return page === null ? null : page === 1 ? undefined : String(page); },
   category: value => value === '' ? undefined : validSlug(value) ? value : null,
   q: searchTerm,
 };

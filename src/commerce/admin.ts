@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { type CommerceEnv, HttpError, id, json, page, statement as s } from './types';
+import { type CommerceEnv, HttpError, id, json, numberedPage, page, statement as s } from './types';
 import { catalog } from './catalog';
 import { operations } from './operations';
 import { cancelOrder } from './cancel';
@@ -181,10 +181,20 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
   }
   if (path === '/api/admin/campaigns' && request.method === 'GET') {
     // Campaigns have no creation timestamp; paginate deterministically by start time and ID.
-    const cutoff = url.searchParams.has('before') ? before : Number.MAX_SAFE_INTEGER;
-    const rows = await s(env,`SELECT ${campaignColumns} FROM preorder_campaigns c JOIN product_variants v ON v.id=c.variant_id JOIN products p ON p.id=v.product_id WHERE (c.starts_at,c.id)<(?,?) ORDER BY c.starts_at DESC,c.id DESC LIMIT ?`,cutoff,beforeId,limit+1).all();
+    // Phases mirror the admin badge: inactive campaigns only appear under "all".
+    const phase = url.searchParams.get('phase') || 'all', now = Date.now();
+    const phases: Record<string, [string, number[]]> = { all: ['1=1', []], running: ['c.active=1 AND c.starts_at<=? AND c.ends_at>?', [now, now]], upcoming: ['c.active=1 AND c.starts_at>?', [now]], ended: ['c.active=1 AND c.ends_at<=?', [now]] };
+    if (!Object.hasOwn(phases, phase)) throw new HttpError(400, 'Invalid phase filter');
+    const [filter, values] = phases[phase], numbered = numberedPage(url.searchParams);
+    const from = `FROM preorder_campaigns c JOIN product_variants v ON v.id=c.variant_id JOIN products p ON p.id=v.product_id WHERE ${filter}`;
+    const [rows, total] = await Promise.all([
+      numbered
+        ? s(env,`SELECT ${campaignColumns} ${from} ORDER BY c.starts_at DESC,c.id DESC LIMIT ? OFFSET ?`,...values,limit+1,(numbered-1)*limit).all()
+        : s(env,`SELECT ${campaignColumns} ${from} AND (c.starts_at,c.id)<(?,?) ORDER BY c.starts_at DESC,c.id DESC LIMIT ?`,...values,before,beforeId,limit+1).all(),
+      numbered ? s(env,`SELECT count(*) AS n FROM preorder_campaigns c WHERE ${filter}`,...values).first<number>('n') : null,
+    ]);
     const { items, nextCursor } = page(rows.results,limit,last=>({before:last.startsAt,beforeId:last.id}));
-    return json({campaigns:items.map(row=>({...row,active:!!row.active})),nextCursor});
+    return json({campaigns:items.map(row=>({...row,active:!!row.active})),nextCursor,...(numbered ? {page:numbered,total} : {})});
   }
   const campaignMatch = path.match(/^\/api\/admin\/campaigns\/([^/]+)$/);
   if (campaignMatch && request.method === 'PATCH') {
@@ -349,8 +359,16 @@ export async function admin(request: Request, env: CommerceEnv, actor: string, b
     return json({ order: { id: orderId, fulfillment: f.status, status: f.status === 'delivered' ? 'completed' : 'paid' } });
   }
   if (path === '/api/admin/blocklist' && request.method === 'GET') {
-    const rows = await s(env, 'SELECT id,kind,reason,actor,created_at AS createdAt FROM blocklist WHERE created_at<? OR (created_at=? AND id<?) ORDER BY created_at DESC,id DESC LIMIT ?', before, before, beforeId, limit+1).all();
-    return json(page(rows.results, limit, last => ({ before: last.createdAt, beforeId: last.id })));
+    const kind = url.searchParams.get('kind') || null;
+    if (kind !== null && !['email', 'phone', 'ip'].includes(kind)) throw new HttpError(400, 'Invalid kind filter');
+    const numbered = numberedPage(url.searchParams), filter = kind ? 'kind=?' : '1=1', values = kind ? [kind] : [];
+    const [rows, total] = await Promise.all([
+      numbered
+        ? s(env, `SELECT id,kind,reason,actor,created_at AS createdAt FROM blocklist WHERE ${filter} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`, ...values, limit+1, (numbered-1)*limit).all()
+        : s(env, `SELECT id,kind,reason,actor,created_at AS createdAt FROM blocklist WHERE ${filter} AND (created_at<? OR (created_at=? AND id<?)) ORDER BY created_at DESC,id DESC LIMIT ?`, ...values, before, before, beforeId, limit+1).all(),
+      numbered ? s(env, `SELECT count(*) AS n FROM blocklist WHERE ${filter}`, ...values).first<number>('n') : null,
+    ]);
+    return json({ ...page(rows.results, limit, last => ({ before: last.createdAt, beforeId: last.id })), ...(numbered ? { page: numbered, total } : {}) });
   }
   if (path === '/api/admin/blocklist' && request.method === 'POST') {
     // Only the keyed hash is stored; the raw value never reaches D1 or the audit log.

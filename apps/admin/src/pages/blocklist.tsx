@@ -5,12 +5,12 @@ import { blocklistKind, label, normalizePhone, timeWIB } from "@/lib/format";
 import { useRoute, href } from "@/lib/router";
 import type { BlocklistEntry } from "@/lib/types";
 import { useMutation } from "@/hooks/use-mutation";
-import { usePagedList } from "@/hooks/use-paged-list";
+import { usePagedList, useUrlPaging } from "@/hooks/use-paged-list";
 import { PageHeader } from "@/components/page-header";
 import { DataTable } from "@/components/data-table";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Field, LoadError, TextField } from "@/components/field";
-import { LoadMoreButton } from "@/components/loading";
+import { Paginator } from "@/components/paginator";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -119,10 +119,9 @@ function RemoveEntry({ entry, onRemoved }: { entry: BlocklistEntry; onRemoved: (
 export function BlocklistPage() {
   const { route, navigate } = useRoute();
   const kind = (kindTabs.find(([value]) => value === route.query.get("kind"))?.[0] ?? "all") as (typeof kindTabs)[number][0];
-  const list = usePagedList<BlocklistEntry>("/api/admin/blocklist", { listKey: "items", cursor: "keyset" });
+  const paging = useUrlPaging();
+  const list = usePagedList<BlocklistEntry>("/api/admin/blocklist", { listKey: "items", mode: "offset", paging, params: kind === "all" ? {} : { kind } });
   const [open, setOpen] = useState(false);
-  // The blocklist API has no kind filter; the tab narrows the pages already loaded.
-  const rows = kind === "all" ? list.items : list.items.filter((entry) => entry.kind === kind);
   return (
     <>
       <PageHeader
@@ -135,7 +134,7 @@ export function BlocklistPage() {
           </Button>
         }
       />
-      <Tabs value={kind} onValueChange={(value) => navigate(href("blocklist", {}, value === "all" ? {} : { kind: value }), true)}>
+      <Tabs value={kind} onValueChange={(value) => navigate(href("blocklist", {}, value === "all" ? paging.keep : { kind: value, ...paging.keep }), true)}>
         <TabsList aria-label="Filter jenis identitas">
           {kindTabs.map(([value, text]) => (
             <TabsTrigger key={value} value={value}>
@@ -151,10 +150,10 @@ export function BlocklistPage() {
         empty={
           kind === "all"
             ? { title: "Blocklist kosong", description: "Blokir identitas dari detail pesanan atau tambahkan manual." }
-            : { title: `Tidak ada entri ${label(blocklistKind, kind)} di halaman yang dimuat` }
+            : { title: `Tidak ada entri ${label(blocklistKind, kind)}` }
         }
       >
-        {rows.map((entry) => (
+        {list.items.map((entry) => (
           <TableRow key={entry.id}>
             <TableCell>
               <Badge variant="outline">{label(blocklistKind, entry.kind)}</Badge>
@@ -165,15 +164,13 @@ export function BlocklistPage() {
             </TableCell>
             <TableCell className="text-xs whitespace-nowrap">{timeWIB(entry.createdAt)}</TableCell>
             <TableCell className="text-right">
-              <RemoveEntry entry={entry} onRemoved={() => list.setItems((items) => items.filter((e) => e.id !== entry.id))} />
+              <RemoveEntry entry={entry} onRemoved={() => void list.reload()} />
             </TableCell>
           </TableRow>
         ))}
       </DataTable>
-      {list.cursor && (
-        <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} />
-      )}
-      <AddDialog open={open} onOpenChange={setOpen} onAdded={(entry, created) => created && list.setItems((items) => [entry, ...items])} />
+      <Paginator {...list.paginator} label="Halaman blocklist" />
+      <AddDialog open={open} onOpenChange={setOpen} onAdded={(_, created) => created && void list.reload()} />
     </>
   );
 }

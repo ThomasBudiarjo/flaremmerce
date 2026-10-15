@@ -2,7 +2,7 @@ import { and, asc, eq, gt, inArray, lte, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import { campaigns, categories, inventory, products, variants } from './schema';
 import { type CommerceEnv, HttpError, json } from './types';
-import { catalogQuery, envCount, likePattern, validSlug } from '../shared';
+import { catalogQuery, DEFAULT_PAGE_SIZE, envCount, likePattern, validSlug } from '../shared';
 
 /** Public shoppers see a coarse level; exact counts would expose sales velocity and stock to scrapers. */
 export function stockLevel(available: number | null, low: number) {
@@ -25,14 +25,20 @@ export async function catalog(env: CommerceEnv, slug?: string, query = new URLSe
   // Same normalizers as the shared cache key, so every cacheable query is exactly what is served.
   const params = slug ? {} : catalogQuery(query);
   if (!params) throw new HttpError(400, 'Invalid catalog query');
-  const limit = slug ? 1 : Number(params.limit ?? 30), after = params.after;
+  const limit = slug ? 1 : Number(params.limit ?? DEFAULT_PAGE_SIZE), after = params.after;
+  // Without a slug cursor the list is a numbered page with a total; `after` keeps the cheaper keyset path for old links.
+  const numbered = !slug && !after, pageNo = numbered ? Number(params.page ?? 1) : 1;
   // An unknown or inactive category is an empty page, not an error: links may outlive the category.
   const category = params.category ? eq(products.categoryId, sql`(SELECT id FROM categories WHERE slug=${params.category}${includeInactive ? sql`` : sql` AND active=1`})`) : undefined;
   // Bounded LIKE: the term is at most 60 escaped characters and the slug-ordered page stops at limit+1 matches.
   const search = params.q ? sql`${products.name} LIKE ${likePattern(params.q)} ESCAPE '\\'` : undefined;
   // Keep IN parameters below D1's 100-bind limit and avoid one query per product.
-  const page = await db.select({ product: products, category: { slug: categories.slug, name: categories.name } }).from(products).leftJoin(categories, eq(categories.id, products.categoryId))
-    .where(and(includeInactive ? (active === undefined ? undefined : eq(products.active, active ? 1 : 0)) : eq(products.active, 1), slug ? eq(products.slug, slug) : undefined, after ? gt(products.slug, after) : undefined, category, search)).orderBy(products.slug).limit(limit + 1);
+  const filter = and(includeInactive ? (active === undefined ? undefined : eq(products.active, active ? 1 : 0)) : eq(products.active, 1), slug ? eq(products.slug, slug) : undefined, category, search);
+  const [page, counted] = await Promise.all([
+    db.select({ product: products, category: { slug: categories.slug, name: categories.name } }).from(products).leftJoin(categories, eq(categories.id, products.categoryId))
+      .where(and(filter, after ? gt(products.slug, after) : undefined)).orderBy(products.slug).limit(limit + 1).offset((pageNo - 1) * limit),
+    numbered ? db.select({ n: sql<number>`count(*)` }).from(products).where(filter) : undefined,
+  ]);
   const rows = page.slice(0, limit);
   if (slug && !rows.length) throw new HttpError(404, 'Product not found');
   const now = Date.now(), low = envCount(env.LOW_STOCK_PUBLIC, 5);
@@ -55,5 +61,5 @@ export async function catalog(env: CommerceEnv, slug?: string, query = new URLSe
       }),
     };
   });
-  return json(slug ? { product: result[0] } : { products: result, nextCursor: page.length > limit ? rows.at(-1)!.product.slug : null }, 200, publicCache);
+  return json(slug ? { product: result[0] } : { products: result, nextCursor: page.length > limit ? rows.at(-1)!.product.slug : null, ...(counted ? { page: pageNo, total: counted[0]?.n ?? 0 } : {}) }, 200, publicCache);
 }

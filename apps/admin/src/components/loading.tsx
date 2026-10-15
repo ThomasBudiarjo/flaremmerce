@@ -1,7 +1,6 @@
 import type React from "react";
 import { cn } from "cn";
 import { LoaderCircle, Search } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
 /** Inline spinner for actions and searches; the layout of the result is not known yet. */
@@ -20,22 +19,6 @@ export function SearchStatusIcon({ busy }: { busy: boolean }) {
       <Search aria-hidden className={cn(place, busy && "loading-conceal")} />
       {busy && <Spinner delayed className={place} />}
     </>
-  );
-}
-
-/** "Load more" for keyset lists; rows already shown stay put while the next page loads. */
-export function LoadMoreButton({ loading, onClick, className = "self-center" }: { loading: boolean; onClick: () => void; className?: string }) {
-  return (
-    <Button variant="outline" className={className} disabled={loading} onClick={onClick}>
-      {loading ? (
-        <>
-          <Spinner />
-          Memuat…
-        </>
-      ) : (
-        "Muat lebih banyak"
-      )}
-    </Button>
   );
 }
 

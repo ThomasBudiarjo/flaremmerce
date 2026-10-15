@@ -5,12 +5,12 @@ import { href, Link, useRoute } from "@/lib/router";
 import { fromWibInput, number, shiftDay, timeWIB, wibInput } from "@/lib/format";
 import type { Campaign, VariantSearchResult } from "@/lib/types";
 import { useMutation } from "@/hooks/use-mutation";
-import { usePagedList } from "@/hooks/use-paged-list";
+import { usePagedList, useUrlPaging } from "@/hooks/use-paged-list";
 import { PageHeader } from "@/components/page-header";
 import { DataTable } from "@/components/data-table";
 import { ConflictBanner } from "@/components/conflict-banner";
 import { LoadError, NumberField, TextField } from "@/components/field";
-import { LoadMoreButton } from "@/components/loading";
+import { Paginator } from "@/components/paginator";
 import { VariantPicker } from "@/components/variant-picker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -212,7 +212,8 @@ function CampaignSheet({
 export function PreordersPage() {
   const { route, navigate } = useRoute();
   const tab = (phaseTabs.find(([value]) => value === route.query.get("phase"))?.[0] ?? "all") as (typeof phaseTabs)[number][0];
-  const list = usePagedList<Campaign>("/api/admin/campaigns", { listKey: "campaigns", cursor: "keyset" });
+  const paging = useUrlPaging();
+  const list = usePagedList<Campaign>("/api/admin/campaigns", { listKey: "campaigns", mode: "offset", paging, params: tab === "all" ? {} : { phase: tab } });
   const [editing, setEditing] = useState<Campaign | null>(null);
   const [repeat, setRepeat] = useState<Campaign | null>(null);
   const [open, setOpen] = useState(false);
@@ -223,9 +224,6 @@ export function PreordersPage() {
     setSheetKey((k) => k + 1);
     setOpen(true);
   };
-  const now = Date.now();
-  // Phase is computed per row from the loaded pages; the API pages all campaigns by start time.
-  const rows = tab === "all" ? list.items : list.items.filter((c) => phaseOf(c, now) === tab);
   return (
     <>
       <PageHeader
@@ -238,7 +236,7 @@ export function PreordersPage() {
           </Button>
         }
       />
-      <Tabs value={tab} onValueChange={(value) => navigate(href("preorders", {}, value === "all" ? {} : { phase: value }), true)}>
+      <Tabs value={tab} onValueChange={(value) => navigate(href("preorders", {}, value === "all" ? paging.keep : { phase: value, ...paging.keep }), true)}>
         <TabsList aria-label="Filter fase campaign">
           {phaseTabs.map(([value, text]) => (
             <TabsTrigger key={value} value={value}>
@@ -254,10 +252,10 @@ export function PreordersPage() {
         empty={
           tab === "all"
             ? { title: "Belum ada campaign", description: "Buat campaign untuk membuka pre-order pada varian mode pre-order." }
-            : { title: "Tidak ada campaign di fase ini", description: "Penyaringan fase mencakup campaign yang sudah dimuat." }
+            : { title: "Tidak ada campaign di fase ini" }
         }
       >
-        {rows.map((c) => (
+        {list.items.map((c) => (
           <TableRow key={c.id}>
             <TableCell className="whitespace-normal">
               <Link to={href("product-edit", { id: c.productId })} className="font-medium underline-offset-4 hover:underline">
@@ -304,16 +302,16 @@ export function PreordersPage() {
           </TableRow>
         ))}
       </DataTable>
-      {list.cursor && (
-        <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} />
-      )}
+      <Paginator {...list.paginator} label="Halaman campaign" />
       <CampaignSheet
         key={sheetKey}
         campaign={editing}
         repeat={repeat}
         open={open}
         onOpenChange={setOpen}
-        onSaved={(campaign, created) => list.setItems((items) => (created ? [campaign, ...items] : items.map((c) => (c.id === campaign.id ? campaign : c))))}
+        onSaved={(campaign, created) =>
+          created || (tab !== "all" && phaseOf(campaign) !== tab) ? void list.reload() : list.setItems((items) => items.map((c) => (c.id === campaign.id ? campaign : c)))
+        }
       />
     </>
   );

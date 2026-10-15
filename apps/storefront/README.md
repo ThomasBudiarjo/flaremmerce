@@ -4,7 +4,9 @@ Astro 7 + Cloudflare adapter 14, React islands. Build from the repository root w
 `npm run build`. The generated Worker is `dist/server/entry.mjs`; public
 assets and prerendered policies, cart, and order shells are in `dist/client/`.
 Homepage `/` immediately shows the SSR catalogue; `/catalog` uses the same component.
-Both support `after`/`limit` pagination and 60-second public caching. Product detail pages
+Both page by number (`page`, with `limit` 10/25/50, default 25) with a total and 60-second
+public caching; old `after` slug links open page one. Page size is a display preference, so the
+canonical URL carries only `category` and `page`. Product detail pages
 are also server-rendered, never client-only. There is no separate editorial landing page.
 
 ## Parent Worker composition

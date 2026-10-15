@@ -261,13 +261,13 @@ describe('admin SPA', () => {
 
   it('maps order tabs and dates onto the API status/from filters', async () => {
     await renderAdmin('/admin/orders?status=to_fulfill', url => url.startsWith('/api/admin/orders?') ? Response.json({ orders: [], nextCursor: null }) : undefined);
-    expect(calls.map(c => c.url)).toContain('/api/admin/orders?status=to_fulfill&limit=50');
+    expect(calls.map(c => c.url)).toContain('/api/admin/orders?status=to_fulfill&limit=25');
     const shipped = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'Dikirim')!;
     await act(async () => shipped.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })));
     expect(location.search).toBe('?status=shipped');
-    expect(calls.at(-1)!.url).toBe('/api/admin/orders?status=shipped&limit=50');
+    expect(calls.at(-1)!.url).toBe('/api/admin/orders?status=shipped&limit=25');
     await type(document.getElementById('orders-from')!, '2026-10-01');
-    expect(calls.at(-1)!.url).toBe('/api/admin/orders?status=shipped&from=2026-10-01&limit=50');
+    expect(calls.at(-1)!.url).toBe('/api/admin/orders?status=shipped&from=2026-10-01&limit=25');
   });
 
   it('offers only the next fulfillment step and blocks it while the order is held', async () => {
@@ -297,9 +297,10 @@ describe('admin SPA', () => {
 
   it('keeps the mutation lock after its dialog closes and reopens', async () => {
     const write = deferred<Response>();
+    const created: unknown[] = [];
     await renderAdmin('/admin/blocklist', (url, init) => {
       if (url === '/api/admin/blocklist' && init.method === 'POST') return write.promise;
-      if (url.startsWith('/api/admin/blocklist?')) return Response.json({ items: [], nextCursor: null });
+      if (url.startsWith('/api/admin/blocklist?')) return Response.json({ items: created, nextCursor: null, page: 1, total: created.length });
     });
     const fill = async () => {
       await type(labelled('Email'), 'spam@example.com');
@@ -313,7 +314,9 @@ describe('admin SPA', () => {
     expect(button('Menyimpan…').disabled).toBe(true);
     await act(async () => (document.getElementById('blocklist-form') as HTMLFormElement).requestSubmit());
     expect(calls.filter(c => c.method === 'POST')).toHaveLength(1);
-    await act(async () => write.resolve(Response.json({ created: true, entry: { id: 'b1', kind: 'email', reason: 'Chargeback', actor: 'admin', createdAt: 1 } }, { status: 201 })));
+    const entry = { id: 'b1', kind: 'email', reason: 'Chargeback', actor: 'admin', createdAt: 1 };
+    created.push(entry);
+    await act(async () => write.resolve(Response.json({ created: true, entry }, { status: 201 })));
     expect(text()).toContain('Chargeback');
   });
 
@@ -478,7 +481,7 @@ describe('admin SPA', () => {
     await press('7 hari');
     const week = presetRange('7d');
     expect(Object.fromEntries(new URLSearchParams(location.search))).toEqual({ q: 'FL-9', from: week.from, to: week.to });
-    expect(calls.at(-1)!.url).toBe(`/api/admin/orders?q=FL-9&from=${week.from}&to=${week.to}&limit=50`);
+    expect(calls.at(-1)!.url).toBe(`/api/admin/orders?q=FL-9&from=${week.from}&to=${week.to}&limit=25`);
     expect(presetRange('month', '2026-10-15')).toEqual({ from: '2026-10-01', to: '2026-10-15' });
     expect(presetRange('30d', '2026-10-15')).toEqual({ from: '2026-09-16', to: '2026-10-15' });
     expect(presetRange('today', '2026-10-15')).toEqual({ from: '2026-10-15', to: '2026-10-15' });
@@ -588,17 +591,17 @@ describe('admin SPA', () => {
     expect(text()).toContain('Rp 100 – Rp 25.000');
     const archived = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'Diarsipkan')!;
     await act(async () => archived.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })));
-    expect(calls.at(-1)!.url).toBe('/api/admin/products?status=archived&limit=30');
+    expect(calls.at(-1)!.url).toBe('/api/admin/products?status=archived&limit=25&page=1');
     const search = document.querySelector('[aria-label="Cari produk"]')!;
     await type(search, 'k');
     await wait(350);
-    expect(calls.at(-1)!.url).toBe('/api/admin/products?status=archived&limit=30');
+    expect(calls.at(-1)!.url).toBe('/api/admin/products?status=archived&limit=25&page=1');
     expect(text()).toContain('Ketik minimal 2 karakter.');
     await type(search, 'kaos');
     await wait(150);
     expect(calls.some(c => c.url.includes('q=kaos'))).toBe(false);
     await wait(200);
-    expect(calls.at(-1)!.url).toBe('/api/admin/products?q=kaos&status=archived&limit=30');
+    expect(calls.at(-1)!.url).toBe('/api/admin/products?q=kaos&status=archived&limit=25&page=1');
   });
 
   it('derives the slug from the name until edited and names the exact blockers in the save bar', async () => {
@@ -708,7 +711,7 @@ describe('admin SPA', () => {
     const writeText = vi.fn(async (_value: string) => {});
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     await renderAdmin('/admin/customers', url => url.startsWith('/api/admin/customers?') ? Response.json({ customers: [customer('u1')], nextCursor: null }) : undefined);
-    expect(calls.map(c => c.url)).toContain('/api/admin/customers?limit=50');
+    expect(calls.map(c => c.url)).toContain('/api/admin/customers?limit=25');
     expect([...document.querySelectorAll('a')].find(a => a.textContent === '2')!.getAttribute('href')).toBe('/admin/orders?q=u1%40mail.id');
     await act(async () => (document.querySelector('[aria-label="Salin ID pengguna Nama u1"]') as HTMLButtonElement).click());
     expect(writeText).toHaveBeenCalledWith('u1');
@@ -717,18 +720,18 @@ describe('admin SPA', () => {
     expect(calls.some(c => c.url.includes('q=budi'))).toBe(false);
     await wait(200);
     expect(location.search).toBe('?q=budi');
-    expect(calls.at(-1)!.url).toBe('/api/admin/customers?q=budi&limit=50');
+    expect(calls.at(-1)!.url).toBe('/api/admin/customers?q=budi&limit=25');
   });
 
   it('filters reviews by status on the server and shows the open count on its tab', async () => {
     await renderAdmin('/admin/reviews', url => url.startsWith('/api/admin/review?') ? Response.json({ items: [{ id: 'r1', orderId: null, reason: 'risk_velocity', status: 'open', note: '', createdAt: Date.now() - 3 * 3_600_000, reference: null }], nextCursor: null }) : undefined);
-    expect(calls.map(c => c.url)).toContain('/api/admin/review?status=open&limit=50');
+    expect(calls.map(c => c.url)).toContain('/api/admin/review?status=open&limit=25');
     expect(text()).toContain('3 jam lalu');
     const tab = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent?.startsWith('Terbuka'))!;
     expect(tab.textContent).toBe('Terbuka1');
     const resolved = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'Selesai')!;
     await act(async () => resolved.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })));
-    expect(calls.at(-1)!.url).toBe('/api/admin/review?status=resolved&limit=50');
+    expect(calls.at(-1)!.url).toBe('/api/admin/review?status=resolved&limit=25');
   });
 
   it('inserts note templates, guards the note and offers the next open case after resolving', async () => {
@@ -795,12 +798,18 @@ describe('admin SPA', () => {
     expect(assign).toHaveBeenCalledWith('/admin/');
   });
 
-  it('shows the normalized phone before blocking and filters loaded entries by kind', async () => {
-    await renderAdmin('/admin/blocklist', url => url.startsWith('/api/admin/blocklist?') ? Response.json({ items: [
-      { id: 'b1', kind: 'email', reason: 'Spam', actor: 'ops-1', createdAt: 1 }, { id: 'b2', kind: 'ip', reason: 'Bot', actor: 'ops-2', createdAt: 2 }], nextCursor: null }) : undefined);
+  it('shows the normalized phone before blocking and filters entries by kind on the server', async () => {
+    const entries = [{ id: 'b1', kind: 'email', reason: 'Spam', actor: 'ops-1', createdAt: 1 }, { id: 'b2', kind: 'ip', reason: 'Bot', actor: 'ops-2', createdAt: 2 }];
+    await renderAdmin('/admin/blocklist', url => {
+      if (!url.startsWith('/api/admin/blocklist?')) return undefined;
+      const kind = new URLSearchParams(url.split('?')[1]).get('kind');
+      const items = entries.filter(e => !kind || e.kind === kind);
+      return Response.json({ items, nextCursor: null, page: 1, total: items.length });
+    });
     expect(text()).toContain('ops-1');
     const ip = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'IP')!;
     await act(async () => ip.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })));
+    expect(calls.at(-1)!.url).toBe('/api/admin/blocklist?kind=ip&limit=25&page=1');
     expect(text()).not.toContain('Spam');
     expect(text()).toContain('Bot');
     const { phoneHint } = await import('../apps/admin/src/pages/blocklist');
@@ -821,7 +830,8 @@ describe('admin SPA', () => {
     expect(text()).not.toContain('Tidak ada pesanan');
     await act(async () => first.resolve(Response.json({ orders: [row('o1', 'FL-1')], nextCursor: { before: 1, beforeId: 'o1' } })));
     expect(document.querySelector('[data-slot="skeleton"]')).toBeNull();
-    expect(button('Muat lebih banyak')).toBeTruthy();
+    const next = () => document.querySelector<HTMLButtonElement>('[aria-label="Halaman berikutnya"]');
+    expect(next()!.disabled).toBe(false);
 
     const tab = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'Dikirim')!;
     await act(async () => tab.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })));
@@ -831,8 +841,8 @@ describe('admin SPA', () => {
     expect(body.classList.contains('is-stale')).toBe(true);
     expect(document.querySelector('[aria-busy="true"] .loading-bar')).toBeTruthy();
     expect(document.querySelector('[data-slot="skeleton"]')).toBeNull();
-    // The old cursor belongs to the previous filter; load-more waits for the new page.
-    expect(button('Muat lebih banyak')).toBeUndefined();
+    // The old cursor belongs to the previous filter; paging waits for the new page.
+    expect(next()!.disabled).toBe(true);
     await act(async () => shipped.resolve(Response.json({ orders: [row('o2', 'FL-2')], nextCursor: null })));
     expect(text()).toContain('FL-2');
     expect(text()).not.toContain('FL-1');
@@ -876,6 +886,65 @@ describe('admin SPA', () => {
     expect(text()).toContain('Rp 5.000');
   });
 
+  it('pages products by number with a total and keeps the chosen page size in the URL', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({ ...product, id: `p${i}`, slug: `produk-${i}`, name: `Produk ${i}` }));
+    await renderAdmin('/admin/products', url => {
+      if (url === '/api/admin/categories') return Response.json({ categories: [] });
+      if (!url.startsWith('/api/admin/products?')) return undefined;
+      const query = new URLSearchParams(url.split('?')[1]);
+      const size = Number(query.get('limit')), page = Number(query.get('page'));
+      return Response.json({ products: many.slice((page - 1) * size, page * size), nextCursor: null, page, total: many.length });
+    });
+    const lastProducts = () => calls.filter(c => c.url.startsWith('/api/admin/products?')).at(-1)!.url;
+    expect(lastProducts()).toBe('/api/admin/products?limit=25&page=1');
+    expect(text()).toContain('1–25 dari 60');
+    const pageButton = (n: number) => document.querySelector<HTMLButtonElement>(`[aria-label="Halaman ${n}"]`)!;
+    expect(pageButton(1).getAttribute('aria-current')).toBe('page');
+    expect(pageButton(3)).toBeTruthy();
+    expect(document.querySelector<HTMLButtonElement>('[aria-label="Halaman sebelumnya"]')!.disabled).toBe(true);
+    await act(async () => pageButton(3).click());
+    expect(location.search).toBe('?page=3');
+    expect(lastProducts()).toBe('/api/admin/products?limit=25&page=3');
+    expect(text()).toContain('51–60 dari 60');
+    expect(document.querySelector<HTMLButtonElement>('[aria-label="Halaman berikutnya"]')!.disabled).toBe(true);
+    await type(labelled('Tampilkan'), '10');
+    expect(location.search).toBe('?limit=10');
+    expect(lastProducts()).toBe('/api/admin/products?limit=10&page=1');
+    expect(text()).toContain('1–10 dari 60');
+    // A filter change returns to page one but keeps the page size.
+    const archived = [...document.querySelectorAll('[role="tab"]')].find(t => t.textContent === 'Diarsipkan')!;
+    await act(async () => archived.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })));
+    expect(location.search).toBe('?status=archived&limit=10');
+  });
+
+  it('pages orders by cursor, steps back through cursors already seen and restarts an unknown page at one', async () => {
+    const page = (ids: string[], next: string | null) => Response.json({ orders: ids.map(id => listOrder(id)), nextCursor: next ? { before: 1, beforeId: next } : null });
+    await renderAdmin('/admin/orders', url => {
+      if (!url.startsWith('/api/admin/orders?')) return undefined;
+      const beforeId = new URLSearchParams(url.split('?')[1]).get('beforeId');
+      return beforeId === 'b' ? page(['c'], 'c') : beforeId === 'c' ? page(['d'], null) : page(['a', 'b'], 'b');
+    });
+    const nav = (label: string) => document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
+    expect(text()).toContain('Halaman 1');
+    await act(async () => nav('Halaman berikutnya').click());
+    expect(location.search).toBe('?page=2');
+    expect(calls.at(-1)!.url).toBe('/api/admin/orders?limit=25&before=1&beforeId=b');
+    await act(async () => nav('Halaman berikutnya').click());
+    expect(text()).toContain('FL-d');
+    expect(nav('Halaman berikutnya').disabled).toBe(true);
+    await act(async () => nav('Halaman sebelumnya').click());
+    expect(location.search).toBe('?page=2');
+    expect(text()).toContain('FL-c');
+    await act(async () => nav('Halaman sebelumnya').click());
+    expect(location.search).toBe('');
+    expect(calls.at(-1)!.url).toBe('/api/admin/orders?limit=25');
+    await act(async () => root.unmount());
+    root = createRoot(document.getElementById('root')!);
+    await renderAdmin('/admin/orders?status=shipped&page=7', url => (url.startsWith('/api/admin/orders?') ? page(['z'], null) : undefined));
+    expect(location.search).toBe('?status=shipped');
+    expect(calls.filter(c => c.url.startsWith('/api/admin/orders?')).map(c => c.url)).toEqual(['/api/admin/orders?status=shipped&limit=25']);
+  });
+
   it('names the browser tab after the current page', async () => {
     await renderAdmin('/admin/products/p', productRoutes);
     expect(document.title).toBe('Produk · Admin Flaremmerce');
@@ -900,6 +969,23 @@ describe('admin helpers', () => {
     expect(format.ago(30_000)).toBe('baru saja');
     expect(format.ago(3 * 3_600_000)).toBe('3 jam lalu');
     expect(format.shiftDay('2026-03-01', -1)).toBe('2026-02-28');
+  });
+
+  it('windows page numbers around the current page and matches the storefront helper', async () => {
+    const { pageWindow } = await import('../apps/admin/src/components/paginator');
+    const shared = await import('../src/shared');
+    const cases: [number, number, (number | null)[]][] = [
+      [1, 1, [1]],
+      [1, 3, [1, 2, 3]],
+      [1, 13, [1, 2, null, 13]],
+      [4, 13, [1, 2, 3, 4, 5, null, 13]],
+      [7, 13, [1, null, 6, 7, 8, null, 13]],
+      [13, 13, [1, null, 12, 13]],
+    ];
+    for (const [page, pages, expected] of cases) {
+      expect(pageWindow(page, pages)).toEqual(expected);
+      expect(shared.pageWindow(page, pages)).toEqual(expected);
+    }
   });
 });
 

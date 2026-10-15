@@ -1,32 +1,34 @@
 ---
 import Layout from "../layouts/Layout.astro";
 import { catalog, money, type Product } from "../lib/catalog";
-import { catalogParams, searchTerm } from "../../../../src/shared";
+import { catalogParams, DEFAULT_PAGE_SIZE, PAGE_SIZES, pageNumber, pageWindow, searchTerm } from "../../../../src/shared";
 type Category = { id: string; slug: string; name: string };
 let products: Product[] = [];
 let categories: Category[] = [];
 let error = "";
 let invalid = "";
-let nextCursor: string | null = null;
+let total = 0;
 const rawQ = Astro.url.searchParams.get("q") ?? "";
 const q = searchTerm(rawQ);
 const rawCategory = Astro.url.searchParams.get("category") ?? "";
 const category = rawCategory && catalogParams.category(rawCategory) ? rawCategory : "";
+// An unknown page size or page number falls back to the default rather than failing the whole catalog.
+const rawLimit = Number(Astro.url.searchParams.get("limit"));
+const pageSize = (PAGE_SIZES as readonly number[]).includes(rawLimit) ? rawLimit : DEFAULT_PAGE_SIZE;
+const page = pageNumber(Astro.url.searchParams.get("page") ?? "") ?? 1;
 if (q === null) invalid = "Kata kunci pencarian harus 2–60 karakter.";
 else if (rawCategory && !category) invalid = "Kategori tidak dikenal.";
 try {
   categories = (await catalog(Astro.locals, "/api/categories")).categories;
   if (!invalid) {
     const query = new URLSearchParams();
-    for (const name of ["after", "limit"]) {
-      const value = Astro.url.searchParams.get(name);
-      if (value !== null) query.set(name, value);
-    }
+    if (pageSize !== DEFAULT_PAGE_SIZE) query.set("limit", String(pageSize));
+    if (page > 1) query.set("page", String(page));
     if (category) query.set("category", category);
     if (q) query.set("q", q);
-    const page = await catalog(Astro.locals, `/api/catalog?${query}`);
-    products = page.products;
-    nextCursor = page.nextCursor;
+    const result = await catalog(Astro.locals, `/api/catalog?${query}`);
+    products = result.products;
+    total = result.total ?? 0;
   }
 } catch {
   error =
@@ -39,22 +41,27 @@ Astro.response.headers.set(
   error || invalid ? "no-store" : "public, max-age=0, s-maxage=60",
 );
 const current = categories.find((c) => c.slug === category);
-const link = (next: { category?: string; q?: string | null }) => {
+// Filter links keep the chosen page size but start again at page one.
+const link = (next: { category?: string; q?: string | null; page?: number; size?: number }) => {
   const params = new URLSearchParams();
   if (next.category) params.set("category", next.category);
   if (next.q) params.set("q", next.q);
+  const size = next.size ?? pageSize;
+  if (size !== DEFAULT_PAGE_SIZE) params.set("limit", String(size));
+  if (next.page && next.page > 1) params.set("page", String(next.page));
   return `${Astro.url.pathname}${params.size ? `?${params}` : ""}`;
 };
-const nextQuery = new URLSearchParams();
-if (nextCursor) nextQuery.set("after", nextCursor);
-const limit = Astro.url.searchParams.get("limit");
-if (limit !== null) nextQuery.set("limit", limit);
-if (category) nextQuery.set("category", category);
-if (q) nextQuery.set("q", q);
+const pageLink = (n: number, size = pageSize) => link({ category, q, page: n, size });
+const pages = Math.max(1, Math.ceil(total / pageSize));
+const firstShown = (page - 1) * pageSize + 1;
 const heading = q ? `Hasil untuk “${q}”` : current ? current.name : "Semua produk";
-const paged = Astro.url.searchParams.has("after");
-const firstPage = new URLSearchParams(nextQuery);
-firstPage.delete("after");
+const pastEnd = !error && !invalid && products.length === 0 && page > 1;
+if (pastEnd) Astro.response.status = 404;
+// Page size is a display preference, so every size shares the default-size canonical page.
+const canonicalParams = new URLSearchParams();
+if (category) canonicalParams.set("category", category);
+if (page > 1) canonicalParams.set("page", String(page));
+const canonical = category ? `/catalog?${canonicalParams}` : `${Astro.url.pathname}${canonicalParams.size ? `?${canonicalParams}` : ""}`;
 const monthDay = new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "short", timeZone: "Asia/Jakarta" });
 const shipWindow = (from: string | number, to: string | number) => `${monthDay.format(new Date(from))} – ${monthDay.format(new Date(to))}`;
 type Badge = { label: string; tone: "stock" | "low" | "out" | "preorder" };
@@ -79,7 +86,7 @@ function summary(p: Product) {
 }
 ---
 
-<Layout title={current ? `${current.name} — Flaremmerce` : q ? `Cari “${q}” — Flaremmerce` : "Board game untuk main bareng — Flaremmerce"} canonical={category ? `/catalog?category=${encodeURIComponent(category)}` : Astro.url.pathname} noindex={!!q || !!invalid}>
+<Layout title={current ? `${current.name} — Flaremmerce` : q ? `Cari “${q}” — Flaremmerce` : "Board game untuk main bareng — Flaremmerce"} canonical={canonical} noindex={!!q || !!invalid}>
   <section class="section catalog">
     <div class="catalog-intro">
       <div>
@@ -106,6 +113,7 @@ function summary(p: Product) {
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
         <input id="catalog-q" name="q" type="search" minlength="2" maxlength="60" placeholder="Cari nama board game" value={q ?? rawQ.slice(0, 60)} aria-describedby="catalog-q-help" />
         {category && <input type="hidden" name="category" value={category} />}
+        {pageSize !== DEFAULT_PAGE_SIZE && <input type="hidden" name="limit" value={pageSize} />}
         <button type="submit">Cari</button>
       </form>
       <p id="catalog-q-help" class="sr-only">Minimal 2 karakter.</p>
@@ -120,7 +128,9 @@ function summary(p: Product) {
     </div>
     <div class="catalog-toolbar">
       <h2>{heading}</h2>
-      {!error && !invalid && products.length > 0 && <span class="muted">{products.length} produk{paged || nextCursor ? " di halaman ini" : ""}</span>}
+      {!error && !invalid && products.length > 0 && (
+        <span class="muted">{pages > 1 ? `${firstShown}–${firstShown + products.length - 1} dari ${total} produk` : `${total} produk`}</span>
+      )}
       {q && <a class="muted clear-search" href={link({ category })}>Hapus pencarian</a>}
     </div>
     {invalid ? (
@@ -134,7 +144,13 @@ function summary(p: Product) {
     ) : products.length === 0 ? (
       <div class="empty-state">
         <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="8" y="8" width="32" height="32" rx="5" /><circle cx="18" cy="18" r="2.5" /><circle cx="30" cy="30" r="2.5" /></svg>
-        {q || category ? (
+        {pastEnd ? (
+          <>
+            <h3>Halaman ini tidak ada</h3>
+            <p>{total ? `Katalog ini hanya sampai halaman ${pages}.` : "Tidak ada produk di daftar ini."}</p>
+            <a class="button" href={pageLink(1)}>Ke halaman pertama</a>
+          </>
+        ) : q || category ? (
           <>
             <h3>Tidak ada produk yang cocok</h3>
             <p>Coba kata kunci lain atau pilih kategori berbeda.</p>
@@ -173,10 +189,30 @@ function summary(p: Product) {
         })}
       </ul>
     )}
-    {(paged || nextCursor) && (
+    {!error && !invalid && products.length > 0 && (pages > 1 || total > PAGE_SIZES[0]) && (
       <nav class="pager" aria-label="Halaman katalog">
-        {paged ? <a class="button secondary" href={`${Astro.url.pathname}${firstPage.size ? `?${firstPage}` : ""}`}>← Halaman pertama</a> : <span />}
-        {nextCursor && <a class="button" href={`${Astro.url.pathname}?${nextQuery}`} rel="next">Produk berikutnya →</a>}
+        <div class="page-size">
+          <span class="muted">Tampilkan</span>
+          {PAGE_SIZES.map((size) => (
+            <a class="chip" href={pageLink(1, size)} rel="nofollow" aria-current={size === pageSize ? "true" : undefined} aria-label={`${size} produk per halaman`}>{size}</a>
+          ))}
+          <span class="muted">per halaman</span>
+        </div>
+        {pages > 1 && (
+          <ol class="pages" role="list">
+            <li>
+              {page > 1 ? <a class="button secondary" href={pageLink(page - 1)} rel="prev" aria-label="Halaman sebelumnya">← <span>Sebelumnya</span></a> : <span class="button secondary" aria-disabled="true">← <span>Sebelumnya</span></span>}
+            </li>
+            {pageWindow(page, pages).map((n) => (
+              <li class="page-number">
+                {n === null ? <span aria-hidden="true">…</span> : <a href={pageLink(n)} aria-current={n === page ? "page" : undefined} aria-label={`Halaman ${n}`}>{n}</a>}
+              </li>
+            ))}
+            <li>
+              {page < pages ? <a class="button secondary" href={pageLink(page + 1)} rel="next" aria-label="Halaman berikutnya"><span>Berikutnya</span> →</a> : <span class="button secondary" aria-disabled="true"><span>Berikutnya</span> →</span>}
+            </li>
+          </ol>
+        )}
       </nav>
     )}
     <div class="shopping-guide">

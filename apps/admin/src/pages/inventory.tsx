@@ -4,12 +4,12 @@ import { useSession } from "@/lib/auth";
 import { href, Link, useRoute } from "@/lib/router";
 import { number, timeWIB } from "@/lib/format";
 import type { InventoryMovement, LowStockRow, Product, VariantSearchResult } from "@/lib/types";
-import { usePagedList } from "@/hooks/use-paged-list";
+import { useLocalPaging, usePagedList, useUrlPaging } from "@/hooks/use-paged-list";
 import { useResource } from "@/hooks/use-resource";
 import { PageHeader } from "@/components/page-header";
 import { DataTable } from "@/components/data-table";
 import { LoadError } from "@/components/field";
-import { LoadMoreButton } from "@/components/loading";
+import { Paginator } from "@/components/paginator";
 import { StockAdjustDialog, type StockTarget } from "@/components/stock-adjust-dialog";
 import { VariantPicker } from "@/components/variant-picker";
 import { Badge } from "@/components/ui/badge";
@@ -27,12 +27,13 @@ type Target = StockTarget;
 
 function Ledger({ target, onClose }: { target: Target | null; onClose: () => void }) {
   const { can } = useSession();
+  const paging = useLocalPaging(target?.variantId ?? "");
   const list = usePagedList<InventoryMovement>("/api/admin/inventory", {
     listKey: "movements",
-    cursor: "keyset",
+    mode: "keyset",
+    paging,
     params: { variantId: target?.variantId ?? "" },
     enabled: !!target,
-    limit: 20,
   });
   return (
     <Sheet open={!!target} onOpenChange={(open) => !open && onClose()}>
@@ -75,9 +76,7 @@ function Ledger({ target, onClose }: { target: Target | null; onClose: () => voi
               </TableRow>
             ))}
           </DataTable>
-          {list.cursor && (
-            <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} className="" />
-          )}
+          <Paginator {...list.paginator} label="Halaman riwayat stok" />
         </div>
       </SheetContent>
     </Sheet>
@@ -103,7 +102,8 @@ export function InventoryPage() {
   const [picked, setPicked] = useState<VariantSearchResult | null>(null);
   const [filter, setFilter] = useState("");
   const lowList = useResource<{ lowStock: LowStockRow[] }>(low ? "/api/admin/inventory?low=1" : null);
-  const all = usePagedList<Product>("/api/admin/products", { listKey: "products", cursor: "slug", limit: 30, enabled: !low });
+  const paging = useUrlPaging();
+  const all = usePagedList<Product>("/api/admin/products", { listKey: "products", mode: "offset", paging, enabled: !low });
   const term = filter.trim().toLowerCase();
   const rows: Row[] = low
     ? (lowList.data?.lowStock ?? []).map((row) => ({ ...row, low: true }))
@@ -121,7 +121,7 @@ export function InventoryPage() {
   return (
     <>
       <PageHeader title="Inventori" description="Saldo stok ready stock, penyesuaian dengan alasan, dan riwayat pergerakan." />
-      <Tabs value={low ? "low" : "all"} onValueChange={(value) => navigate(href("inventory", {}, value === "low" ? { low: "1" } : {}), true)}>
+      <Tabs value={low ? "low" : "all"} onValueChange={(value) => navigate(href("inventory", {}, value === "low" ? { low: "1", ...paging.keep } : paging.keep), true)}>
         <TabsList aria-label="Filter inventori">
           <TabsTrigger value="all">Semua</TabsTrigger>
           <TabsTrigger value="low">Stok menipis</TabsTrigger>
@@ -131,7 +131,7 @@ export function InventoryPage() {
         {!low && (
           <div className="relative max-w-md">
             <SearchIcon className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
-            <Input aria-label="Saring varian yang dimuat" className="pl-9" placeholder="Saring varian yang dimuat…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+            <Input aria-label="Saring varian di halaman ini" className="pl-9" placeholder="Saring varian di halaman ini…" value={filter} onChange={(e) => setFilter(e.target.value)} />
           </div>
         )}
         <div className="max-w-md">
@@ -161,7 +161,7 @@ export function InventoryPage() {
           low
             ? { title: "Tidak ada stok menipis", description: "Semua varian aktif di atas ambang." }
             : term
-              ? { title: "Tidak ada varian yang cocok", description: "Penyaringan hanya mencakup produk yang sudah dimuat. Muat lebih banyak atau cari varian di atas." }
+              ? { title: "Tidak ada varian yang cocok", description: "Penyaringan hanya mencakup produk di halaman ini. Pindah halaman atau cari varian di atas." }
               : { title: "Belum ada varian ready stock" }
         }
       >
@@ -201,9 +201,7 @@ export function InventoryPage() {
           );
         })}
       </DataTable>
-      {!low && all.cursor && (
-        <LoadMoreButton loading={all.loadingMore} onClick={all.loadMore} />
-      )}
+      {!low && <Paginator {...all.paginator} label="Halaman produk inventori" />}
       <StockAdjustDialog
         target={adjusting}
         onClose={() => {

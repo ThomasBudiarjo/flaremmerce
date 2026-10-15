@@ -6,13 +6,13 @@ import type { Category, Product } from "@/lib/types";
 import { money, number } from "@/lib/format";
 import { useRememberList } from "@/lib/list-memory";
 import { useMutation } from "@/hooks/use-mutation";
-import { usePagedList } from "@/hooks/use-paged-list";
+import { usePagedList, useUrlPaging } from "@/hooks/use-paged-list";
 import { useResource } from "@/hooks/use-resource";
 import { PageHeader } from "@/components/page-header";
 import { DataTable, LinkRow } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
 import { LoadError } from "@/components/field";
-import { LoadMoreButton } from "@/components/loading";
+import { Paginator } from "@/components/paginator";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -65,10 +65,11 @@ export function ProductsPage() {
   if (q) params.q = q;
   if (category) params.category = category;
   if (status !== "all") params.status = status;
-  const list = usePagedList<Product>("/api/admin/products", { listKey: "products", cursor: "slug", params, limit: 30 });
+  const paging = useUrlPaging();
+  const list = usePagedList<Product>("/api/admin/products", { listKey: "products", mode: "offset", paging, params });
   useRememberList("products", list.loading ? null : list.items.map((p) => p.id));
   const apply = (next: Record<string, string>) =>
-    navigate(href("products", {}, Object.fromEntries(Object.entries({ q, category, status, ...next }).filter(([k, v]) => v && !(k === "status" && v === "all")))), true);
+    navigate(href("products", {}, Object.fromEntries(Object.entries({ q, category, status, ...paging.keep, ...next }).filter(([k, v]) => v && !(k === "status" && v === "all")))), true);
 
   const term = search.trim();
   useEffect(() => {
@@ -83,12 +84,9 @@ export function ProductsPage() {
     {
       key: "product-list-active",
       success: (result) => (result.product.active ? "Produk diaktifkan." : "Produk diarsipkan."),
+      // Under a status tab the product leaves the list; reloading pulls the next row up and keeps the total right.
       onSuccess: (result) =>
-        list.setItems((items) =>
-          items
-            .map((p) => (p.id === result.product.id ? { ...p, ...result.product } : p))
-            .filter((p) => status === "all" || p.active === (status === "active")),
-        ),
+        status === "all" ? list.setItems((items) => items.map((p) => (p.id === result.product.id ? { ...p, ...result.product } : p))) : void list.reload(),
       onConflict: () => void list.reload(),
     },
   );
@@ -238,9 +236,7 @@ export function ProductsPage() {
           );
         })}
       </DataTable>
-      {list.cursor && (
-        <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} />
-      )}
+      <Paginator {...list.paginator} label="Halaman produk" />
       <AlertDialog open={!!toggle} onOpenChange={(open) => !open && setToggle(null)}>
         {toggle && (
           <AlertDialogContent>

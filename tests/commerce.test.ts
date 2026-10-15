@@ -502,6 +502,21 @@ describe('commerce public API with real D1', () => {
     expect((await place()).status).toBe(409); expect(await count('orders')).toBe(0);
   });
 
+  it('numbers catalog pages with a total, keys the cache by page and keeps the slug cursor for old links', async () => {
+    for (const slug of ['b-two', 'c-three']) await request('/api/admin/products', { slug, name: slug, variants: [{ sku: `SKU-${slug}`, name: 'Default', price: 1000, weight: 100 }] }, { 'X-Test-Admin': 'admin' });
+    const slugs = (body: any) => body.products.map((p: any) => p.slug);
+    const first = await (await request('/api/catalog?limit=2')).json() as any;
+    expect(slugs(first)).toEqual(['b-two', 'c-three']); expect(first).toMatchObject({ page: 1, total: 3 });
+    const second = await (await request('/api/catalog?limit=2&page=2')).json() as any;
+    expect(slugs(second)).toEqual(['product']); expect(second).toMatchObject({ page: 2, total: 3, nextCursor: null });
+    expect(await (await request('/api/catalog?limit=2&page=9')).json()).toMatchObject({ products: [], total: 3 });
+    for (const query of ['page=0', 'page=abc', 'page=1001', 'page=1e2']) expect((await request(`/api/catalog?${query}`)).status).toBe(400);
+    expect(publicCacheKey(new URL('https://shop.test/catalog?page=1&limit=10'), catalogParams)!.url).toBe('https://shop.test/catalog?limit=10');
+    expect(publicCacheKey(new URL('https://shop.test/catalog?page=02'), catalogParams)!.url).toBe('https://shop.test/catalog?page=2');
+    const old = await (await request('/api/catalog?limit=1&after=b-two')).json() as any;
+    expect(slugs(old)).toEqual(['c-three']); expect(old).not.toHaveProperty('total');
+  });
+
   it('mixed stock and unlimited PO use one shipping promise snapshot unaffected by later campaign changes', async () => {
     const headers = { 'X-Test-Admin': 'admin' };
     const { product } = await (await request('/api/admin/products', { slug: 'preorder', name: 'PO', variants: [{ sku: 'SKU-PO', name: 'Default', price: 1000, weight: 100, mode: 'preorder' }] }, headers)).json() as any;
@@ -621,6 +636,24 @@ describe('local baseline admin contracts',()=>{
     expect(last.nextCursor).toBeNull();
     expect(last.campaigns[0]).toMatchObject({sku:'SKU-A',productName:'Product',reserved:1,sold:0,active:false});
     expect((await request(route,{active:true,startsAt:1,version:1},headers,'PATCH')).status).toBe(409);
+  });
+  it('numbers campaign and blocklist pages with totals and filters phase and kind on the server',async()=>{
+    await request('/api/admin/variants/a',{mode:'preorder',version:0},headers,'PATCH');
+    const now=Date.now();
+    for(const [id,start,end,active] of [['run',now-1000,now+10000,1],['soon',now+20000,now+30000,1],['old',1,100,1],['off',now+40000,now+50000,0]] as const) await sql('INSERT INTO preorder_campaigns(id,variant_id,starts_at,ends_at,ship_from,ship_to,quota,active) VALUES(?,?,?,?,?,?,?,?)',id,'a',start,end,'2026-11-01','2026-11-10',3,active).run();
+    const campaigns=async(query:string)=>{const body=await (await request(`/api/admin/campaigns?${query}`,undefined,headers)).json() as any;return [body.campaigns.map((c:any)=>c.id),body.total];};
+    expect(await campaigns('limit=2&page=1')).toEqual([['off','soon'],4]);
+    expect(await campaigns('limit=2&page=2')).toEqual([['run','old'],4]);
+    expect(await campaigns('phase=running')).toEqual([['run'],1]);
+    expect(await campaigns('phase=upcoming')).toEqual([['soon'],1]);
+    expect(await campaigns('phase=ended')).toEqual([['old'],1]);
+    for(const query of ['phase=inactive','page=0','page=1001']) expect((await request(`/api/admin/campaigns?${query}`,undefined,headers)).status).toBe(400);
+    for(const [id,kind,time] of [['e1','email',3],['i1','ip',2],['e2','email',1]] as const) await sql('INSERT INTO blocklist(id,kind,value_hash,reason,actor,created_at) VALUES(?,?,?,?,?,?)',id,kind,id.padStart(64,'0'),'Spam','ops',time).run();
+    const blocked=async(query:string)=>{const body=await (await request(`/api/admin/blocklist?${query}`,undefined,headers)).json() as any;return [body.items.map((e:any)=>e.id),body.total];};
+    expect(await blocked('kind=email')).toEqual([['e1','e2'],2]);
+    expect(await blocked('limit=1&page=2')).toEqual([['i1'],3]);
+    expect(await blocked('limit=1&page=4')).toEqual([[],3]);
+    expect((await request('/api/admin/blocklist?kind=name',undefined,headers)).status).toBe(400);
   });
   it('patches only supplied catalog fields, never creation defaults', async () => {
     await sql("UPDATE products SET description='Deskripsi yang harus tetap' WHERE id='p'").run();

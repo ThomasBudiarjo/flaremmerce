@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -124,7 +124,9 @@ export function RouterProvider({ children }: { children: React.ReactNode }) {
     [go],
   );
 
-  useEffect(() => {
+  // A layout effect, so the listeners exist before any page's passive effects run: a page that
+  // corrects its own URL on mount (an unknown list page) would otherwise navigate unheard.
+  useLayoutEffect(() => {
     const update = () => {
       current.current = here();
       setRoute(parse(location.pathname, location.search) ?? parse(BASE, "")!);

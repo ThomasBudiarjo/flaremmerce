@@ -3,11 +3,11 @@ import { label, number, reviewReason } from "@/lib/format";
 import { useRememberList } from "@/lib/list-memory";
 import { useSummary } from "@/lib/summary";
 import type { ReviewItem } from "@/lib/types";
-import { usePagedList } from "@/hooks/use-paged-list";
+import { usePagedList, useUrlPaging } from "@/hooks/use-paged-list";
 import { PageHeader } from "@/components/page-header";
 import { DataTable, LinkRow } from "@/components/data-table";
 import { LoadError } from "@/components/field";
-import { LoadMoreButton } from "@/components/loading";
+import { Paginator } from "@/components/paginator";
 import { RelativeTime } from "@/components/relative-time";
 import { ReviewStatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -19,13 +19,14 @@ export function ReviewsPage() {
   const { route, navigate } = useRoute();
   const { summary } = useSummary();
   const status = route.query.get("status") === "resolved" ? "resolved" : "open";
-  const list = usePagedList<ReviewItem>("/api/admin/review", { listKey: "items", cursor: "keyset", params: { status } });
+  const paging = useUrlPaging();
+  const list = usePagedList<ReviewItem>("/api/admin/review", { listKey: "items", mode: "keyset", paging, params: { status } });
   useRememberList("reviews", list.loading ? null : list.items.map((item) => item.id));
   const now = Date.now();
   return (
     <>
       <PageHeader title="Review" description="Kasus risiko dan pembayaran yang perlu diperiksa operator. Review terbuka menahan pengiriman pesanan." />
-      <Tabs value={status} onValueChange={(value) => navigate(href("reviews", {}, value === "resolved" ? { status: "resolved" } : {}), true)}>
+      <Tabs value={status} onValueChange={(value) => navigate(href("reviews", {}, value === "resolved" ? { status: "resolved", ...paging.keep } : paging.keep), true)}>
         <TabsList aria-label="Filter status review">
           <TabsTrigger value="open">
             Terbuka
@@ -76,9 +77,7 @@ export function ReviewsPage() {
           </LinkRow>
         ))}
       </DataTable>
-      {list.cursor && (
-        <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} />
-      )}
+      <Paginator {...list.paginator} label="Halaman review" />
     </>
   );
 }

@@ -9,14 +9,15 @@ import { dateWIB, label, number, reviewReason, shiftDay, todayWIB } from "@/lib/
 import { useRememberList } from "@/lib/list-memory";
 import { markSummaryStale, useSummary } from "@/lib/summary";
 import type { OrderDetail, OrderSummary } from "@/lib/types";
-import { usePagedList } from "@/hooks/use-paged-list";
+import { usePagedList, useUrlPaging } from "@/hooks/use-paged-list";
 import { PageHeader } from "@/components/page-header";
 import { MoneyText } from "@/components/money-text";
 import { FulfillmentBadge, OrderStatusBadge } from "@/components/status-badge";
 import { DataTable, LinkRow, SelectCell } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
 import { LoadError } from "@/components/field";
-import { LoadMoreButton, Spinner } from "@/components/loading";
+import { Spinner } from "@/components/loading";
+import { Paginator } from "@/components/paginator";
 import { PrintView, usePrint } from "@/components/print-view";
 import { RelativeTime } from "@/components/relative-time";
 import { Badge } from "@/components/ui/badge";
@@ -82,12 +83,14 @@ export function OrdersPage() {
   if (to) filters.to = to;
   const signature = JSON.stringify(filters);
 
-  const list = usePagedList<OrderSummary>("/api/admin/orders", { listKey: "orders", cursor: "keyset", params: filters });
+  const paging = useUrlPaging();
+  const list = usePagedList<OrderSummary>("/api/admin/orders", { listKey: "orders", mode: "keyset", paging, params: filters });
   useRememberList("orders", list.loading ? null : list.items.map((o) => o.id));
-  useEffect(() => setSelected(new Set()), [signature]);
+  // Selection applies to the rows on screen; another page or filter starts a new one.
+  useEffect(() => setSelected(new Set()), [signature, paging.page, paging.pageSize]);
 
   const apply = (next: Record<string, string>) =>
-    navigate(href("orders", {}, Object.fromEntries(Object.entries(next).filter(([, v]) => v))), true);
+    navigate(href("orders", {}, Object.fromEntries(Object.entries({ ...paging.keep, ...next }).filter(([, v]) => v))), true);
 
   const exporter = useMutation(
     async (query: string) => {
@@ -320,9 +323,7 @@ export function OrdersPage() {
           </LinkRow>
         ))}
       </DataTable>
-      {list.cursor && (
-        <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} />
-      )}
+      <Paginator {...list.paginator} label="Halaman pesanan" />
       {bulkMode && chosen.length > 0 && (
         <div role="region" aria-label="Aksi massal" className="sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center gap-2 border-t bg-background p-3 md:-mx-6 lg:-mx-8 print:hidden">
           <span className="text-sm font-medium">{number(chosen.length)} dipilih</span>

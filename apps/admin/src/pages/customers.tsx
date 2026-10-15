@@ -6,12 +6,12 @@ import { href, Link, useRoute } from "@/lib/router";
 import { dateWIB, number } from "@/lib/format";
 import type { Customer } from "@/lib/types";
 import { useMutation } from "@/hooks/use-mutation";
-import { usePagedList } from "@/hooks/use-paged-list";
+import { usePagedList, useUrlPaging } from "@/hooks/use-paged-list";
 import { PageHeader } from "@/components/page-header";
 import { DataTable } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
 import { LoadError } from "@/components/field";
-import { LoadMoreButton } from "@/components/loading";
+import { Paginator } from "@/components/paginator";
 import { CopyButton } from "@/components/copy-button";
 import {
   AlertDialog,
@@ -61,12 +61,15 @@ export function CustomersPage() {
   const [search, setSearch] = useState(q);
   useEffect(() => setSearch(q), [q]);
   const term = search.trim();
+  const paging = useUrlPaging();
+  const searchFor = (value: string) => navigate(href("customers", {}, value ? { q: value, ...paging.keep } : paging.keep), true);
   useEffect(() => {
     if (term === q) return;
-    const timer = setTimeout(() => navigate(href("customers", {}, term ? { q: term } : {}), true), 300);
+    const timer = setTimeout(() => searchFor(term), 300);
     return () => clearTimeout(timer);
-  }, [term, q, navigate]);
-  const list = usePagedList<Customer>("/api/admin/customers", { listKey: "customers", cursor: "keyset", params: q ? { q } : {} });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [term, q]);
+  const list = usePagedList<Customer>("/api/admin/customers", { listKey: "customers", mode: "keyset", paging, params: q ? { q } : {} });
   const [action, setAction] = useState<Action | null>(null);
   const run = useMutation(
     async ({ kind, customer }: Action) => {
@@ -91,7 +94,7 @@ export function CustomersPage() {
           role="search"
           onSubmit={(e) => {
             e.preventDefault();
-            navigate(href("customers", {}, term ? { q: term } : {}), true);
+            searchFor(term);
           }}
         >
           <SearchIcon className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
@@ -179,9 +182,7 @@ export function CustomersPage() {
           </TableRow>
         ))}
       </DataTable>
-      {list.cursor && (
-        <LoadMoreButton loading={list.loadingMore} onClick={list.loadMore} />
-      )}
+      <Paginator {...list.paginator} label="Halaman pelanggan" />
       <AlertDialog open={!!action} onOpenChange={(open) => !open && setAction(null)}>
         {action && (
           <AlertDialogContent>

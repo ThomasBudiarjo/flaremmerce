@@ -410,9 +410,64 @@ button.danger:hover {
 .pager {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  align-items: center;
+  gap: 16px 24px;
   flex-wrap: wrap;
   margin-top: 40px;
+}
+.page-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.page-size .chip {
+  min-width: 44px;
+  justify-content: center;
+}
+.page-size select {
+  width: auto;
+  padding: 8px 12px;
+}
+.pages {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pages .button,
+.pages button {
+  padding: 10px 16px;
+}
+.pages [aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.page-number a,
+.page-number span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  height: 42px;
+  padding: 0 8px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.page-number a {
+  border: 1px solid var(--line);
+  background: white;
+}
+.page-number a:hover {
+  border-color: #252622;
+  text-decoration: none;
+}
+.page-number a[aria-current="page"] {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: white;
 }
 .empty-state {
   display: grid;
@@ -1060,6 +1115,22 @@ footer {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 28px 14px;
   }
+  .pages {
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+  .pages .button span {
+    display: none;
+  }
+  .pages .button {
+    padding: 8px 10px;
+  }
+  .page-number a,
+  .page-number span {
+    min-width: 32px;
+    height: 36px;
+    padding: 0 4px;
+  }
   .card-body h3,
   .card-price {
     font-size: 13px;
@@ -1191,7 +1262,8 @@ footer {
   border-color: #252622;
   text-decoration: none;
 }
-.chip[aria-current="page"] {
+.chip[aria-current="page"],
+.chip[aria-current="true"] {
   border-color: var(--blue);
   background: var(--blue);
   color: white;
