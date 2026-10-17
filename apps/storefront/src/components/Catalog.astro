@@ -1,6 +1,6 @@
 ---
 import Layout from "../layouts/Layout.astro";
-import { catalog, money, type Product } from "../lib/catalog";
+import { catalog, money, shipWindow, type Product } from "../lib/catalog";
 import { catalogParams, searchTerm } from "../../../../src/shared";
 type Category = { id: string; slug: string; name: string };
 let products: Product[] = [];
@@ -55,8 +55,6 @@ const heading = q ? `Hasil untuk “${q}”` : current ? current.name : "Semua p
 const paged = Astro.url.searchParams.has("after");
 const firstPage = new URLSearchParams(nextQuery);
 firstPage.delete("after");
-const monthDay = new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "short", timeZone: "Asia/Jakarta" });
-const shipWindow = (from: string | number, to: string | number) => `${monthDay.format(new Date(from))} – ${monthDay.format(new Date(to))}`;
 type Badge = { label: string; tone: "stock" | "low" | "out" | "preorder" };
 // Exact counts are never public; badges summarise variant stock levels and the earliest pre-order window.
 function summary(p: Product) {

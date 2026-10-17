@@ -25,17 +25,19 @@ export type Product = {
   category?: { slug: string; name: string } | null;
   variants: Variant[];
 };
-export const money = (value: number) =>
-  new Intl.NumberFormat("id-ID", {
+const currencyFormatter = new Intl.NumberFormat("id-ID", {
     style: "currency",
     currency: "IDR",
     maximumFractionDigits: 0,
-  }).format(value);
-export const date = (value: string | number) =>
-  new Intl.DateTimeFormat("id-ID", {
+  });
+const dateFormatter = new Intl.DateTimeFormat("id-ID", {
     dateStyle: "medium",
     timeZone: "Asia/Jakarta",
-  }).format(new Date(value));
+  });
+const monthDay = new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "short", timeZone: "Asia/Jakarta" });
+export const shipWindow = (from: string | number, to: string | number) => `${monthDay.format(new Date(from))} – ${monthDay.format(new Date(to))}`;
+export const money = (value: number) => currencyFormatter.format(value);
+export const date = (value: string | number) => dateFormatter.format(new Date(value));
 // Middleware supplies the in-process API; no recursive same-origin network requests.
 export async function catalog(locals: any, path = "/api/catalog") {
   const response: Response = await locals.catalog(path);

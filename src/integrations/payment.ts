@@ -1,5 +1,5 @@
 import type { IntegrationEnv } from './index';
-import { body, demand, equal } from './security';
+import { body, demand, equal, providerJson } from './security';
 import { base64, digest, encode, envMinutes, PAYMENT_DUE_MINUTES } from '../shared';
 
 async function signature(raw: string | null, client: string, id: string, timestamp: string, path: string, secret: string) {
@@ -33,7 +33,7 @@ export async function createPayment(input: {reference:string; amount:number; ret
   // follow or race an accepted request, so they stay ambiguous like 5xx and network failures.
   if (response.status >= 400 && response.status < 500 && ![408,409,425,429].includes(response.status)) return {rejected:true};
   demand(response.ok, 502, 'Payment provider rejected request');
-  const result: any = await response.json();
+  const result: any = await providerJson(response);
   demand(typeof result.response?.payment?.url === 'string', 502, 'Invalid payment response');
   demand(result.response.order?.invoice_number === input.reference && result.response.order?.amount === input.amount && (!result.response.order.currency || result.response.order.currency === 'IDR'), 502, 'Payment identity mismatch');
   const url = new URL(result.response.payment.url);
@@ -81,7 +81,7 @@ export async function lookupPayment(reference: string, env: IntegrationEnv): Pro
     headers:{'Client-Id':client,'Request-Id':id,'Request-Timestamp':timestamp,Signature:await signature(null,client,id,timestamp,path,secret)}, signal:AbortSignal.timeout(10000),
   });
   if (!response.ok) return {status:'unknown'};
-  const result: any = await response.json();
+  const result: any = await providerJson(response);
   const amount = Number(result.order?.amount);
   if (result.order?.invoice_number !== reference || !Number.isSafeInteger(amount) || amount <= 0 || (result.order.currency && result.order.currency !== 'IDR') || (result.transaction?.type && result.transaction.type !== 'SALE')) return {status:'unknown'};
   const providerTx = transactionIdentity(result);

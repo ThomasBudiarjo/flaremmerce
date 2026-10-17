@@ -39,10 +39,17 @@ export async function catalog(env: CommerceEnv, slug?: string, query = new URLSe
     .leftJoin(inventory, eq(inventory.variantId, variants.id))
     .leftJoin(campaigns, and(eq(campaigns.variantId, variants.id), eq(campaigns.active, 1), lte(campaigns.startsAt, now), gt(campaigns.endsAt, now)))
     .where(and(inArray(variants.productId, rows.map(p => p.product.id)), includeInactive ? undefined : eq(variants.active, 1))).orderBy(variants.sku).limit(2700) : [];
+  // Group once instead of scanning all variants again for every product (90 × 2700).
+  const byProduct = new Map<string, typeof vv>();
+  for (const row of vv) {
+    const group = byProduct.get(row.variant.productId);
+    if (group) group.push(row);
+    else byProduct.set(row.variant.productId, [row]);
+  }
   const result = rows.map(({ product: p, category: c }) => {
     return { id: p.id, slug: p.slug, name: p.name, description: p.description, imageUrl: p.imageUrl, category: c?.slug ? { slug: c.slug, name: c.name } : null,
       ...(includeInactive ? { active: !!p.active, categoryId: p.categoryId, version: p.version } : {}),
-      variants: vv.filter(v => v.variant.productId === p.id).map(({ variant: v, inventory: stock, campaign: c }) => {
+      variants: (byProduct.get(p.id) ?? []).map(({ variant: v, inventory: stock, campaign: c }) => {
         const available = v.mode === 'stock' ? (stock ? stock.onHand - stock.reserved : 0) : (c ? (c.quota === null ? null : c.quota - c.reserved - c.sold) : 0);
         const campaign = c && { id: c.id, startsAt: c.startsAt, endsAt: c.endsAt, shipFrom: c.shipFrom, shipTo: c.shipTo };
         return { id: v.id, sku: v.sku, name: v.name, price: v.price, weight: v.weight, mode: v.mode, maxPerOrder: v.maxPerOrder, maxPerCustomer: v.maxPerCustomer,

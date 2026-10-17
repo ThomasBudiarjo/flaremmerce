@@ -153,6 +153,23 @@ async function notification(status: string, original = 'ref1', time = new Date()
   return new Request('https://shop.example/api/payment/webhook',{method:'POST',body:raw,headers:{'Client-Id':'MCH-test','Request-Id':id,'Request-Timestamp':time,Signature:`HMACSHA256=${digest('sha256',secret).update(components).digest('base64')}`}});
 }
 describe('provider boundaries', () => {
+  it('bounds streamed provider JSON bytes before accepting a payment status', async () => {
+    const payload = JSON.stringify({order:{invoice_number:'bounded',amount:10000},transaction:{status:'SUCCESS'}});
+    for (const size of [128 * 1024, 128 * 1024 + 1]) {
+      // Valid JSON padded with whitespace: shape validation alone cannot reject the oversized response.
+      const bytes = new TextEncoder().encode(payload.padEnd(size, ' '));
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes.slice(0, 65536));
+          controller.enqueue(bytes.slice(65536));
+          controller.close();
+        },
+      }), {headers:{'Content-Length':'1'}})));
+      const lookup = lookupPayment('bounded', env);
+      if (size === 128 * 1024) await expect(lookup).resolves.toEqual({status:'succeeded',amount:10000,currency:'IDR'});
+      else await expect(lookup).rejects.toMatchObject({status:502});
+    }
+  });
   it('validates public destination searches before contacting the provider', async () => {
     const path = '/api/shipping/destinations';
     const fetcher = vi.fn(); vi.stubGlobal('fetch',fetcher);

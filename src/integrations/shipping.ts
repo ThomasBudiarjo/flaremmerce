@@ -1,5 +1,5 @@
 import type { IntegrationEnv } from './index';
-import { demand, json, origin } from './security';
+import { demand, json, origin, providerJson } from './security';
 import { HttpError, cartWeightMessage, chargeableWeight, digest, MAX_CART_LINES, maxCartWeight, volumetricDivisor } from '../shared';
 
 type Destination = {id:string; label:string; province:string; city:string; district:string; subdistrict:string; postalCode:string};
@@ -36,7 +36,7 @@ async function searchProvider(env: IntegrationEnv, search: string): Promise<{des
   let response: Response, result: any;
   try {
     response = await fetch(url.toString(), {headers:{key:env.RAJAONGKIR_API_KEY}, signal:AbortSignal.timeout(10000)});
-    result = await response.json();
+    result = await providerJson(response);
   } catch { throw new HttpError(502, 'Destination search unavailable'); }
   if ((response.ok || response.status === 404) && result?.meta?.code === 404 && result.meta.status === 'error' && result.data === null) return {destinations:[]};
   demand(response.ok, 502, 'Destination search unavailable');
@@ -91,13 +91,16 @@ export async function shipping(request: Request, env: IntegrationEnv) {
     body:new URLSearchParams({origin:env.RAJAONGKIR_ORIGIN, destination, weight:String(weight), courier:env.RAJAONGKIR_COURIERS, price:'lowest'}), signal:AbortSignal.timeout(10000),
   });
   demand(response.ok, 502, 'Shipping provider unavailable');
-  const result: any = await response.json();
+  const result: any = await providerJson(response);
   demand(result.meta?.code === 200 && result.meta?.status === 'success' && Array.isArray(result.data) && result.data.length <= 100, 502, 'Invalid shipping response');
   const expiresAt = Date.now() + 300000;
-  const quotes = result.data.map((entry: any) => {
+  for (const entry of result.data) {
     demand(typeof entry.code === 'string' && typeof entry.service === 'string' && Number.isSafeInteger(entry.cost) && entry.cost > 0, 502, 'Invalid shipping tariff');
+  }
+  // Validate every tariff, but allocate IDs and serialize snapshots only for the ten we retain.
+  const quotes = result.data.sort((a: {cost:number}, b: {cost:number}) => a.cost - b.cost).slice(0, 10).map((entry: any) => {
     return {id:crypto.randomUUID(), service:`${entry.code}:${entry.service}`, amount:entry.cost as number, expiresAt, details:JSON.stringify(entry)};
-  }).sort((a: {amount:number}, b: {amount:number}) => a.amount - b.amount).slice(0, 10);
+  });
   if (quotes.length) await env.DB.batch(quotes.map((q: {id:string;service:string;amount:number;details:string}) => env.DB.prepare('INSERT INTO shipping_quotes (id, fingerprint, destination, service, amount, weight, expires_at, details_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(q.id,fingerprint,destination,q.service,q.amount,weight,expiresAt,q.details)));
   return {quotes:quotes.map(({details, ...q}: {details:string;id:string;service:string;amount:number;expiresAt:number}) => q)};
 }

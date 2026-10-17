@@ -31,6 +31,13 @@ export async function json(request: Request): Promise<any> {
   try { return JSON.parse(await body(request)); }
   catch (error) { if (error instanceof HttpError) throw error; throw new HttpError(400, 'Invalid JSON'); }
 }
+/** Bound decoded provider bytes before JSON parsing, including chunked responses without Content-Length. */
+export async function providerJson(response: Response): Promise<any> {
+  try {
+    demand(response.body, 502, 'Invalid provider response');
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(await readBounded(response.body, 128 * 1024)));
+  } catch { throw new HttpError(502, 'Invalid provider response'); }
+}
 export async function equal(a: string, b: string) {
   const [x,y] = await Promise.all([crypto.subtle.digest('SHA-256', encode(a)), crypto.subtle.digest('SHA-256', encode(b))]);
   const left = new Uint8Array(x), right = new Uint8Array(y); let diff = 0;
@@ -50,7 +57,7 @@ export async function verifyTurnstile(token: string, env: IntegrationEnv): Promi
     const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
       method:'POST', body:new URLSearchParams({secret:env.TURNSTILE_SECRET_KEY, response:token}), signal:AbortSignal.timeout(10000),
     });
-    demand(response.ok, 503, 'Turnstile unavailable'); result = await response.json();
+    demand(response.ok, 503, 'Turnstile unavailable'); result = await providerJson(response);
   } catch { throw new HttpError(503, 'Turnstile unavailable'); }
   demand(result.success === true && result.hostname === new URL(env.PUBLIC_ORIGIN).hostname && result.action === (env.TURNSTILE_ACTION || 'checkout'), 403, 'Turnstile rejected');
 }
